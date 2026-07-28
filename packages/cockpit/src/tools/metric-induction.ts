@@ -125,6 +125,22 @@ const extractShape = {
 	aggregation: z
 		.enum(AGGREGATIONS)
 		.describe("How this leaf aggregates across the matched rows."),
+	// A FIELD on the existing extract branch, never a new step variant: the
+	// compiled-grammar ceiling tracks union BRANCHES (DAT-807 measured it live),
+	// and `induction-schema.contract.test.ts` pins the count. Required with a ""
+	// convention rather than optional, for the same budget reason.
+	predicate: z
+		.string()
+		.describe(
+			"Which ROWS this leaf measures over, in business terms — e.g. " +
+				"'transactions that are reconciled', 'invoices past due'. Use \"\" when it " +
+				"measures over every row. Say it in CONCEPT terms, never as SQL and never " +
+				"as a column = value pair: the engine binds it to a real column and a real " +
+				"value later, against the data's actual values. Declare it whenever the " +
+				"concept is a rate, share, or count of a SUBSET — 'reconciled rate' is " +
+				"reconciled_count / transaction_count, and the reconciled_count leaf is " +
+				"the same count with this restriction, NOT a count of a status column.",
+		),
 };
 
 const formulaShape = {
@@ -332,6 +348,10 @@ function stepPayload(
 			source: {
 				standard_field: step.standard_field,
 				statement: step.statement,
+				// Carried only when the model declared a restriction: "" means
+				// "every row", and the engine's loader reads a missing key as
+				// exactly that, so an empty key would be noise in every overlay.
+				...(step.predicate ? { predicate: step.predicate } : {}),
 			},
 			aggregation: step.aggregation,
 		};

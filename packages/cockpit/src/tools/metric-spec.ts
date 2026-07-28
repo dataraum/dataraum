@@ -74,6 +74,16 @@ const GraphStepSchema = z
 					.string()
 					.optional()
 					.describe("Optional explicit column name."),
+				predicate: z
+					.string()
+					.optional()
+					.describe(
+						"The rows this EXTRACT step measures over, in business terms " +
+							"(e.g. 'transactions that are reconciled'); omitted or \"\" " +
+							"measures every row. Part of the step's identity: two extracts " +
+							"over the same field and aggregation but different rows are " +
+							"different measurements. EXTRACT steps.",
+					),
 			})
 			.optional()
 			.describe("Where an EXTRACT step pulls its value from."),

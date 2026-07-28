@@ -89,6 +89,27 @@ class StepSource:
     column: str | None = None  # Concrete column name
     standard_field: str | None = None  # Abstract field (resolved by schema mapping)
     statement: str | None = None  # balance_sheet, income_statement
+    # The DECLARED row restriction this extract measures over (DAT-838). Before it,
+    # an extract carried only field+statement+aggregation, so "count the rows WHERE
+    # status is reconciled" was unsayable and the model wrote the closest expressible
+    # thing — `count(reconciliation_status)`, a count of a dimension column, which
+    # counts every row and makes any rate ≈1.0 by construction while its declared
+    # `0 <= value <= 1` check passes. Rates, shares, ratios-of-subset and conditional
+    # counts are all that shape, so this is a large fraction of what a practitioner
+    # means by "metric".
+    #
+    # It is INTENT, in business terms ("status is reconciled"), never SQL and never a
+    # column/value pair: at frame time the real columns and their values are not known
+    # yet — grounding a value to a column that actually carries it is the semantic
+    # phase's business. The authoring path serves this line to the grounding agent,
+    # which turns it into verified predicates over SERVED values
+    # (`ExtractGroundingOutput.where` + the `filter_members` it must declare), and
+    # `validate_grounding_basis` refuses a grounding that dropped it.
+    #
+    # `""` (never None) means "no restriction" — the same stated-attribute convention
+    # `statement` and `ConceptGroundingBasis.filter` use, so the LLM-facing contract
+    # needs no optional field (constrained decoding budgets those; DAT-807).
+    predicate: str = ""
 
 
 @dataclass

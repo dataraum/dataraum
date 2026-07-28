@@ -222,6 +222,10 @@ class GraphLoader:
                 column=source_data.get("column"),
                 standard_field=source_data.get("standard_field"),
                 statement=source_data.get("statement"),
+                # DAT-838: `""` is the declared "no restriction", so a missing key and
+                # an explicit null both normalize to it rather than becoming None —
+                # the field is a stated attribute, not an optional one.
+                predicate=source_data.get("predicate") or "",
             )
 
         # Declared post-execution checks (DAT-616): the catalogue's per-extract

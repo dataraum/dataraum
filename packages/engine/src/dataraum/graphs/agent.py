@@ -15,6 +15,7 @@ from __future__ import annotations
 
 import hashlib
 import json
+from collections.abc import Sequence
 from dataclasses import dataclass, field
 from datetime import UTC, datetime
 from decimal import Decimal
@@ -523,6 +524,7 @@ class GraphAgent(LLMFeature):
         graph: TransformationGraph,
         cached_snippets: dict[str, dict[str, Any]],
         resolved_params: dict[str, Any],
+        group_by: Sequence[str] = (),
     ) -> GeneratedCode | None:
         """Compose a metric's SQL PER-METRIC from the DAG — no cross-metric reuse (DAT-646).
 
@@ -553,15 +555,33 @@ class GraphAgent(LLMFeature):
         # a cache-composed metric still surfaces its weakest input's confidence to the
         # phase gate instead of looking confidently green.
         assumptions: list[GraphAssumptionOutput] = []
+        # Which EXTRACT leaves actually rendered at unit grain (DAT-671 B1). A FORMULA
+        # needs this to tell an entity-keyed operand (join on the key) from an
+        # entity-independent one (a CONSTANT — still a scalar subquery).
+        grouped_steps: set[str] = set()
         for step_id in ordered:
             step = graph.steps.get(step_id)
             if step is None:
                 return None
-            sql = self._compose_step_sql(step, step_id, cached_snippets, resolved_params)
+            sql = self._compose_step_sql(
+                step,
+                step_id,
+                cached_snippets,
+                resolved_params,
+                group_by=group_by,
+                grouped_steps=frozenset(grouped_steps),
+            )
             if sql is None:
                 # Missing extract snippet / unresolvable constant / malformed
                 # formula — the metric honest-fails (caller surfaces the reason).
+                # At unit grain this ALSO covers a leaf that cannot carry the axis
+                # (no parts to re-render, or a relation without that column): the
+                # metric has no per-entity value, and saying so is the honest
+                # outcome — never a quiet fall back to the workspace scalar, which
+                # a consumer could not distinguish from a real breakdown.
                 return None
+            if group_by and step.step_type == StepType.EXTRACT:
+                grouped_steps.add(step_id)
             description = step_id
             if step.step_type == StepType.EXTRACT:
                 snippet = cached_snippets.get(step_id) or {}
@@ -617,6 +637,9 @@ class GraphAgent(LLMFeature):
         step_key: str,
         cached_snippets: dict[str, dict[str, Any]],
         resolved_params: dict[str, Any],
+        *,
+        group_by: Sequence[str] = (),
+        grouped_steps: frozenset[str] = frozenset(),
     ) -> str | None:
         """One step's CTE SQL: extract = cached snippet, constant/formula = composed.
 
@@ -628,19 +651,53 @@ class GraphAgent(LLMFeature):
         constant, malformed formula) — both the full compose and the DAT-699
         partial execution treat that as this step's honest hole.
         """
-        from dataraum.graphs.formula_composer import compose_constant_sql, compose_formula_sql
+        from dataraum.graphs.formula_composer import (
+            compose_constant_sql,
+            compose_extract_sql,
+            compose_formula_sql,
+        )
 
         try:
             if step.step_type == StepType.EXTRACT:
                 snippet = cached_snippets.get(step_key)
-                return snippet["sql"] if snippet else None
+                if snippet is None:
+                    return None
+                if not group_by:
+                    rendered = snippet.get("sql")
+                    return rendered if isinstance(rendered, str) else None
+                # Unit grain re-renders from the PARTS, never by editing the stored
+                # scalar string — parts-at-source (DAT-671): the parts are the
+                # artifact and `sql` is only their one-time render. A snippet with
+                # no parts predates that cut and cannot be regrouped; a fall-loud
+                # grounding (no relation) has nothing to group BY. Both are honest
+                # holes, and the caller turns them into a refused breakdown.
+                parts = snippet.get("parts")
+                if not isinstance(parts, dict):
+                    return None
+                select = parts.get("select") or []
+                relations = parts.get("from") or []
+                if len(select) != 1 or len(relations) != 1:
+                    return None
+                expr = select[0].get("expr")
+                if not isinstance(expr, str) or not expr.strip():
+                    return None
+                where = [w for w in (parts.get("where") or []) if isinstance(w, str)]
+                return compose_extract_sql(expr, str(relations[0]), where, group_by)
             if step.step_type == StepType.CONSTANT:
                 value = resolved_params.get(step.parameter) if step.parameter else None
+                # A constant is entity-independent — the same number for every
+                # entity — so it renders identically at either grain and joins in
+                # as a scalar subquery.
                 return compose_constant_sql(value) if value is not None else None
             if step.step_type == StepType.FORMULA:
                 if not step.expression:
                     return None
-                return compose_formula_sql(step.expression, set(step.depends_on))
+                return compose_formula_sql(
+                    step.expression,
+                    set(step.depends_on),
+                    group_by=group_by,
+                    grouped_steps=grouped_steps,
+                )
         except ValueError:
             # Malformed expression / non-numeric constant — the composer raises;
             # the step is not composable.
@@ -789,6 +846,10 @@ class GraphAgent(LLMFeature):
                 "from the binding map, never authored whole"
             )
         leaf = extract_leaves[0]
+        # The row restriction this leaf DECLARES (DAT-838). Served to the model via
+        # the graph YAML above and enforced against what it grounded, so a declared
+        # restriction can neither be invented here nor quietly dropped there.
+        declared_predicate = leaf.source.predicate if leaf.source else ""
 
         # Serialize graph to YAML for LLM context.
         graph_yaml = self._graph_to_yaml(graph)
@@ -999,7 +1060,7 @@ class GraphAgent(LLMFeature):
         # value-sets, the same enumeration the prompt's Value sets render.
         served_values = _served_value_sets(context)
         violations = validate_grounding_basis(
-            output, schema_tables, context.duckdb_conn, served_values
+            output, schema_tables, context.duckdb_conn, served_values, declared_predicate
         )
         if violations:
             repaired = repair_tool_contract(
@@ -1015,7 +1076,7 @@ class GraphAgent(LLMFeature):
                 return Result.fail(repaired.error or "grounding contract repair failed")
             output = repaired.unwrap()
             violations = validate_grounding_basis(
-                output, schema_tables, context.duckdb_conn, served_values
+                output, schema_tables, context.duckdb_conn, served_values, declared_predicate
             )
 
         # Bind the one generated grounding to the graph's own leaf id (the model
@@ -1420,6 +1481,16 @@ class GraphAgent(LLMFeature):
                     "source": {
                         "standard_field": step.source.standard_field if step.source else None,
                         "statement": step.source.statement if step.source else None,
+                        # The DECLARED row restriction (DAT-838), served so the model
+                        # grounds the restriction the catalogue actually asked for
+                        # instead of writing the closest expressible thing. Emitted
+                        # ONLY when declared: an empty key would read as a restriction
+                        # of "" and invite the model to invent one.
+                        **(
+                            {"predicate": step.source.predicate}
+                            if step.source and step.source.predicate
+                            else {}
+                        ),
                     }
                     if step.source
                     else None,
@@ -1652,6 +1723,7 @@ class GraphAgent(LLMFeature):
                 standard_field=graph_step.source.standard_field,
                 statement=graph_step.source.statement,
                 aggregation=graph_step.aggregation,
+                predicate=graph_step.source.predicate,
                 provenance=provenance_dict,
                 parts=gen_step.get("parts"),
             )
@@ -1729,6 +1801,7 @@ class GraphAgent(LLMFeature):
                 standard_field=graph_step.source.standard_field,
                 statement=graph_step.source.statement,
                 aggregation=graph_step.aggregation,
+                predicate=graph_step.source.predicate,
                 provenance=provenance,
                 parts=gen_step.get("parts"),
                 failed=True,
@@ -1871,6 +1944,7 @@ class GraphAgent(LLMFeature):
                 standard_field=graph_step.source.standard_field,
                 statement=graph_step.source.statement,
                 aggregation=graph_step.aggregation,
+                predicate=graph_step.source.predicate,
             )
 
             if match:
@@ -1971,6 +2045,7 @@ class GraphAgent(LLMFeature):
                     standard_field=gstep.source.standard_field,
                     statement=gstep.source.statement,
                     aggregation=gstep.aggregation,
+                    predicate=gstep.source.predicate,
                 )
                 if rec and rec.sql:
                     prov = rec.provenance or {}

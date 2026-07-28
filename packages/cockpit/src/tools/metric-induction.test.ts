@@ -25,6 +25,7 @@ const REVENUE = {
 	standard_field: "revenue",
 	statement: "income_statement",
 	aggregation: "sum",
+	predicate: "",
 	checks: [],
 } satisfies InducedMetric["steps"][number];
 
@@ -34,6 +35,7 @@ const COST = {
 	standard_field: "cost_of_goods_sold",
 	statement: "income_statement",
 	aggregation: "sum",
+	predicate: "",
 	checks: [],
 } satisfies InducedMetric["steps"][number];
 
@@ -331,6 +333,7 @@ describe("toProposedMetric — array shape -> overlay payload", () => {
 							standard_field: "transaction_count",
 							statement: "",
 							aggregation: "count",
+							predicate: "",
 							checks: [
 								{
 									condition: "value >= 0",
@@ -432,6 +435,7 @@ describe("toProposedMetric — reproduces a SHIPPED metric graph", () => {
 				standard_field: "accounts_receivable",
 				statement: "balance_sheet",
 				aggregation: "sum",
+				predicate: "",
 				checks: [],
 			},
 			{
@@ -440,6 +444,7 @@ describe("toProposedMetric — reproduces a SHIPPED metric graph", () => {
 				standard_field: "revenue",
 				statement: "income_statement",
 				aggregation: "sum",
+				predicate: "",
 				checks: [],
 			},
 			{

@@ -276,6 +276,7 @@ CREATE TABLE sql_snippets (
 	standard_field VARCHAR, 
 	statement VARCHAR, 
 	aggregation VARCHAR, 
+	predicate VARCHAR DEFAULT '' NOT NULL, 
 	schema_mapping_id VARCHAR NOT NULL, 
 	parameter_value VARCHAR, 
 	normalized_expression VARCHAR, 
@@ -290,7 +291,7 @@ CREATE TABLE sql_snippets (
 	created_at TIMESTAMP WITHOUT TIME ZONE NOT NULL, 
 	updated_at TIMESTAMP WITHOUT TIME ZONE NOT NULL, 
 	CONSTRAINT pk_sql_snippets PRIMARY KEY (snippet_id), 
-	CONSTRAINT uq_snippet_semantic_key UNIQUE (snippet_type, standard_field, statement, aggregation, schema_mapping_id, parameter_value), 
+	CONSTRAINT uq_snippet_semantic_key UNIQUE (snippet_type, standard_field, statement, aggregation, predicate, schema_mapping_id, parameter_value), 
 	CONSTRAINT ck_sql_snippets_snippet_type CHECK (snippet_type IN ('extract', 'constant', 'formula', 'query'))
 );
 

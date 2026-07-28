@@ -120,6 +120,7 @@ class SnippetLibrary:
         standard_field: str | None = None,
         statement: str | None = None,
         aggregation: str | None = None,
+        predicate: str = "",
         parameter_value: str | None = None,
     ) -> SnippetMatch | None:
         """Find snippet by exact semantic key.
@@ -158,6 +159,12 @@ class SnippetLibrary:
         else:
             stmt = stmt.where(SQLSnippetRecord.aggregation.is_(None))
 
+        # DAT-838: NOT NULL with a "" default, so this is a plain equality — no
+        # None branch. "" is the declared "unrestricted", and it must MATCH only
+        # other unrestricted rows: a restricted extract sharing field+statement+
+        # aggregation is a different measurement, not a cache hit.
+        stmt = stmt.where(SQLSnippetRecord.predicate == predicate)
+
         if parameter_value is not None:
             stmt = stmt.where(SQLSnippetRecord.parameter_value == parameter_value)
         else:
@@ -181,6 +188,7 @@ class SnippetLibrary:
         standard_field: str | None = None,
         statement: str | None = None,
         aggregation: str | None = None,
+        predicate: str = "",
         parameter_value: str | None = None,
     ) -> SQLSnippetRecord | None:
         """The retained FAILED snippet for this semantic key (DAT-543), or None.
@@ -196,6 +204,7 @@ class SnippetLibrary:
             standard_field=standard_field,
             statement=statement,
             aggregation=aggregation,
+            predicate=predicate,
             parameter_value=parameter_value,
         )
         return rec if (rec and rec.failure_count > 0) else None
@@ -208,6 +217,7 @@ class SnippetLibrary:
         standard_field: str | None = None,
         statement: str | None = None,
         aggregation: str | None = None,
+        predicate: str = "",
         parameter_value: str | None = None,
     ) -> SQLSnippetRecord | None:
         """Find snippet by key, including failed ones. Used by save_snippet."""
@@ -231,6 +241,12 @@ class SnippetLibrary:
         else:
             stmt = stmt.where(SQLSnippetRecord.aggregation.is_(None))
 
+        # DAT-838: NOT NULL with a "" default, so this is a plain equality — no
+        # None branch. "" is the declared "unrestricted", and it must MATCH only
+        # other unrestricted rows: a restricted extract sharing field+statement+
+        # aggregation is a different measurement, not a cache hit.
+        stmt = stmt.where(SQLSnippetRecord.predicate == predicate)
+
         if parameter_value is not None:
             stmt = stmt.where(SQLSnippetRecord.parameter_value == parameter_value)
         else:
@@ -251,6 +267,7 @@ class SnippetLibrary:
         standard_field: str | None = None,
         statement: str | None = None,
         aggregation: str | None = None,
+        predicate: str = "",
         parameter_value: str | None = None,
         normalized_expression: str | None = None,
         input_fields: list[str] | None = None,
@@ -298,6 +315,7 @@ class SnippetLibrary:
                 standard_field=standard_field,
                 statement=statement,
                 aggregation=aggregation,
+                predicate=predicate,
                 parameter_value=parameter_value,
             )
         elif snippet_type == "formula" and normalized_expression:
@@ -347,6 +365,7 @@ class SnippetLibrary:
                 standard_field=standard_field,
                 statement=statement,
                 aggregation=aggregation,
+                predicate=predicate,
                 schema_mapping_id=schema_mapping_id,
                 parameter_value=parameter_value,
                 normalized_expression=normalized_expression,
@@ -382,6 +401,7 @@ class SnippetLibrary:
         standard_field: str | None = None,
         statement: str | None = None,
         aggregation: str | None = None,
+        predicate: str = "",
         parameter_value: str | None = None,
         provenance: dict[str, Any],
     ) -> SQLSnippetRecord | None:
@@ -419,6 +439,7 @@ class SnippetLibrary:
             standard_field=standard_field,
             statement=statement,
             aggregation=aggregation,
+            predicate=predicate,
             parameter_value=parameter_value,
         )
         if record is None:

@@ -55,6 +55,7 @@ class SQLSnippetRecord(Base):
             "standard_field",
             "statement",
             "aggregation",
+            "predicate",
             "schema_mapping_id",
             "parameter_value",
             name="uq_snippet_semantic_key",
@@ -75,6 +76,19 @@ class SQLSnippetRecord(Base):
     standard_field: Mapped[str | None] = mapped_column(String, nullable=True, index=True)
     statement: Mapped[str | None] = mapped_column(String, nullable=True)
     aggregation: Mapped[str | None] = mapped_column(String, nullable=True)
+    # The extract's DECLARED row restriction (DAT-838, `StepSource.predicate`) — part
+    # of the semantic key, not decoration. Two extracts over the same field, statement
+    # and aggregation that restrict to DIFFERENT rows are different measurements: the
+    # ticket's own example (`bank_transaction_count` unfiltered vs `reconciled_count`
+    # restricted to reconciled rows) collides on every other key column, so without
+    # this the second reuses the first's SQL and the rate is 1.0 by construction —
+    # the very defect the declaration exists to end.
+    #
+    # NOT NULL with a `""` default: a NULLable key column makes the UNIQUE's
+    # ON CONFLICT inference NULLS-DISTINCT, which would let unfiltered rows duplicate
+    # per re-run instead of updating (the same trap `metric_axis_additivity.axis_key`
+    # documents for its `'*'` sentinel).
+    predicate: Mapped[str] = mapped_column(String, nullable=False, default="", server_default="")
     schema_mapping_id: Mapped[str] = mapped_column(String, nullable=False, index=True)
     parameter_value: Mapped[str | None] = mapped_column(String, nullable=True)
 

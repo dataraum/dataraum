@@ -101,6 +101,85 @@ class CycleFamily(Base):
     superseded_at: Mapped[datetime | None] = mapped_column(DateTime)
 
 
+class CycleType(Base):
+    """The workspace's typed cycle-type vocabulary — the shipped declaration (DAT-881).
+
+    Config→DB, the same cut :class:`CycleFamily` (DAT-856) and
+    :class:`~dataraum.analysis.semantic.db_models.Convention` (DAT-789) took: the
+    shipped vertical ``cycles.yaml`` ``cycle_types`` block is the *seed*, normalized
+    into typed rows at connect
+    (:func:`~dataraum.analysis.cycles.cycle_type_store.ensure_cycle_types_seeded`).
+
+    **This is the SHIPPED-BASELINE vocabulary only** — unlike :class:`CycleFamily`,
+    a ``cycle`` type ALSO has a live overlay-teach path (``core.overlay._apply_cycle``
+    upserts a taught cycle into the SAME ``cycle_types`` mapping key). The engine's
+    own cycle judge keeps reading the overlay-inclusive resolved vocabulary via
+    :func:`~dataraum.analysis.cycles.config.get_cycle_types` (shipped ⊕ taught,
+    unchanged by this table). This table serves a DIFFERENT consumer: the cockpit's
+    shipped-only readers (``teach_cycle``'s override-shadow detection, the frame
+    induction few-shot seed) that need to know what the vertical SHIPS, distinct from
+    what a user has since taught — so the seed must read the SHIPPED base only
+    (:meth:`~dataraum.core.vertical_loader.VerticalLoader.shipped_base`), never the
+    overlay-layered ``collection()``, or a taught cycle would land here mislabeled
+    ``source='seed'``.
+
+    **Identity contract — NOT run-versioned (the DAT-728/789/856 pattern).** A cycle
+    type is a stable node keyed by ``(vertical, name)``; ``cycle_type_id`` is a
+    workspace-stable surrogate minted once at seed, NOT a per-run uuid. Edits
+    supersede via ``uq_cycle_type_active`` (at most one active row per key) so a
+    head-free read is unambiguous. Workspace identity IS the ``ws_<id>`` schema (no
+    ``workspace_id`` column); the read surface scopes to the bound
+    ``active_vertical`` (``_VERTICAL_SCOPED`` in ``storage/read_views.py``).
+    """
+
+    __tablename__ = "cycle_types"
+    __table_args__ = (
+        # At most one ACTIVE row per (vertical, name); superseded history rows are
+        # exempt — the same shape as uq_cycle_family_active / uq_convention_active.
+        Index(
+            "uq_cycle_type_active",
+            "vertical",
+            "name",
+            unique=True,
+            postgresql_where=text("superseded_at IS NULL"),
+            sqlite_where=text("superseded_at IS NULL"),
+        ),
+        # Lifecycle-source vocabulary (DAT-802, the two-layer standard): the ONLY
+        # live writer is 'seed' (``cycle_type_store.ensure_cycle_types_seeded``). No
+        # frame/teach writer for THIS table exists — a taught cycle stays in
+        # config_overlay, never promoted here (widening is one line + a re-dump if a
+        # 'frame' writer lands, matching CycleFamily's identical discipline).
+        CheckConstraint("source IS NULL OR source IN ('seed')", name="source"),
+    )
+
+    cycle_type_id: Mapped[str] = mapped_column(
+        String, primary_key=True, default=lambda: str(uuid4())
+    )
+    vertical: Mapped[str] = mapped_column(String, nullable=False)
+    # The cycle type's stable identifier within `vertical` (the cycles.yaml
+    # cycle_types key), e.g. 'accounts_receivable'.
+    name: Mapped[str] = mapped_column(String, nullable=False)
+    description: Mapped[str | None] = mapped_column(Text)
+    # Free string (high/medium/low in every shipped vertical today); no CHECK — the
+    # same unconstrained discipline CycleFamily.directions' labels carry (no engine-
+    # side StrEnum backs it; the cockpit's teach-time zod schema is the closed gate
+    # for AUTHORED rows, irrelevant here since this table has no author writer).
+    business_value: Mapped[str | None] = mapped_column(String)
+    aliases: Mapped[list[str] | None] = mapped_column(JSON)
+    # list of {name, order, indicators} dicts, verbatim off the shipped YAML.
+    typical_stages: Mapped[list[dict[str, Any]] | None] = mapped_column(JSON)
+    completion_indicators: Mapped[list[str] | None] = mapped_column(JSON)
+    feeds_into: Mapped[list[str] | None] = mapped_column(JSON)
+
+    # Lifecycle: workspace-persistent with supersession (NULL superseded_at = active).
+    # Closed vocab: see ck_cycle_types_source — 'seed' is the only live writer.
+    source: Mapped[str | None] = mapped_column(String)
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime, nullable=False, default=lambda: datetime.now(UTC)
+    )
+    superseded_at: Mapped[datetime | None] = mapped_column(DateTime)
+
+
 class DetectedBusinessCycle(Base):
     """A detected business cycle for one operating_model run.
 
@@ -190,5 +269,6 @@ class DetectedBusinessCycle(Base):
 
 __all__ = [
     "CycleFamily",
+    "CycleType",
     "DetectedBusinessCycle",
 ]

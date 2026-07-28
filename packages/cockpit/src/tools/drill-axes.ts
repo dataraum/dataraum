@@ -11,7 +11,7 @@
 // this path anymore.
 //
 // Axes come from TWO catalogs on the node's own fact(s): the slicing agent's
-// curated `current_slice_definitions` (priority, values, context) UNIONED
+// curated `current_slice_definitions` (relevance/interest, values, context) UNIONED
 // with the enriched view's grain-verified `dimension_columns` substrate — the
 // curation is an annotation layer, never a filter (the slicing agent picks a
 // handful; the substrate routinely exposes more grain-safe joined dims).
@@ -61,26 +61,53 @@ export function measureFieldsFromDag(dag: unknown): string[] {
 export interface SliceRowInput {
 	tableId: string | null;
 	columnName: string | null;
-	slicePriority: number | null;
+	// DAT-879: the ordinal `slice_priority` (+ its 1000 floor) is gone. Curation
+	// is now a MEASURED relevance in [0,1] plus the cataloguing agent's absolute
+	// `slice_interest` ('primary' | 'supporting'; null = never judged).
+	sliceRelevance: number | null;
+	sliceInterest: string | null;
 	sliceType: string | null;
 	distinctValues: unknown;
 	valueCount: number | null;
 	businessContext: string | null;
 }
 
+/** Curation order, mirroring the engine's `curated_slices` (DAT-879): judged
+ *  before un-judged, then by measured relevance descending, then by name.
+ *  Un-measured (null relevance) sorts last within its tier rather than winning
+ *  by being treated as zero. */
+const INTEREST_RANK: Record<string, number> = { primary: 0, supporting: 1 };
+
+export function compareSliceRows(a: SliceRowInput, b: SliceRowInput): number {
+	const ra = a.sliceInterest ? (INTEREST_RANK[a.sliceInterest] ?? 2) : 2;
+	const rb = b.sliceInterest ? (INTEREST_RANK[b.sliceInterest] ?? 2) : 2;
+	if (ra !== rb) return ra - rb;
+	const va = a.sliceRelevance ?? -1;
+	const vb = b.sliceRelevance ?? -1;
+	if (va !== vb) return vb - va;
+	return (a.columnName ?? "").localeCompare(b.columnName ?? "");
+}
+
 /**
- * Slice rows → axes (pure): drop rows without a column name, dedupe by column
- * keeping the best (lowest) priority — a dimension cataloged on several facts
- * of the same node is ONE axis — and narrow `distinct_values` to strings.
- * Callers pass rows already priority-ordered; the dedupe preserves that order.
+ * Slice rows → axes (pure): drop rows without a column name, dedupe by column —
+ * a dimension cataloged on several facts of the same node is ONE axis — and
+ * narrow `distinct_values` to strings.
+ *
+ * Rows are sorted here by the curation order (DAT-879) rather than trusting the
+ * caller's ordering, and `DrillAxis.priority` becomes the POSITIONAL rank in
+ * that order. The field keeps its existing contract exactly — lower is better,
+ * `MAX_SAFE_INTEGER` means "no curation signal" for substrate-only axes — so
+ * every downstream consumer of `priority` is untouched by the schema change.
+ * What changed is only where the number comes from: a measured, comparable
+ * ordering instead of an ordinal the LLM emitted per request.
  */
 export function axesFromSliceRows(rows: SliceRowInput[]): DrillAxis[] {
 	const byColumn = new Map<string, DrillAxis>();
-	for (const r of rows) {
+	for (const r of [...rows].sort(compareSliceRows)) {
 		if (!r.columnName || byColumn.has(r.columnName)) continue;
 		byColumn.set(r.columnName, {
 			column: r.columnName,
-			priority: r.slicePriority ?? Number.MAX_SAFE_INTEGER,
+			priority: byColumn.size,
 			sliceType: r.sliceType ?? "categorical",
 			values: Array.isArray(r.distinctValues)
 				? r.distinctValues.filter((v): v is string => typeof v === "string")
@@ -587,7 +614,8 @@ export async function resolveDrillAxes(
 			.select({
 				tableId: currentSliceDefinitions.tableId,
 				columnName: currentSliceDefinitions.columnName,
-				slicePriority: currentSliceDefinitions.slicePriority,
+				sliceRelevance: currentSliceDefinitions.sliceRelevance,
+				sliceInterest: currentSliceDefinitions.sliceInterest,
 				sliceType: currentSliceDefinitions.sliceType,
 				distinctValues: currentSliceDefinitions.distinctValues,
 				valueCount: currentSliceDefinitions.valueCount,
@@ -595,7 +623,12 @@ export async function resolveDrillAxes(
 			})
 			.from(currentSliceDefinitions)
 			.where(inArray(currentSliceDefinitions.tableId, factIds))
-			.orderBy(asc(currentSliceDefinitions.slicePriority)),
+			// Ordering is applied in `axesFromSliceRows` (the interest tier is a
+			// vocabulary, not a sortable column); this keeps the fetch stable.
+			.orderBy(
+				desc(currentSliceDefinitions.sliceRelevance),
+				asc(currentSliceDefinitions.columnName),
+			),
 		metadataDb
 			.select({
 				status: currentDriverRankings.status,

@@ -214,6 +214,7 @@ describe("formatCatalog (DAT-538 dimension catalog block)", () => {
 				tableId: "t1",
 				columnId: "col-acct",
 				columnName: "account_type",
+				valueCount: 3,
 				distinctValues: ["Sales Revenue", "COGS", "SG&A"],
 			},
 		];
@@ -226,6 +227,28 @@ describe("formatCatalog (DAT-538 dimension catalog block)", () => {
 		expect(block).not.toContain("Sales Revenue");
 	});
 
+	it("counts from the MEASURED value_count, not the stored value list (DAT-879)", () => {
+		// The stored `distinct_values` is a bounded echo — the cataloguing agent
+		// listed 3 of a 500-value axis. Rendering its LENGTH announced "(3 values)"
+		// for a dimension with 500, which is the DAT-622 class of silent lie: the
+		// number looked measured and was not.
+		const block = formatCatalog(
+			[
+				{
+					tableId: "t1",
+					columnId: "col-acct",
+					columnName: "account_code",
+					valueCount: 500,
+					distinctValues: ["1000", "1200", "1400"],
+				},
+			],
+			[],
+			addr,
+		);
+		expect(block).toContain('"account_code" (500 values)');
+		expect(block).not.toContain("(3 values)");
+	});
+
 	it("serves count + id only — never the value-set, regardless of size (DAT-621)", () => {
 		const many = Array.from({ length: 45 }, (_, i) => `v${i}`);
 		const block = formatCatalog(
@@ -234,17 +257,87 @@ describe("formatCatalog (DAT-538 dimension catalog block)", () => {
 					tableId: "t1",
 					columnId: "col-code",
 					columnName: "code",
+					valueCount: 45,
 					distinctValues: many,
 				},
 			],
 			[],
 			addr,
 		);
-		// Honest count (value_count == complete set size, low-card by construction); the
-		// values themselves are drilled via look_values(col-code), never inlined here.
+		// Honest count (the engine's measured COUNT(DISTINCT)); the values themselves
+		// are drilled via look_values(col-code), never inlined here.
 		expect(block).toContain("(45 values) [id: col-code]");
 		expect(block).not.toContain("v44");
 		expect(block).not.toContain("more");
+	});
+
+	it("shows measured relevance, and omits it when unmeasured (DAT-879)", () => {
+		const block = formatCatalog(
+			[
+				{
+					tableId: "t1",
+					columnId: "col-a",
+					columnName: "region",
+					valueCount: 4,
+					relevance: 0.94,
+					interest: "primary",
+				},
+				{
+					tableId: "t1",
+					columnId: "col-b",
+					columnName: "unprofiled",
+					valueCount: 2,
+					relevance: null,
+				},
+			],
+			[],
+			addr,
+		);
+		expect(block).toContain('"region" (4 values), relevance 0.94, primary');
+		// No profile ⇒ no number. Printing 0.00 would assert the axis resolves
+		// nothing when in truth nothing measured it.
+		expect(block).toContain('"unprofiled" (2 values) [id: col-b]');
+		expect(block).not.toContain("relevance 0.00");
+	});
+
+	it("states how many catalogued dimensions it is NOT showing (DAT-622)", () => {
+		const block = formatCatalog(
+			[
+				{
+					tableId: "t1",
+					columnId: "col-a",
+					columnName: "region",
+					valueCount: 4,
+					relevance: 0.9,
+					interest: "primary",
+				},
+			],
+			[],
+			addr,
+			{ total: 40, served: 1 },
+		);
+		expect(block).toContain("Showing 1 of 40 catalogued dimensions");
+		// The REASON, not just the number: "dropped" invites the agent to assume
+		// the tail was junk, when in fact nothing assessed it.
+		expect(block).toContain("NOT judged");
+	});
+
+	it("says nothing about curation when it served everything (DAT-622)", () => {
+		const block = formatCatalog(
+			[
+				{
+					tableId: "t1",
+					columnId: "col-a",
+					columnName: "region",
+					valueCount: 4,
+				},
+			],
+			[],
+			addr,
+			{ total: 1, served: 1 },
+		);
+		expect(block).not.toContain("Showing");
+		expect(block).not.toContain("catalogued dimensions");
 	});
 
 	it("renders a CONFIRMED alias group as canonical ≡ others (group by canonical)", () => {

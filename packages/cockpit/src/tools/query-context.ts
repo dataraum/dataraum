@@ -327,15 +327,19 @@ export async function buildSchemaBlock(): Promise<string> {
 // columns worth grouping by. (A near-unique GROUP BY is handled separately, as a
 // run-time caveat in grain-note.ts — not here, and never as a block.)
 //
-// CURATED read (DAT-725): the engine persists the FULL deterministic dimension
-// inventory now (every grain-safe non-measure/non-timestamp column; the slicing
-// agent only ranks). This `<dimensions>` block stays curated: top-priority
-// budget only (`slice_priority` ascending, 1 = most interesting; un-ranked rows
-// carry a priority floor), `column_name` tiebreak for a deterministic cut.
-
-// Mirrors the engine's `CURATED_SLICE_BUDGET` (analysis/slicing/models.py) —
-// the deployed ranking budget (`phases/slicing.yaml` max_recommendations: 12).
-const CURATED_SLICE_BUDGET = 12;
+// CURATED read (DAT-725/DAT-879): the engine persists the FULL deterministic
+// dimension inventory (every grain-safe non-measure/non-timestamp column; the
+// slicing agent only judges). This `<dimensions>` block stays curated, but the
+// cut is now describable: serve the axes the agent JUDGED (`slice_interest`
+// non-null), ordered by the engine's MEASURED `slice_relevance` (coverage x
+// evenness, in [0,1] — comparable across tables and across slice types), and
+// TELL the sub-agent how many catalogued axes it is not seeing.
+//
+// This replaces a bare `LIMIT 12` mirroring the engine's CURATED_SLICE_BUDGET.
+// That cut was silent, and because every un-judged row tied at the engine's
+// priority floor, the `column_name` tiebreak filled the rest of the budget
+// alphabetically — the block claimed to list the workspace's natural analysis
+// dimensions while listing them A to Z past the judged ones.
 
 /** One catalogued slice axis (a natural analysis dimension). */
 export interface CatalogAxisRow {
@@ -348,7 +352,22 @@ export interface CatalogAxisRow {
 	// DAT-621: the dimension's distinct VALUE COUNT only — the cardinality, not the
 	// values. No samples: a sample would bias the agent toward the shown subset (the
 	// silently-wrong trap). The agent drills the COMPLETE set via look_values(columnId).
+	//
+	// DAT-879: the count comes from `value_count` — the engine's measured
+	// COUNT(DISTINCT) — NOT `distinctValues.length`. The stored list is a bounded
+	// echo, so rendering its length announced "(2 values)" for a 500-value axis.
+	valueCount?: number | null;
 	distinctValues?: string[] | null;
+	/** Engine-measured relevance in [0,1] (coverage x evenness); null = unmeasured. */
+	relevance?: number | null;
+	/** The cataloguing agent's absolute judgment: 'primary' | 'supporting'. */
+	interest?: string | null;
+}
+
+/** What a curated catalog read left out, so the block can say so (DAT-622). */
+export interface CatalogCuration {
+	total: number;
+	served: number;
 }
 
 /** One dimension hierarchy: an `alias` group (1:1 redundant columns) or a
@@ -405,6 +424,7 @@ export function formatCatalog(
 	axisRows: CatalogAxisRow[],
 	hierarchyRows: CatalogHierarchyRow[],
 	tableAddressById: Map<string, string>,
+	curation?: CatalogCuration,
 ): string {
 	if (axisRows.length === 0 && hierarchyRows.length === 0) {
 		return "<dimensions>\n(No catalogued dimensions yet.)\n</dimensions>";
@@ -423,17 +443,28 @@ export function formatCatalog(
 		return b;
 	};
 	for (const a of axisRows) {
-		const values = Array.isArray(a.distinctValues)
-			? a.distinctValues.filter((v): v is string => v != null).map(String)
-			: [];
 		// DAT-621: name + value-COUNT + the column_id — never the values themselves. NO
 		// samples: a sample biases the agent toward the shown subset (the silently-wrong
 		// trap). The sub-agent has look_values now, so it DRILLS the complete value-set on
-		// demand via the id and grounds an IN(...) over what comes back. value_count is the
-		// honest complete-set size (slice dims are low-card by construction).
-		const count = values.length ? ` (${values.length} values)` : "";
+		// demand via the id and grounds an IN(...) over what comes back.
+		//
+		// DAT-879: the count is the engine's MEASURED distinct count. It used to be
+		// `distinctValues.length` — the length of a bounded stored echo — so a
+		// 500-value axis advertised itself as having however many values the
+		// cataloguing agent happened to list.
+		const count =
+			typeof a.valueCount === "number" ? ` (${a.valueCount} values)` : "";
+		// The measured relevance, shown rather than implied by list position, so the
+		// agent can weigh two axes instead of trusting an order it cannot see the
+		// basis for. Omitted when unmeasured — printing 0.00 would assert the axis
+		// resolves nothing when in truth nothing measured it.
+		const rel =
+			typeof a.relevance === "number"
+				? `, relevance ${a.relevance.toFixed(2)}`
+				: "";
+		const interest = a.interest ? `, ${a.interest}` : "";
 		bucket(a.tableId).dimensions.push(
-			`"${a.columnName}"${count} [id: ${a.columnId}]`,
+			`"${a.columnName}"${count}${rel}${interest} [id: ${a.columnId}]`,
 		);
 	}
 	for (const h of hierarchyRows) {
@@ -453,6 +484,18 @@ export function formatCatalog(
 			return lines.join("\n");
 		});
 
+	// State the cut (DAT-622). An agent told "these are the workspace's natural
+	// analysis dimensions", with no sign that forty more exist, reasons as if the
+	// list is the whole catalog — and concludes an axis is unavailable when it is
+	// merely un-judged. Name the reason, not just the number.
+	const curationNote =
+		curation && curation.total > curation.served
+			? `\n\nShowing ${curation.served} of ${curation.total} catalogued dimensions — ` +
+				`the other ${curation.total - curation.served} were catalogued but NOT judged ` +
+				"business-relevant by the cataloguing agent. They are usable axes that were " +
+				"never assessed, not axes assessed and rejected; ask the user if you need one."
+			: "";
+
 	return (
 		"<dimensions>\n" +
 		"The workspace's natural analysis dimensions per table, and how they relate. " +
@@ -460,11 +503,14 @@ export function formatCatalog(
 		"same axis). A possible-alias marked UNCONFIRMED is NOT a confirmed same-axis pair — " +
 		"treat those columns as distinct dimensions; never collapse or group them together. " +
 		"To answer at a coarser level, roll a drill-down chain up along " +
-		"its listed order. Each dimension shows its distinct-value COUNT and its [id: …] " +
-		"— not the values themselves. To ground a filter on one, call look_values with " +
-		"that id to fetch its exact values, then build an IN (...) over them. Never guess " +
-		"a value or match by substring.\n\n" +
-		`${tableBlocks.join("\n\n")}\n` +
+		"its listed order. Each dimension shows its distinct-value COUNT, its measured " +
+		"relevance (coverage x evenness, 0-1 — how much of the data the axis actually " +
+		"resolves; comparable across tables), and its [id: …] — not the values " +
+		"themselves. Relevance says an axis is USABLE, not that it answers the " +
+		"question; pick by the question first. To ground a filter on one, call " +
+		"look_values with that id to fetch its exact values, then build an IN (...) " +
+		"over them. Never guess a value or match by substring.\n\n" +
+		`${tableBlocks.join("\n\n")}${curationNote}\n` +
 		"</dimensions>"
 	);
 }
@@ -477,19 +523,24 @@ export function formatCatalog(
  */
 export async function buildCatalogBlock(): Promise<string> {
 	const [axisRows, hierarchyRows, tableRows] = await Promise.all([
+		// The FULL catalog — the curation happens below, in code, so the count of
+		// what was left out is knowable and can be stated. A `LIMIT` here would
+		// throw that away, which is how the silent cap worked.
 		metadataDb
 			.select({
 				tableId: currentSliceDefinitions.tableId,
 				columnId: currentSliceDefinitions.columnId,
 				columnName: currentSliceDefinitions.columnName,
+				valueCount: currentSliceDefinitions.valueCount,
 				distinctValues: currentSliceDefinitions.distinctValues,
+				relevance: currentSliceDefinitions.sliceRelevance,
+				interest: currentSliceDefinitions.sliceInterest,
 			})
 			.from(currentSliceDefinitions)
 			.orderBy(
-				asc(currentSliceDefinitions.slicePriority),
+				desc(currentSliceDefinitions.sliceRelevance),
 				asc(currentSliceDefinitions.columnName),
-			)
-			.limit(CURATED_SLICE_BUDGET),
+			),
 		metadataDb
 			.select({
 				tableId: currentDimensionHierarchies.tableId,
@@ -520,17 +571,27 @@ export async function buildCatalogBlock(): Promise<string> {
 			]),
 	);
 
+	const catalogued = axisRows.filter(
+		(a) => a.tableId && a.columnId && a.columnName,
+	);
+	// Serve the JUDGED axes; fall back to the whole catalog when nothing carries a
+	// judgment (the engine's ranker-skipped modes), since serving nothing would
+	// hide the catalog entirely. Mirrors the engine's `curated_slices`.
+	const judged = catalogued.filter((a) => a.interest != null);
+	const served = judged.length > 0 ? judged : catalogued;
+
 	return formatCatalog(
-		axisRows
-			.filter((a) => a.tableId && a.columnId && a.columnName)
-			.map((a) => ({
-				tableId: a.tableId as string,
-				columnId: a.columnId as string,
-				columnName: a.columnName as string,
-				distinctValues: Array.isArray(a.distinctValues)
-					? (a.distinctValues as string[])
-					: null,
-			})),
+		served.map((a) => ({
+			tableId: a.tableId as string,
+			columnId: a.columnId as string,
+			columnName: a.columnName as string,
+			valueCount: a.valueCount ?? null,
+			distinctValues: Array.isArray(a.distinctValues)
+				? (a.distinctValues as string[])
+				: null,
+			relevance: a.relevance ?? null,
+			interest: a.interest ?? null,
+		})),
 		hierarchyRows
 			.filter((h) => h.tableId)
 			.map((h) => ({
@@ -543,6 +604,7 @@ export async function buildCatalogBlock(): Promise<string> {
 				needsConfirmation: h.needsConfirmation ?? null,
 			})),
 		tableAddressById,
+		{ total: catalogued.length, served: served.length },
 	);
 }
 

@@ -255,6 +255,11 @@ def test_current_groundings_shape() -> None:
     assert "s.standard_field AS concept" in sql
     assert "s.parts->'from'->>0 AS relation" in sql
     assert "(s.failure_count > 0) AS failed" in sql
+    # DAT-887: the resolved reporting instant is part of that same read contract —
+    # the eval attributes period error by reading it, so it must be a column, not a
+    # JSON path the consumer has to know how to walk.
+    assert "s.parts->'period_binding'->>'as_of' AS resolved_period" in sql
+    assert "s.parts->'period_binding'->>'calendar_source' AS calendar_source" in sql
 
 
 def test_current_tables_returns_promoted_typed_representative_only() -> None:

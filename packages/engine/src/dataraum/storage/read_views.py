@@ -501,6 +501,18 @@ def _current_entity_view_statements() -> list[tuple[str, str]]:
                 f"       s.parts->'from'->>0 AS relation,\n"
                 f"       s.parts->'select'->0->>'expr' AS select_expr,\n"
                 f"       (s.parts->'where')::text AS where_predicates,\n"
+                # DAT-887: the reporting instant a POINT-IN-TIME extract resolved to,
+                # un-nested so a consumer can read WHICH period a stock value is for
+                # without parsing the snippet's SQL or its parts JSON. NULL on a flow
+                # (no instant applies) and NULL when the instant could not be resolved
+                # — that case discloses itself as a typed assumption on the grounding's
+                # provenance, so a NULL here is never mistaken for a clean binding.
+                # ``calendar_source`` travels with it ('declared' vs the stamped
+                # calendar-year 'default') so a declared fiscal year stays
+                # distinguishable from an assumed one.
+                f"       s.parts->'period_binding'->>'as_of' AS resolved_period,\n"
+                f"       s.parts->'period_binding'->>'window_close' AS reporting_window_close,\n"
+                f"       s.parts->'period_binding'->>'calendar_source' AS calendar_source,\n"
                 f"       s.description,\n"
                 f"       s.sql,\n"
                 f"       s.parts,\n"

@@ -32,6 +32,7 @@ from dataraum.graphs.context import (
     ConceptContext,
     GraphExecutionContext,
     TableContext,
+    format_served_context,
 )
 from dataraum.llm.providers.base import ConversationResponse
 
@@ -253,6 +254,29 @@ def test_temporal_form_states_undetermined_measures_positively() -> None:
     assert "unknown_measure" in rendered
     assert "a stated absence, not 'flow'" in rendered
     assert "grounds no cross-measure comparison at all" in rendered
+
+
+def test_shared_assembler_leaves_a_missing_verdict_blank() -> None:
+    """WHY this renderer exists (DAT-874): the shared catalog states a missing
+    verdict as an EMPTY CELL, so the absence is legible only as an omission.
+
+    Pins the premise, not just the remedy. If ``format_served_context`` ever starts
+    stating the absence itself, this fails loud — and the signal then is to DELETE
+    the undetermined half of ``_render_temporal_form`` rather than serve one fact
+    from two homes.
+    """
+    ctx = GraphExecutionContext(tables=[_measures_table(_measure("unknown_measure", None))])
+    catalog = format_served_context(ctx)
+
+    row = next(line for line in catalog.splitlines() if line.startswith("| unknown_measure |"))
+    # | Column | Type | Role | Materialization | Notes | — cell 4 is the verdict.
+    assert row.split("|")[4].strip() == ""
+    assert "UNDETERMINED" not in catalog
+
+    # The induction-owned block names the same column instead of blanking it.
+    served = _render_temporal_form(ctx)
+    assert "NO temporal-form verdict — UNDETERMINED" in served
+    assert "unknown_measure" in served
 
 
 def test_temporal_form_ignores_unverdicted_non_measures() -> None:

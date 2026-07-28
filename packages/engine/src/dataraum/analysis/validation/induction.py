@@ -365,6 +365,26 @@ def _render_temporal_form(context: GraphExecutionContext) -> str:
     An UNDETERMINED entry is listed only for a MEASURE-role column, where the gap
     is decision-relevant; a verdict is listed wherever one exists, so a served fact
     is never hidden by a missing role label.
+
+    **The UNDETERMINED list is not exhaustive, by inheritance.** It keys on
+    ``ColumnContext.materialization`` — the ``og_columns`` graph surface, whose
+    expression COALESCEs ``measure_aggregation_lineage.pattern`` AHEAD of
+    ``column_concepts.temporal_behavior`` (``storage/property_graph.py``). The
+    lineage pattern is non-NULL whenever a lineage row exists, while the resolved
+    ``temporal_behavior`` is deliberately cleared to NULL when the resolve pass
+    abstains on ignorance. So a measure the resolve layer ABSTAINED on still
+    presents a verdict here and never reaches the ``elif`` above: the graph surface
+    does not inherit resolve's fail-closed abstention. Listing a measure is
+    therefore evidence its form was stated somewhere; NOT listing one is not
+    evidence the form is known — which is why the header below claims authority
+    only over prose, and never that the list is complete. Narrowing the seam itself
+    means changing that view, which also moves the answer agent and
+    ``graphs/period_resolver.py``; it is parked, not fixed here (DAT-847 territory).
+
+    The divergence has a neighbour in this same package: ``resolver.py``'s binder
+    schema reads ``ColumnConcept.temporal_behavior`` directly and so DOES honour the
+    abstention, while this render reads the graph surface — for an abstained-with-
+    lineage measure the two seams can state opposite things about one column.
     """
     lines: list[str] = []
     for table in context.tables:
@@ -378,17 +398,17 @@ def _render_temporal_form(context: GraphExecutionContext) -> str:
         parts: list[str] = []
         if "flow" in by_form:
             parts.append(
-                f"flow (a per-period movement, additive across periods): "
+                "flow (a per-period movement, additive across periods): "
                 f"{', '.join(by_form['flow'])}"
             )
         if "stock" in by_form:
             parts.append(
-                f"stock (a level as of its period, never summed across periods): "
+                "stock (a level as of its period, never summed across periods): "
                 f"{', '.join(by_form['stock'])}"
             )
         if undetermined:
             parts.append(
-                f"NO temporal-form verdict — UNDETERMINED (a stated absence, not "
+                "NO temporal-form verdict — UNDETERMINED (a stated absence, not "
                 f"'flow'): {', '.join(undetermined)}"
             )
         if parts:
@@ -397,10 +417,11 @@ def _render_temporal_form(context: GraphExecutionContext) -> str:
         return ""
     return (
         "\n## Temporal form of the measures\n"
-        "The catalog's resolved per-column stock/flow verdict — AUTHORITATIVE over any "
-        "column name, description, or hint prose. Two measures compare only when both "
-        "sides are the same KIND of quantity (the temporal-form rule); a measure listed "
-        "as UNDETERMINED grounds no cross-measure comparison at all.\n" + "\n".join(lines)
+        "The catalog's per-column stock/flow verdicts as measured. Where a form is "
+        "stated it OVERRIDES any column name, description, or hint prose that says "
+        "otherwise, and a measure listed as UNDETERMINED grounds no cross-measure "
+        "comparison at all. Two measures compare only when both sides are the same "
+        "KIND of quantity (the temporal-form rule).\n" + "\n".join(lines)
     )
 
 

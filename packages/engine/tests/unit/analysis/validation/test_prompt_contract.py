@@ -90,8 +90,13 @@ def test_induction_temporal_form_floor_is_pinned(induction: PromptTemplate) -> N
     """DAT-874: a movement is never proposed directly against a level, and the
     coherent alternatives are named so the rule redirects instead of only forbidding.
 
-    The floor shipped prompt-only, with nothing pinning it — a later revision could
-    have dropped it and only an eval run would have noticed.
+    The floor shipped pinned only by a header-phrase anchor
+    (``test_prompt_render_smoke.test_temporal_form_coherence_rule_is_pinned``, which
+    asserts the string "TEMPORAL-FORM coherence" survives rendering). That catches a
+    DELETED rule and nothing else: an edit keeping the anchor and replacing the body
+    with "use your judgment." was executed against it and stayed GREEN, while the
+    body assertions below went red. An anchor proves a heading exists; these prove
+    the discipline still says something.
     """
     system = _flat(induction.system_prompt)
     assert "TEMPORAL-FORM coherence" in system
@@ -131,10 +136,11 @@ def test_binder_temporal_form_floor_is_pinned(binder: PromptTemplate) -> None:
     )
     assert "the CHANGE in the level between consecutive periods" in system
     assert "movement history is complete from the level's origin" in system
-    assert "If neither coherent form is groundable from the served facts, set can_validate=false" in (
-        system
+    assert (
+        "If neither coherent form is groundable from the served facts, "
+        "set can_validate=false" in system
     )
-    assert "Never aggregate a point_in_time column across periods." in _flat(system)
+    assert "Never aggregate a point_in_time column across periods." in system
 
 
 def test_validation_prompts_carry_no_domain_vocabulary() -> None:

@@ -15,6 +15,7 @@ import pytest
 from sqlalchemy import select
 from sqlalchemy.orm import Session
 
+from dataraum.analysis.semantic.db_models import SemanticAnnotation
 from dataraum.analysis.validation.db_models import Validation
 from dataraum.analysis.validation.induction import Membership
 from dataraum.analysis.validation.models import ValidationSeverity, ValidationSpec
@@ -182,6 +183,47 @@ class TestValidationInductionPhase:
         assert result.status == PhaseStatus.COMPLETED
         assert result.outputs["outcome"] == "no_vertical"
         assert result.outputs["generated"] == 0
+
+    def test_serving_composition_reaches_the_induction_prompt(
+        self, session, duckdb_conn, workspace_table, _mock_llm
+    ) -> None:
+        """The induction-owned fact sections are COMPOSED, not merely renderable.
+
+        Every other case in this file patches ``_SERVE_TARGET``, so the composition in
+        ``build_served_context`` is never executed — deleting a render call from it
+        left the whole suite green. This case runs the real assembler and asserts the
+        sections arrive in the string ``induce`` is handed.
+
+        Serves a measure-role annotation with no stock/flow verdict, which is the
+        realistic state here: the graph surface those verdicts come from is
+        Postgres-only (SQL/PGQ), so on this fixture every column is unverdicted — the
+        UNDETERMINED path (DAT-874) is exactly what a caller sees, and its rendering
+        is what proves the wiring.
+        """
+        session.add(
+            SemanticAnnotation(
+                column_id=session.execute(
+                    select(Column.column_id).where(Column.table_id == workspace_table.table_id)
+                ).scalar_one(),
+                run_id="sem-run",
+                semantic_role="measure",
+            )
+        )
+        session.commit()
+
+        with patch(_INDUCE_TARGET, return_value=Result.ok([])) as induce:
+            result = ValidationInductionPhase()._run(
+                _make_ctx(session, duckdb_conn, [workspace_table.table_id])
+            )
+
+        assert result.status == PhaseStatus.COMPLETED
+        served_graph = induce.call_args.args[0]
+        # DAT-874: the temporal-form block, naming the unverdicted measure.
+        assert "## Temporal form of the measures" in served_graph
+        assert "NO temporal-form verdict — UNDETERMINED" in served_graph
+        assert "amount" in served_graph
+        # DAT-876 inherited the same coverage gap — one assertion closes it too.
+        assert "## Existence-check universe" in served_graph
 
     def test_missing_workspace_id_fails_loud(
         self, session, duckdb_conn, workspace_table, _mock_llm

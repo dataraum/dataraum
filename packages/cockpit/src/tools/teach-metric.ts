@@ -18,17 +18,15 @@
 // model can lean on, and (2) the override SHADOWING affordance: declaring with a
 // shipped metric's graph_id is an upsert-REPLACE, surfaced visibly, never silent.
 
-import { readdir, readFile } from "node:fs/promises";
-import { join } from "node:path";
 import { toolDefinition } from "@tanstack/ai";
+import { isNull } from "drizzle-orm";
 import { z } from "zod";
 
-import { config } from "../config";
+import { metricDagRead } from "../db/metadata/read-surface";
 import {
 	findShadowedMetric,
 	MetricSpecSchema,
 	metricSummary,
-	narrowShippedMetric,
 	type ShippedMetricSpec,
 	type ShippedMetricSummary,
 } from "./metric-spec";
@@ -51,47 +49,55 @@ export interface TeachMetricResult {
 }
 
 /**
- * Read the metric graphs a vertical SHIPS on disk (verticals/<v>/metrics/**​/*.yaml),
- * narrowed to ShippedMetricSpec (summary fields + the DAG body). ONE reader for
- * both jobs: the frame SEED reads the DAG structure as few-shot, the teach SHADOW
- * matches by `graph_id`. Metrics are a DIRECTORY (like validations, unlike cycles'
- * ONE cycles.yaml) nested by category (e.g. profitability/ebitda.yaml), so this
- * walks RECURSIVELY (mirrors the engine's `_read_metric_dir` rglob). Bun's YAML is
- * imported lazily so merely importing this tool doesn't pull "bun" into the
- * node-run test workers. A missing/unreadable directory yields []; a single
- * unreadable file is skipped, never sinking the whole read.
+ * Read the metric graphs a vertical SHIPS, from the typed metric-DAG home
+ * (DAT-882, config→DB) — ShippedMetricSpec (summary fields + the DAG body). ONE
+ * reader for both jobs: the frame SEED reads the DAG structure as few-shot, the
+ * teach SHADOW matches by `graph_id`. `vertical` stays in the signature for
+ * interface stability, but the query itself doesn't filter on it: the mirrored
+ * view is ALREADY scoped to the workspace's bound active_vertical (storage/
+ * read_views.py's `_vertical_scoped_view_sql`), the same safety property
+ * `prompts/conventions.ts`'s `buildConventionsBlock` relies on.
+ *
+ * The metadata client is imported lazily (it constructs the reader-role SQL
+ * client at module scope): a static import would pull it into every consumer of
+ * this module + the node-run vitest workers.
  *
  * Degradation note: a swallowed read failure makes an actual override LOOK like a
  * fresh declaration in the rail hint (`override:false`) — but the override itself
  * is unaffected (the engine applier upsert-replaces by `graph_id` regardless; it
- * is the source of truth). Only the visible-override label degrades, and only when
- * the config tree is unreadable — which in the live stack it never is (bind-mounted
- * read-only). */
+ * is the source of truth). Only the visible-override label degrades, and only on
+ * a metadata-read blip — the same best-effort contract `buildConventionsBlock`
+ * documents (unlike the retired per-file fs read, a single malformed row isn't a
+ * distinct failure mode a typed column read can produce). */
 export async function readShippedMetrics(
-	vertical: string,
+	_vertical: string,
 ): Promise<ShippedMetricSpec[]> {
-	const dir = join(config.dataraumConfigPath, "verticals", vertical, "metrics");
-	let files: string[];
 	try {
-		// Recursive: metric YAMLs are nested by category. `recursive` yields paths
-		// relative to `dir`, including the subdirectory prefix.
-		files = await readdir(dir, { encoding: "utf8", recursive: true });
+		const { metadataDb } = await import("#/db/metadata/client");
+		const rows = await metadataDb
+			.select({
+				graphId: metricDagRead.graphId,
+				name: metricDagRead.name,
+				description: metricDagRead.description,
+				category: metricDagRead.category,
+				output: metricDagRead.output,
+				dependencies: metricDagRead.dependencies,
+			})
+			.from(metricDagRead)
+			.where(isNull(metricDagRead.supersededAt));
+		return rows
+			.filter((r): r is typeof r & { graphId: string } => Boolean(r.graphId))
+			.map((r) => ({
+				graph_id: r.graphId,
+				name: r.name ?? null,
+				description: r.description ?? null,
+				category: r.category ?? null,
+				output: r.output ?? null,
+				dependencies: r.dependencies ?? null,
+			}));
 	} catch {
 		return [];
 	}
-	const { YAML } = await import("bun");
-	const specs: ShippedMetricSpec[] = [];
-	for (const file of files) {
-		if (!file.endsWith(".yaml") && !file.endsWith(".yml")) continue;
-		try {
-			const text = await readFile(join(dir, file), "utf8");
-			const spec = narrowShippedMetric(YAML.parse(text));
-			if (spec) specs.push(spec);
-		} catch {
-			// A single unreadable/unparseable file must not sink the whole read.
-		}
-	}
-	return specs;
 }
 
 /**

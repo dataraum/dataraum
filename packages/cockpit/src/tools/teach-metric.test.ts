@@ -1,13 +1,12 @@
 // Unit tests for teach_metric (DAT-466). Pure — the schema + the shadow
-// detection run with no DB and no config tree. The DB-bound write path reuses
-// `teach()` (covered by the teach integration smoke); the live config-tree read
-// is browser/integration-smoke territory. What this guards:
+// detection run with no DB. The DB-bound write path reuses `teach()` (covered by
+// the teach integration smoke); the live typed-table read (`readShippedMetrics`,
+// DAT-882) has its own DB-mock coverage in teach-metric-shipped-read.test.ts.
+// What this guards:
 //   - the spec input is a top-level object whose `dependencies` is a DAG of typed
 //     steps; the schema is GUIDING (the engine GraphLoader is the final
 //     validator) so it accepts a valid graph and rejects only the hard requireds
 //     (graph_id, metadata.name);
-//   - the shadow narrowing turns a shipped metric YAML into the summary shape,
-//     reading metadata.name/description/category;
 //   - findShadowedMetric is an exact graph_id match → the override flag is honest.
 
 import { beforeEach, describe, expect, it, vi } from "vitest";
@@ -15,17 +14,14 @@ import { beforeEach, describe, expect, it, vi } from "vitest";
 import {
 	findShadowedMetric,
 	MetricSpecSchema,
-	narrowShippedMetric,
 	type ShippedMetricSpec,
 } from "./metric-spec";
 import { teach } from "./teach";
 import { teachMetric } from "./teach-metric";
 
-// Mock the shared overlay-write path and the env config so importing the tool
-// (which evals `../config` + `./teach` at load) doesn't pull the DB/boot. vitest
-// hoists these above the imports above. The shipped-metric reader is injected per
-// call (no fs/bun mock needed).
-vi.mock("#/config", () => ({ config: { dataraumConfigPath: "/unused" } }));
+// Mock the shared overlay-write path so importing the tool doesn't pull the DB.
+// vitest hoists this above the imports above. The shipped-metric reader is
+// injected per call (no DB mock needed here).
 vi.mock("#/tools/teach", () => ({ teach: vi.fn() }));
 
 const MINIMAL = {
@@ -133,49 +129,6 @@ describe("MetricSpecSchema (DAT-466)", () => {
 		expect(
 			MetricSpecSchema.safeParse({ ...MINIMAL, vertical: "" }).success,
 		).toBe(false);
-	});
-});
-
-describe("narrowShippedMetric (DAT-466)", () => {
-	it("narrows a parsed metric YAML to metadata.* AND the DAG body", () => {
-		const spec = narrowShippedMetric({
-			graph_id: "ebitda",
-			version: "1.0",
-			metadata: {
-				name: "EBITDA",
-				description: "Earnings before interest, taxes, D&A.",
-				category: "profitability",
-			},
-			// the DAG body is KEPT (the frame seed needs the structure)
-			output: { type: "scalar" },
-			dependencies: { revenue: { type: "extract" } },
-			interpretation: { ranges: [] },
-		});
-		expect(spec).toEqual({
-			graph_id: "ebitda",
-			name: "EBITDA",
-			description: "Earnings before interest, taxes, D&A.",
-			category: "profitability",
-			output: { type: "scalar" },
-			dependencies: { revenue: { type: "extract" } },
-		});
-	});
-
-	it("returns null for a doc with no graph_id (not a metric file)", () => {
-		expect(narrowShippedMetric({ metadata: { name: "x" } })).toBeNull();
-		expect(narrowShippedMetric(null)).toBeNull();
-		expect(narrowShippedMetric(undefined)).toBeNull();
-	});
-
-	it("coalesces a missing/non-object metadata to null fields", () => {
-		expect(narrowShippedMetric({ graph_id: "x" })).toEqual({
-			graph_id: "x",
-			name: null,
-			description: null,
-			category: null,
-			output: null,
-			dependencies: null,
-		});
 	});
 });
 

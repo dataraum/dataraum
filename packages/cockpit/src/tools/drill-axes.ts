@@ -36,7 +36,7 @@ import {
 	currentStatisticalProfiles,
 	sqlSnippets,
 } from "#/db/metadata/schema";
-import type { DrillAxesRequest, DrillAxis } from "#/duckdb/drill";
+import type { DrillAxis, DrillNodeRef } from "#/duckdb/drill";
 import { type TemporalKind, temporalKindOfType } from "#/duckdb/grain";
 import { narrowSnippetParts } from "#/duckdb/parts";
 import { aggregatedColumns } from "#/duckdb/sql-ast";
@@ -226,7 +226,7 @@ export function orderAxesByDrivers(
 
 /** The measure standard fields the request targets: a measure names itself, a
  *  metric contributes every extract step of its promoted DAG. */
-async function targetFields(req: DrillAxesRequest): Promise<string[]> {
+async function targetFields(req: DrillNodeRef): Promise<string[]> {
 	if (req.standardField !== undefined) return [req.standardField];
 	const [row] = await metadataDb
 		.select({ dag: currentLifecycleArtifacts.graphDefinition })
@@ -289,7 +289,7 @@ export function describeEngineTimeVerdict(reason: string | null): string {
 /** The drill target's (kind, key) for the persisted-verdict lookup (DAT-731): a
  *  metric is keyed by its graph_id, a measure by its standard_field — exactly the
  *  `(target_kind, target_key)` the metrics phase persists. */
-function additivityTarget(req: DrillAxesRequest): {
+function additivityTarget(req: DrillNodeRef): {
 	kind: "metric" | "measure";
 	key: string;
 } {
@@ -305,7 +305,7 @@ function additivityTarget(req: DrillAxesRequest): {
  *  row by the `(target_kind, target_key)` UNIQUE, resolved to the current
  *  operating_model run by the read view. */
 async function resolveTargetAdditivity(
-	req: DrillAxesRequest,
+	req: DrillNodeRef,
 ): Promise<PersistedAdditivity | null> {
 	const { kind, key } = additivityTarget(req);
 	const [row] = await metadataDb
@@ -357,8 +357,14 @@ export interface ColumnUnitFacts {
 	distinctCount: number | null;
 }
 
+/** Composite map key. The separator is NUL because it cannot occur in either
+ *  half, so `(a, b|c)` and `(a|b, c)` can never collide — do not 'simplify' it
+ *  to a space or a dot. It is written as the ESCAPE `\u0000`, never a raw NUL
+ *  byte: a literal NUL makes the whole file binary to ripgrep, which then
+ *  silently skips it — this module was invisible to every grep sweep until
+ *  DAT-678 found the byte. */
 const _unitKey = (tableId: string, column: string): string =>
-	`${tableId} ${column}`;
+	`${tableId}\u0000${column}`;
 
 /**
  * The UNIT GATE (DAT-731): a measure aggregated across a unit column that holds
@@ -454,79 +460,67 @@ export interface DrillAxesResult {
 	unitGateReason?: string;
 }
 
-export async function resolveDrillAxes(
-	req: DrillAxesRequest,
-): Promise<DrillAxesResult> {
-	const fields = await targetFields(req);
-	if (fields.length === 0) {
-		return {
-			axes: [],
-			reason: "The metric's definition names no measure extracts.",
-		};
-	}
+/** One grounded extract as the axes resolver consumes it: the ONE relation it
+ *  reads plus its value expression. The metric path derives these from the
+ *  persisted `graph:` snippets; the answer path carries its own proven
+ *  declaration (DAT-678). Either way the resolution below is identical — which
+ *  is the point: an answer's dimensions are found the same way a metric's are,
+ *  not by a second, weaker rule. */
+export interface AxisSource {
+	relation: string;
+	selectExpr: string;
+}
 
-	// Newest-first graph extracts (first per field DECIDES, the resolver
-	// contract) + the promoted enriched views.
-	const [snippetRows, viewRows] = await Promise.all([
-		metadataDb
-			.select({
-				standardField: sqlSnippets.standardField,
-				parts: sqlSnippets.parts,
-				failureCount: sqlSnippets.failureCount,
-			})
-			.from(sqlSnippets)
-			.where(
-				and(
-					eq(sqlSnippets.schemaMappingId, config.dataraumWorkspaceId),
-					like(sqlSnippets.source, "graph:%"),
-					eq(sqlSnippets.snippetType, "extract"),
-					inArray(sqlSnippets.standardField, fields),
-				),
-			)
-			.orderBy(desc(sqlSnippets.updatedAt)),
-		metadataDb
-			.select({
-				viewName: currentEnrichedViews.viewName,
-				viewTableId: currentEnrichedViews.viewTableId,
-				factTableId: currentEnrichedViews.factTableId,
-				dimensionColumns: currentEnrichedViews.dimensionColumns,
-				isGrainVerified: currentEnrichedViews.isGrainVerified,
-			})
-			.from(currentEnrichedViews)
-			// Deterministic pick: the per-view folds below take the first
-			// occurrence — without an ORDER BY, which row wins would be
-			// Postgres row-order roulette.
-			.orderBy(asc(currentEnrichedViews.viewTableId)),
-	]);
+/** The ungated result of relation-grounded axis resolution, plus what the two
+ *  gates need. Gating is left to the caller because the TIME gate's authority
+ *  differs per path: a metric/measure has a persisted additivity verdict to
+ *  read, an ad-hoc answer concept has none at all. */
+interface SourceAxes {
+	axes: DrillAxis[];
+	reason?: string;
+	aggMeasures: AggMeasure[];
+	columnFacts: ColumnUnitFacts[];
+}
 
-	// The parts contract makes grounding a lookup: an accepted extract's ONE
-	// relation either names a promoted view (→ its fact carries the axes) or
-	// it is stale/foreign — no SQL parsing. The `wanted` filter mirrors the
-	// SQL `inArray` (belt over braces — the field set defines the node).
-	const wanted = new Set(fields);
-	const relations: string[] = [];
+/**
+ * Sources → promoted enriched views → their FACTS → the slice catalog ∪ the
+ * grain-verified `dimension_columns` substrate, ordered by measured drivers.
+ * The relation-grounded half of axis resolution, shared verbatim by both
+ * parts-carrying paths.
+ */
+async function resolveAxesForSources(
+	sources: AxisSource[],
+): Promise<SourceAxes> {
+	const empty = (reason: string): SourceAxes => ({
+		axes: [],
+		reason,
+		aggMeasures: [],
+		columnFacts: [],
+	});
+
+	const viewRows = await metadataDb
+		.select({
+			viewName: currentEnrichedViews.viewName,
+			viewTableId: currentEnrichedViews.viewTableId,
+			factTableId: currentEnrichedViews.factTableId,
+			dimensionColumns: currentEnrichedViews.dimensionColumns,
+			isGrainVerified: currentEnrichedViews.isGrainVerified,
+		})
+		.from(currentEnrichedViews)
+		// Deterministic pick: the per-view folds below take the first
+		// occurrence — without an ORDER BY, which row wins would be
+		// Postgres row-order roulette.
+		.orderBy(asc(currentEnrichedViews.viewTableId));
+
+	const relations = sources.map((s) => s.relation);
 	// The accepted extracts' (relation, value-expression) pairs. The flow gate
-	// reads the base columns each expr AGGREGATES, but ONLY off snippets that
+	// reads the base columns each expr AGGREGATES, but ONLY off sources that
 	// ground to a promoted view's fact (filtered below against `factIds`).
 	// Pairing keeps every expr tied to its relation so a stale/unpromoted
-	// snippet's columns can never reach the gate — otherwise, on a multi-measure
+	// source's columns can never reach the gate — otherwise, on a multi-measure
 	// node, one stale measure's column would strip grain from the whole node,
 	// including its genuinely-safe measures (scope leak, DAT-673).
-	const acceptedExprs: { relation: string; selectExpr: string }[] = [];
-	const decided = new Set<string>();
-	for (const r of snippetRows) {
-		if (!r.standardField || !wanted.has(r.standardField)) continue;
-		if (decided.has(r.standardField)) continue;
-		decided.add(r.standardField);
-		if ((r.failureCount ?? 0) !== 0) continue;
-		const parts = narrowSnippetParts(r.parts);
-		if (parts?.relation) relations.push(parts.relation);
-		if (parts?.relation && parts.selectExpr)
-			acceptedExprs.push({
-				relation: parts.relation,
-				selectExpr: parts.selectExpr,
-			});
-	}
+	const acceptedExprs = sources;
 	const viewByName = new Map(
 		viewRows
 			.filter((v): v is typeof v & { viewName: string } => Boolean(v.viewName))
@@ -543,13 +537,11 @@ export async function resolveDrillAxes(
 		// Distinguish "reads something, just not a promoted view" (a stale or
 		// cross-lineage snippet — the honest refusal) from "no usable extract".
 		const stale = [...new Set(relations)].filter((r) => !viewByName.has(r));
-		return {
-			axes: [],
-			reason:
-				stale.length > 0
-					? `The computation reads relations outside the current analysis (${stale.join(", ")}) — likely a stale snippet from an earlier run.`
-					: "No accepted extract parts to resolve dimensions from.",
-		};
+		return empty(
+			stale.length > 0
+				? `The computation reads relations outside the current analysis (${stale.join(", ")}) — likely a stale snippet from an earlier run.`
+				: "No accepted extract parts to resolve dimensions from.",
+		);
 	}
 
 	// The grain-verified substrate: the enriched view's join-projected
@@ -648,26 +640,16 @@ export async function resolveDrillAxes(
 		),
 	);
 	if (axes.length === 0) {
-		return {
-			axes,
-			reason:
-				"No dimensions available for this computation's facts — neither the slicing catalog nor a grain-verified enriched view exposes anything to slice by.",
-		};
+		return empty(
+			"No dimensions available for this computation's facts — neither the slicing catalog nor a grain-verified enriched view exposes anything to slice by.",
+		);
 	}
 
-	// The result accrues gate outcomes: a node can fail the TIME gate and be
-	// cross-unit INDEPENDENTLY, so neither gate early-returns — each stamps the
-	// same result and the (possibly grain-stripped) axes fall through once.
-	const stripTimeGrain = (xs: DrillAxis[]): DrillAxis[] =>
-		xs.map((a) => (a.temporal !== null ? { ...a, temporal: null } : a));
-	const result: DrillAxesResult = { axes };
-	let gatedAxes = axes;
-
 	// The node's aggregated base measure columns (AST read), scoped to grounded
-	// facts — feeds the UNIT gate below. A stale/unpromoted snippet contributes
-	// nothing (its relation resolves to no kept fact); an unparseable expr
-	// (window / COUNT(*)) yields no columns and simply has nothing for the unit
-	// gate to check for that expr.
+	// facts — feeds the UNIT gate at the caller. A stale/unpromoted source
+	// contributes nothing (its relation resolves to no kept fact); an unparseable
+	// expr (window / COUNT(*)) yields no columns and simply has nothing for the
+	// unit gate to check for that expr.
 	const factIdSet = new Set(factIds);
 	// The aggregated measures WITH their fact id (the unit gate keys per fact, so a
 	// same-named unit column on a different fact can't answer for this measure).
@@ -681,42 +663,6 @@ export async function resolveDrillAxes(
 		}
 	}
 
-	// TIME GATE (DAT-673 → DAT-731 → DAT-725): only when a temporal axis is
-	// offered. Exactly TWO sources decide it, never a third: the engine's
-	// persisted, DAG-aware additivity verdict (metric_additivity.time_additive),
-	// or — when no verdict has been persisted yet — an honest WITHHOLD. The
-	// lead's ruling that retired the old column-level temporal_behavior
-	// heuristic here: "if we do not have data, we honestly say so" — a missing
-	// verdict is NOT license to guess a weaker local answer, so the grain is
-	// stripped with a user-visible reason instead (the DAT-731 fail-open
-	// fallback was the epic's core silent-judge-swap failure mode).
-	if (axes.some((a) => a.temporal !== null)) {
-		const verdict = await resolveTargetAdditivity(req);
-		if (verdict !== null) {
-			result.temporalGateSource = "engine-verdict";
-			if (!verdict.timeAdditive) {
-				gatedAxes = stripTimeGrain(gatedAxes);
-				result.temporalGateReason = describeEngineTimeVerdict(
-					verdict.timeReason,
-				);
-			}
-		} else {
-			// WITHHELD (DAT-725): no persisted verdict — the engine hasn't
-			// classified this target yet. Strip the grain and say so, visibly.
-			result.temporalGateSource = "withheld-no-verdict";
-			gatedAxes = stripTimeGrain(gatedAxes);
-			result.temporalGateReason =
-				"Additivity not determined for this target — time-grain drill withheld until the engine classifies it.";
-		}
-	}
-
-	// UNIT GATE (DAT-731): a cross-unit aggregation — a measure whose authored
-	// unit_source_column is a column carrying MORE THAN ONE distinct unit — is
-	// flagged loudly (representable as blocked, never silently produced). Runs
-	// regardless of whether a time axis was offered: mixing units is meaningless for
-	// ANY aggregation. The per-(fact, column) facts feed unitGate, which resolves
-	// each measure's unit column IN ITS OWN FACT — so on a multi-fact node one
-	// fact's clean unit column can't mask another fact's mixed one.
 	const columnFacts: ColumnUnitFacts[] = [];
 	for (const r of columnRows) {
 		if (!r.columnName || !r.tableId || !factIdSet.has(r.tableId)) continue;
@@ -727,6 +673,67 @@ export async function resolveDrillAxes(
 			distinctCount: r.distinctCount ?? null,
 		});
 	}
+
+	return { axes, aggMeasures, columnFacts };
+}
+
+/** Strip the time grain from every temporal axis — the date column stays as a
+ *  RAW slice, it just can't be bucketed. */
+const stripTimeGrain = (xs: DrillAxis[]): DrillAxis[] =>
+	xs.map((a) => (a.temporal !== null ? { ...a, temporal: null } : a));
+
+/**
+ * Apply the two gates to resolved axes. `verdict` is the TIME gate's authority:
+ * a persisted engine verdict, or `null` for "none exists" — which is a WITHHOLD,
+ * never a licence to guess (DAT-725). The result accrues both outcomes: a target
+ * can fail the time gate and be cross-unit INDEPENDENTLY, so neither gate
+ * early-returns — each stamps the same result and the (possibly grain-stripped)
+ * axes fall through once.
+ */
+function gateAxes(
+	resolved: SourceAxes,
+	verdict: PersistedAdditivity | null,
+	withholdReason: string,
+): DrillAxesResult {
+	const { axes, aggMeasures, columnFacts } = resolved;
+	if (axes.length === 0) {
+		return resolved.reason ? { axes, reason: resolved.reason } : { axes };
+	}
+	const result: DrillAxesResult = { axes };
+	let gatedAxes = axes;
+
+	// TIME GATE (DAT-673 → DAT-731 → DAT-725): only when a temporal axis is
+	// offered. Exactly TWO sources decide it, never a third: the engine's
+	// persisted, DAG-aware additivity verdict (metric_additivity.time_additive),
+	// or — when no verdict has been persisted yet — an honest WITHHOLD. The
+	// lead's ruling that retired the old column-level temporal_behavior
+	// heuristic here: "if we do not have data, we honestly say so" — a missing
+	// verdict is NOT license to guess a weaker local answer, so the grain is
+	// stripped with a user-visible reason instead (the DAT-731 fail-open
+	// fallback was the epic's core silent-judge-swap failure mode).
+	if (axes.some((a) => a.temporal !== null)) {
+		if (verdict !== null) {
+			result.temporalGateSource = "engine-verdict";
+			if (!verdict.timeAdditive) {
+				gatedAxes = stripTimeGrain(gatedAxes);
+				result.temporalGateReason = describeEngineTimeVerdict(
+					verdict.timeReason,
+				);
+			}
+		} else {
+			result.temporalGateSource = "withheld-no-verdict";
+			gatedAxes = stripTimeGrain(gatedAxes);
+			result.temporalGateReason = withholdReason;
+		}
+	}
+
+	// UNIT GATE (DAT-731): a cross-unit aggregation — a measure whose authored
+	// unit_source_column is a column carrying MORE THAN ONE distinct unit — is
+	// flagged loudly (representable as blocked, never silently produced). Runs
+	// regardless of whether a time axis was offered: mixing units is meaningless for
+	// ANY aggregation. The per-(fact, column) facts feed unitGate, which resolves
+	// each measure's unit column IN ITS OWN FACT — so on a multi-fact node one
+	// fact's clean unit column can't mask another fact's mixed one.
 	const crossUnit = unitGate(aggMeasures, columnFacts);
 	if (crossUnit.length > 0) {
 		result.unitGateReason = describeUnitGate(crossUnit);
@@ -734,4 +741,84 @@ export async function resolveDrillAxes(
 
 	result.axes = gatedAxes;
 	return result;
+}
+
+/**
+ * The METRIC/MEASURE path: the node's promoted `graph:` extracts ground the
+ * axes, and the engine's persisted additivity verdict for that exact target
+ * decides the time grain.
+ */
+export async function resolveDrillAxes(
+	req: DrillNodeRef,
+): Promise<DrillAxesResult> {
+	const fields = await targetFields(req);
+	if (fields.length === 0) {
+		return {
+			axes: [],
+			reason: "The metric's definition names no measure extracts.",
+		};
+	}
+
+	// Newest-first graph extracts — first per field DECIDES (the resolver
+	// contract): a failing newest row means the field has no accepted parts, not
+	// a silent fall-back to an older accepted row.
+	const snippetRows = await metadataDb
+		.select({
+			standardField: sqlSnippets.standardField,
+			parts: sqlSnippets.parts,
+			failureCount: sqlSnippets.failureCount,
+		})
+		.from(sqlSnippets)
+		.where(
+			and(
+				eq(sqlSnippets.schemaMappingId, config.dataraumWorkspaceId),
+				like(sqlSnippets.source, "graph:%"),
+				eq(sqlSnippets.snippetType, "extract"),
+				inArray(sqlSnippets.standardField, fields),
+			),
+		)
+		.orderBy(desc(sqlSnippets.updatedAt));
+
+	// The parts contract makes grounding a lookup: an accepted extract's ONE
+	// relation either names a promoted view (→ its fact carries the axes) or it
+	// is stale/foreign — no SQL parsing. The `wanted` filter mirrors the SQL
+	// `inArray` (belt over braces — the field set defines the node).
+	const wanted = new Set(fields);
+	const sources: AxisSource[] = [];
+	const decided = new Set<string>();
+	for (const r of snippetRows) {
+		if (!r.standardField || !wanted.has(r.standardField)) continue;
+		if (decided.has(r.standardField)) continue;
+		decided.add(r.standardField);
+		if ((r.failureCount ?? 0) !== 0) continue;
+		const parts = narrowSnippetParts(r.parts);
+		if (parts?.relation) {
+			sources.push({ relation: parts.relation, selectExpr: parts.selectExpr });
+		}
+	}
+
+	const resolved = await resolveAxesForSources(sources);
+	return gateAxes(
+		resolved,
+		resolved.axes.length > 0 ? await resolveTargetAdditivity(req) : null,
+		"Additivity not determined for this target — time-grain drill withheld until the engine classifies it.",
+	);
+}
+
+/**
+ * The ANSWER path (DAT-678): the axes of a proven parts-at-source declaration.
+ * Same relation→fact→catalog resolution as a metric — an answer's dimensions are
+ * found the same way, not by a weaker rule — but the time grain is ALWAYS
+ * withheld: an ad-hoc answer concept is not a target the engine has classified,
+ * so no `metric_additivity` row exists to read and there is nothing to bucket
+ * time by honestly. The date axis stays available as a raw slice.
+ */
+export async function resolveAnswerDrillAxes(
+	sources: AxisSource[],
+): Promise<DrillAxesResult> {
+	return gateAxes(
+		await resolveAxesForSources(sources),
+		null,
+		"This answer computes an ad-hoc concept the engine has not classified for additivity — time-grain drill withheld; the date is still available as a raw slice.",
+	);
 }

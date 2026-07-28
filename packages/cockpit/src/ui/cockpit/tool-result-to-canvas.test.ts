@@ -253,6 +253,7 @@ describe("toolResultToCanvas", () => {
 		};
 		expect(toolResultToCanvas("answer", result)).toEqual({
 			kind: "answer-result",
+			drillSource: null,
 			sql: "SELECT SUM(revenue) AS value FROM t",
 			summary: "Total revenue is 42.",
 			confidence: {
@@ -276,6 +277,7 @@ describe("toolResultToCanvas", () => {
 			}),
 		).toEqual({
 			kind: "answer-result",
+			drillSource: null,
 			sql: "SELECT 1",
 			summary: "",
 			confidence: {
@@ -287,6 +289,67 @@ describe("toolResultToCanvas", () => {
 				conceptsUsed: [],
 			},
 		});
+	});
+
+	// DAT-678: the boundary used to drop everything but {sql, summary, confidence},
+	// which is why a scalar answer could not be drilled at all. It now carries the
+	// PROVEN source — and narrows it STRICTLY, because these strings become SQL:
+	// a half-read source is not a degraded drill, it is a wrong one, so anything
+	// off-shape collapses to null and the surface falls back to tier A.
+	it("carries a well-formed drill source onto the canvas", () => {
+		const drill_source = {
+			sources: [
+				{
+					name: "revenue",
+					parts: {
+						selectExpr: "SUM(amount)",
+						relation: "lake.typed.orders",
+						where: ["year = 2024"],
+					},
+				},
+			],
+			expression: "revenue",
+		};
+		const state = toolResultToCanvas("answer", {
+			answer: "Revenue was 175.",
+			grid: { sql: "SELECT 1" },
+			drill_source,
+		});
+		expect(state).toMatchObject({
+			kind: "answer-result",
+			drillSource: drill_source,
+		});
+	});
+
+	it("drops a drill source that is off-shape in ANY field", () => {
+		const drilled = (drill_source: unknown) =>
+			toolResultToCanvas("answer", {
+				answer: "x",
+				grid: { sql: "SELECT 1" },
+				drill_source,
+			}) as { drillSource: unknown } | null;
+		const ok = {
+			name: "revenue",
+			parts: { selectExpr: "SUM(a)", relation: "o", where: [] },
+		};
+		expect(drilled(null)?.drillSource).toBeNull();
+		expect(drilled({ sources: [ok], expression: "" })?.drillSource).toBeNull();
+		expect(
+			drilled({ sources: [], expression: "revenue" })?.drillSource,
+		).toBeNull();
+		expect(
+			drilled({
+				sources: [{ ...ok, parts: { ...ok.parts, relation: "" } }],
+				expression: "revenue",
+			})?.drillSource,
+		).toBeNull();
+		expect(
+			drilled({
+				sources: [{ ...ok, parts: { ...ok.parts, where: [7] } }],
+				expression: "revenue",
+			})?.drillSource,
+		).toBeNull();
+		expect(drilled("nope")?.drillSource).toBeNull();
 	});
 
 	it("leaves the canvas unchanged only for an agent error or a non-object answer result", () => {
@@ -308,6 +371,7 @@ describe("toolResultToCanvas", () => {
 			}),
 		).toEqual({
 			kind: "answer-result",
+			drillSource: null,
 			sql: null,
 			summary: "I couldn't find revenue accounts to compute that.",
 			confidence: null,
@@ -315,12 +379,14 @@ describe("toolResultToCanvas", () => {
 		// Empty narrative (the common no-result shape) + the bare {} drift → still a card.
 		expect(toolResultToCanvas("answer", { answer: "", grid: null })).toEqual({
 			kind: "answer-result",
+			drillSource: null,
 			sql: null,
 			summary: "",
 			confidence: null,
 		});
 		expect(toolResultToCanvas("answer", {})).toEqual({
 			kind: "answer-result",
+			drillSource: null,
 			sql: null,
 			summary: "",
 			confidence: null,
@@ -339,6 +405,7 @@ describe("toolResultToCanvas", () => {
 		});
 		expect(state).toEqual({
 			kind: "answer-result",
+			drillSource: null,
 			sql: "SELECT 1",
 			summary: "",
 			confidence: {

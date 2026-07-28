@@ -7,8 +7,11 @@
 // per NODE from its persisted clause parts instead (`parts.ts` behind
 // `/api/drill/node`, parts-at-source): tier-B AST injection via
 // `json_serialize_sql` is DELETED with DAT-703 — the drill path never parses
-// or mutates SQL text anymore. Ad-hoc grids join the parts contract when the
-// answer agent does (separate cut).
+// or mutates SQL text anymore. An ANSWER joined the parts contract in DAT-678
+// by DECLARING its clause parts (`answer-source.ts`, `/api/drill/parts`) —
+// still no parsing, and still proven before it is trusted. Tier A remains what
+// every surface falls back to when there is no such declaration: it is the one
+// path that needs nothing but the result in front of it.
 //
 // Everything runs on a caller-provided connection: the API route passes a
 // lake connection scoped like the engine's (`USE lake.typed`), unit tests an

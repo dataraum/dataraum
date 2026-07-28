@@ -43,6 +43,7 @@ vi.mock("#/db/metadata/snippet-writer", () => ({
 import {
 	assembleAnswer,
 	type Component,
+	candidateSource,
 	classifyComponents,
 	componentsToSave,
 	exhaustionDiagnostic,
@@ -198,6 +199,7 @@ describe("assembleAnswer", () => {
 					},
 				],
 				grainNote: null,
+				declaredSource: null,
 			},
 			{ band: "investigate", note: "n" },
 		);
@@ -230,7 +232,12 @@ describe("assembleAnswer", () => {
 		const note = 'Note: this query groups by "txn_id", which is near-unique.';
 		const out = assembleAnswer(
 			draft(),
-			{ composedSql: "SELECT 1", components: [], grainNote: note },
+			{
+				composedSql: "SELECT 1",
+				components: [],
+				grainNote: note,
+				declaredSource: null,
+			},
 			null,
 		);
 		// Surfaced deterministically — even if the model omitted it.
@@ -244,7 +251,12 @@ describe("assembleAnswer", () => {
 		d.assumptions = [note];
 		const out = assembleAnswer(
 			d,
-			{ composedSql: "SELECT 1", components: [], grainNote: note },
+			{
+				composedSql: "SELECT 1",
+				components: [],
+				grainNote: note,
+				declaredSource: null,
+			},
 			null,
 		);
 		expect(out.assumptions.filter((a) => a === note)).toHaveLength(1);
@@ -267,7 +279,12 @@ describe("assembleAnswer", () => {
 	it("yields a null grid when the captured composed SQL is blank", () => {
 		const out = assembleAnswer(
 			draft(),
-			{ composedSql: "   ", components: [], grainNote: null },
+			{
+				composedSql: "   ",
+				components: [],
+				grainNote: null,
+				declaredSource: null,
+			},
 			null,
 		);
 		expect(out.grid).toBeNull();
@@ -316,6 +333,7 @@ describe("persistLearnedSnippets (save-on-clean)", () => {
 				comp("margin", "adapted", "SELECT SUM(m) AS value"),
 			],
 			grainNote: null,
+			declaredSource: null,
 		});
 
 		// fresh + adapted only — exact_reuse is skipped.
@@ -338,6 +356,7 @@ describe("persistLearnedSnippets (save-on-clean)", () => {
 			composedSql: "x",
 			components: [comp("a", "exact_reuse")],
 			grainNote: null,
+			declaredSource: null,
 		});
 		expect(saveQuerySnippetMock).not.toHaveBeenCalled();
 	});
@@ -351,6 +370,7 @@ describe("persistLearnedSnippets (save-on-clean)", () => {
 				composedSql: "x",
 				components: [comp("a", "fresh")],
 				grainNote: null,
+				declaredSource: null,
 			}),
 		).resolves.toBeUndefined();
 		expect(warnSpy).toHaveBeenCalled();
@@ -376,6 +396,7 @@ describe("salvageDraft (validated-but-unfinalized run)", () => {
 			composedSql: "WITH revenue AS (…) SELECT *",
 			components,
 			grainNote: null,
+			declaredSource: null,
 		});
 		expect(out.concepts_used).toEqual(["revenue", "by_region"]);
 		// No hallucinated tables — the salvage doesn't invent tables_touched.
@@ -471,5 +492,86 @@ describe("isMissingStructuredResult (which chat() failures are salvageable)", ()
 		).toBe(false);
 		expect(isMissingStructuredResult("not an error")).toBe(false);
 		expect(isMissingStructuredResult(null)).toBe(false);
+	});
+});
+
+// --- parts-at-source candidate (DAT-678) --------------------------------------
+//
+// The boundary between "the model said something" and "we have a candidate to
+// prove". Nothing here believes the declaration — it only decides whether there
+// is a well-formed thing to check. The check itself is answer-source.test.ts.
+
+const declared = (
+	relation: string,
+	value_expr: string,
+	filters: string[] = [],
+) => ({ relation, value_expr, filters });
+
+describe("candidateSource", () => {
+	// The relation arrives in the model's `lake.<layer>.<name>` form and is
+	// reduced to the bare name here — the composer quotes it as one identifier,
+	// so the qualified spelling would never bind.
+	it("collects the steps that declared a source, relations reduced", () => {
+		expect(
+			candidateSource(
+				[
+					{ name: "revenue", source: declared("lake.typed.o", "SUM(amt)") },
+					{ name: "cost", source: declared("lake.typed.o", "SUM(cost)") },
+				],
+				"revenue - cost",
+			),
+		).toEqual({
+			sources: [
+				{
+					name: "revenue",
+					parts: {
+						selectExpr: "SUM(amt)",
+						relation: "o",
+						where: [],
+					},
+				},
+				{
+					name: "cost",
+					parts: {
+						selectExpr: "SUM(cost)",
+						relation: "o",
+						where: [],
+					},
+				},
+			],
+			expression: "revenue - cost",
+		});
+	});
+
+	// A step that abstained is simply absent from the candidate — the model is
+	// never pushed into decomposing a join or a window into a shape it does not
+	// have.
+	it("drops abstained steps and keeps the rest", () => {
+		const candidate = candidateSource(
+			[
+				{ name: "revenue", source: declared("lake.typed.o", "SUM(amt)") },
+				{ name: "joined", source: declared("", "") },
+			],
+			"revenue",
+		);
+		expect(candidate?.sources.map((s) => s.name)).toEqual(["revenue"]);
+	});
+
+	// No combining arithmetic means final_sql is not a formula over the steps
+	// (a grouped breakdown, a join, a filter) — there is nothing to recompose,
+	// and tier A is the right path for exactly those results anyway.
+	it("yields no candidate without a combining expression", () => {
+		expect(
+			candidateSource(
+				[{ name: "revenue", source: declared("lake.typed.o", "SUM(amt)") }],
+				"   ",
+			),
+		).toBeNull();
+	});
+
+	it("yields no candidate when every step abstained", () => {
+		expect(
+			candidateSource([{ name: "joined", source: declared("", "") }], "joined"),
+		).toBeNull();
 	});
 });

@@ -9,11 +9,13 @@
 import { MantineProvider } from "@mantine/core";
 import { cleanup, render, screen } from "@testing-library/react";
 import type { ReactNode } from "react";
-import { afterEach, describe, expect, it } from "vitest";
+import { act } from "react";
+import { afterEach, describe, expect, it, vi } from "vitest";
 
 import type { AnswerConfidence } from "#/ui/cockpit/canvas-state";
 import {
 	AnswerNoResult,
+	AnswerResultWidget,
 	ConfidenceStrip,
 } from "#/ui/cockpit/widgets/answer-result";
 import { theme } from "#/ui/theme";
@@ -137,5 +139,91 @@ describe("AnswerNoResult", () => {
 				"The engine couldn’t compose a grounded query for that question.",
 			),
 		).toBeTruthy();
+	});
+});
+
+// --- the drilled-mint guard (DAT-678) -----------------------------------------
+//
+// A drilled view cannot be saved as a report yet, and the two reasons are
+// report-SCHEMA gaps that belong to DAT-627/676: a PINNED composition binds
+// `$1…` params the `reports` row has nowhere to store (the report would 400 on
+// every open), and a SLICED one returns numbers the frozen summary/confidence
+// do not describe (and `reports.confidence` is NOT NULL, so "no confidence" is
+// not expressible). The honest state is an unavailable action that says why —
+// so this pins that the mint is BLOCKED, not that it silently saves the wrong
+// thing.
+
+const answerState = {
+	kind: "answer-result" as const,
+	sql: "SELECT SUM(amount) AS value FROM orders",
+	summary: "Revenue was 175.",
+	confidence: FULL,
+	drillSource: null,
+};
+
+// The widget reads the conversation id off the route and links to the minted
+// report; neither needs a real router here.
+vi.mock("@tanstack/react-router", () => ({
+	useParams: () => ({}),
+	Link: ({ children }: { children?: ReactNode }) => <span>{children}</span>,
+}));
+
+// Stand in for the drill grid: render the surface's toolbar actions and expose
+// a control that commits a drill, so the mint's reaction is observable without
+// the streaming/query machinery.
+let commitDrill:
+	| ((steps: { kind: "slice" | "pin"; column: string }[]) => void)
+	| null = null;
+vi.mock("#/ui/cockpit/widgets/drillable-grid", () => ({
+	DrillableGrid: ({
+		toolbarActions,
+		onStepsChange,
+	}: {
+		toolbarActions?: ReactNode;
+		onStepsChange?: (
+			steps: { kind: "slice" | "pin"; column: string }[],
+			effective: { sql: string; params: unknown[] },
+		) => void;
+	}) => {
+		commitDrill = (steps) =>
+			onStepsChange?.(steps, { sql: "DRILLED_SQL", params: [] });
+		return <div data-testid="mock-drillable-grid">{toolbarActions}</div>;
+	},
+}));
+
+describe("AnswerResultWidget — the drilled-mint guard", () => {
+	it("offers the Report action on an undrilled answer", () => {
+		renderInMantine(<AnswerResultWidget state={answerState} />);
+		expect(screen.getByTestId("report-mint")).toBeTruthy();
+		expect(screen.queryByTestId("report-mint-blocked")).toBeNull();
+	});
+
+	it("blocks the mint once a SLICE is committed, and says why", () => {
+		renderInMantine(<AnswerResultWidget state={answerState} />);
+		act(() => commitDrill?.([{ kind: "slice", column: "region" }]));
+		expect(screen.queryByTestId("report-mint")).toBeNull();
+		const blocked = screen.getByTestId("report-mint-blocked");
+		// The reason names the actual limitation, not a generic "unavailable".
+		expect(blocked.getAttribute("data-disabled")).not.toBeNull();
+	});
+
+	it("blocks the mint once a PIN is committed", () => {
+		renderInMantine(<AnswerResultWidget state={answerState} />);
+		act(() =>
+			commitDrill?.([
+				{ kind: "slice", column: "region" },
+				{ kind: "pin", column: "region" },
+			]),
+		);
+		expect(screen.queryByTestId("report-mint")).toBeNull();
+		expect(screen.getByTestId("report-mint-blocked")).toBeTruthy();
+	});
+
+	it("restores the Report action when the drill is cleared", () => {
+		renderInMantine(<AnswerResultWidget state={answerState} />);
+		act(() => commitDrill?.([{ kind: "slice", column: "region" }]));
+		expect(screen.queryByTestId("report-mint")).toBeNull();
+		act(() => commitDrill?.([]));
+		expect(screen.getByTestId("report-mint")).toBeTruthy();
 	});
 });

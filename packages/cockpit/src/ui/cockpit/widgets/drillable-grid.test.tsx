@@ -17,7 +17,7 @@ import {
 } from "@testing-library/react";
 import { afterEach, describe, expect, it, vi } from "vitest";
 
-import type { DrillAxis } from "#/duckdb/drill";
+import type { DrillAxis, DrillSource } from "#/duckdb/drill";
 import { theme } from "#/ui/theme";
 
 import { TestQueryProvider } from "../test-query-provider";
@@ -104,7 +104,11 @@ function stubFetch(axesResponse?: unknown) {
 					},
 				);
 			}
-			if (u.endsWith("/api/drill/compose") || u.endsWith("/api/drill/node")) {
+			if (
+				u.endsWith("/api/drill/compose") ||
+				u.endsWith("/api/drill/node") ||
+				u.endsWith("/api/drill/parts")
+			) {
 				composeBodies.push({
 					url: u.slice(u.lastIndexOf("/api")),
 					body: JSON.parse(String(init?.body ?? "null")),
@@ -118,8 +122,32 @@ function stubFetch(axesResponse?: unknown) {
 
 const BASE_SQL = "SELECT SUM(x) AS value FROM t";
 
+/** The node compose path — the analyse overlay's shape. */
+const NODE_SOURCE: DrillSource = {
+	kind: "node",
+	ref: { metricKey: "m1" },
+};
+
+/** The answer compose path (DAT-678): a proven declared source. */
+const PARTS_SOURCE: DrillSource = {
+	kind: "parts",
+	source: {
+		sources: [
+			{
+				name: "revenue",
+				parts: {
+					selectExpr: 'SUM("amount")',
+					relation: "lake.typed.enriched_orders",
+					where: [],
+				},
+			},
+		],
+		expression: "revenue",
+	},
+};
+
 function renderGrid(
-	nodeRef?: { metricKey: string },
+	source?: DrillSource,
 	onPinnedRow?: (row: Record<string, unknown> | null) => void,
 	axesResponse?: unknown,
 ) {
@@ -130,7 +158,7 @@ function renderGrid(
 				<DrillableGrid
 					sql={BASE_SQL}
 					axesRequest={{ metricKey: "m1" }}
-					nodeRef={nodeRef}
+					source={source}
 					onPinnedRow={onPinnedRow}
 				/>
 			</MantineProvider>
@@ -207,8 +235,8 @@ describe("DrillableGrid", () => {
 		expect(screen.queryByTestId("drill-refusal")).toBeNull();
 	});
 
-	it("with a nodeRef, steps recompose the NODE (`/api/drill/node`), not the base SQL", async () => {
-		renderGrid({ metricKey: "m1" });
+	it("with a node source, steps recompose the NODE (`/api/drill/node`), not the base SQL", async () => {
+		renderGrid(NODE_SOURCE);
 		await sliceBy("region", "NODE_SQL");
 		expect(gridSql()).toBe("NODE_SQL");
 		expect(composeBodies).toEqual([
@@ -216,6 +244,45 @@ describe("DrillableGrid", () => {
 				url: "/api/drill/node",
 				body: {
 					metricKey: "m1",
+					steps: [{ kind: "slice", column: "region" }],
+				},
+			},
+		]);
+	});
+
+	// DAT-678: the answer path. The declared+proven clause parts ride the request
+	// (the streaming path is stateless — there is no server handle to name), and
+	// the slice recomposes AT SOURCE, so the dimension need not be on the result.
+	it("with a parts source, steps recompose from the declared parts (`/api/drill/parts`)", async () => {
+		renderGrid(PARTS_SOURCE);
+		await sliceBy("region", "PARTS_SQL");
+		expect(gridSql()).toBe("PARTS_SQL");
+		expect(composeBodies).toEqual([
+			{
+				url: "/api/drill/parts",
+				body: {
+					sources:
+						PARTS_SOURCE.kind === "parts" ? PARTS_SOURCE.source.sources : [],
+					expression: "revenue",
+					steps: [{ kind: "slice", column: "region" }],
+				},
+			},
+		]);
+	});
+
+	// Tier A is the fallback everywhere (DAT-678 mounts it on the answer,
+	// run_sql and report surfaces): with no source at all the grid wraps its own
+	// statement, which is the one thing that always works.
+	it("with no source, steps wrap the base SQL (`/api/drill/compose`)", async () => {
+		renderGrid();
+		await sliceBy("region", "TIER_A_SQL");
+		expect(gridSql()).toBe("TIER_A_SQL");
+		expect(composeBodies).toEqual([
+			{
+				url: "/api/drill/compose",
+				body: {
+					sql: BASE_SQL,
+					params: [],
 					steps: [{ kind: "slice", column: "region" }],
 				},
 			},
@@ -231,7 +298,7 @@ const lastSteps = () =>
 		.steps;
 
 describe("DrillableGrid — time grain", () => {
-	it("WITHOUT a nodeRef a temporal axis slices RAW — grain is a node-path capability", async () => {
+	it("WITHOUT a node source a temporal axis slices RAW — grain is a node-path capability", async () => {
 		renderGrid(); // tier-A path: /api/drill/compose rejects grained steps
 		await sliceBy("entry_id__date", "SQL_RAW");
 		expect(lastSteps()).toEqual([{ kind: "slice", column: "entry_id__date" }]);
@@ -242,7 +309,7 @@ describe("DrillableGrid — time grain", () => {
 	});
 
 	it("slices a temporal axis at MONTH grain by default; the chip is the grain control", async () => {
-		renderGrid({ metricKey: "m1" });
+		renderGrid(NODE_SOURCE);
 		await sliceBy("entry_id__date", "SQL_M");
 		expect(lastSteps()).toEqual([
 			{ kind: "slice", column: "entry_id__date", grain: "1M" },
@@ -264,7 +331,7 @@ describe("DrillableGrid — time grain", () => {
 	});
 
 	it("refuses an off-grammar custom token locally — no compose call fires", async () => {
-		renderGrid({ metricKey: "m1" });
+		renderGrid(NODE_SOURCE);
 		await sliceBy("entry_id__date", "SQL_M");
 		const before = composeBodies.length;
 		fireEvent.click(screen.getByTestId("drill-step-slice-entry_id__date"));
@@ -280,7 +347,7 @@ describe("DrillableGrid — time grain", () => {
 	});
 
 	it("a valid custom token composes (typed power path)", async () => {
-		renderGrid({ metricKey: "m1" });
+		renderGrid(NODE_SOURCE);
 		await sliceBy("entry_id__date", "SQL_M");
 		fireEvent.click(screen.getByTestId("drill-step-slice-entry_id__date"));
 		const input = await screen.findByTestId(
@@ -300,7 +367,7 @@ describe("DrillableGrid — time grain", () => {
 
 	it("a row-pin FREEZES the slice's grain; re-graining the slice leaves the pin (and the lock) standing", async () => {
 		const onPinnedRow = vi.fn();
-		renderGrid({ metricKey: "m1" }, onPinnedRow);
+		renderGrid(NODE_SOURCE, onPinnedRow);
 		await sliceBy("entry_id__date", "SQL_M");
 
 		// Pin the bucket row: the pin carries the slice's CURRENT grain.

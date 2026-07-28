@@ -32,6 +32,7 @@ import { Route as appCockpitRouteRouteImport } from './routes/(app)/cockpit/rout
 import { Route as appReportsIndexRouteImport } from './routes/(app)/reports/index'
 import { Route as appCockpitIndexRouteImport } from './routes/(app)/cockpit/index'
 import { Route as ApiReportsMintRouteImport } from './routes/api/reports/mint'
+import { Route as ApiDrillPartsRouteImport } from './routes/api/drill/parts'
 import { Route as ApiDrillNodeRouteImport } from './routes/api/drill/node'
 import { Route as ApiDrillComposeRouteImport } from './routes/api/drill/compose'
 import { Route as ApiDrillAxesRouteImport } from './routes/api/drill/axes'
@@ -154,6 +155,11 @@ const ApiReportsMintRoute = ApiReportsMintRouteImport.update({
   path: '/api/reports/mint',
   getParentRoute: () => rootRouteImport,
 } as any)
+const ApiDrillPartsRoute = ApiDrillPartsRouteImport.update({
+  id: '/api/drill/parts',
+  path: '/api/drill/parts',
+  getParentRoute: () => rootRouteImport,
+} as any)
 const ApiDrillNodeRoute = ApiDrillNodeRouteImport.update({
   id: '/api/drill/node',
   path: '/api/drill/node',
@@ -218,6 +224,7 @@ export interface FileRoutesByFullPath {
   '/api/drill/axes': typeof ApiDrillAxesRoute
   '/api/drill/compose': typeof ApiDrillComposeRoute
   '/api/drill/node': typeof ApiDrillNodeRoute
+  '/api/drill/parts': typeof ApiDrillPartsRoute
   '/api/reports/mint': typeof ApiReportsMintRoute
   '/cockpit/': typeof appCockpitIndexRoute
   '/reports/': typeof appReportsIndexRoute
@@ -248,6 +255,7 @@ export interface FileRoutesByTo {
   '/api/drill/axes': typeof ApiDrillAxesRoute
   '/api/drill/compose': typeof ApiDrillComposeRoute
   '/api/drill/node': typeof ApiDrillNodeRoute
+  '/api/drill/parts': typeof ApiDrillPartsRoute
   '/api/reports/mint': typeof ApiReportsMintRoute
   '/cockpit': typeof appCockpitIndexRoute
   '/reports': typeof appReportsIndexRoute
@@ -281,6 +289,7 @@ export interface FileRoutesById {
   '/api/drill/axes': typeof ApiDrillAxesRoute
   '/api/drill/compose': typeof ApiDrillComposeRoute
   '/api/drill/node': typeof ApiDrillNodeRoute
+  '/api/drill/parts': typeof ApiDrillPartsRoute
   '/api/reports/mint': typeof ApiReportsMintRoute
   '/(app)/cockpit/': typeof appCockpitIndexRoute
   '/(app)/reports/': typeof appReportsIndexRoute
@@ -314,6 +323,7 @@ export interface FileRouteTypes {
     | '/api/drill/axes'
     | '/api/drill/compose'
     | '/api/drill/node'
+    | '/api/drill/parts'
     | '/api/reports/mint'
     | '/cockpit/'
     | '/reports/'
@@ -344,6 +354,7 @@ export interface FileRouteTypes {
     | '/api/drill/axes'
     | '/api/drill/compose'
     | '/api/drill/node'
+    | '/api/drill/parts'
     | '/api/reports/mint'
     | '/cockpit'
     | '/reports'
@@ -376,6 +387,7 @@ export interface FileRouteTypes {
     | '/api/drill/axes'
     | '/api/drill/compose'
     | '/api/drill/node'
+    | '/api/drill/parts'
     | '/api/reports/mint'
     | '/(app)/cockpit/'
     | '/(app)/reports/'
@@ -400,6 +412,7 @@ export interface RootRouteChildren {
   ApiDrillAxesRoute: typeof ApiDrillAxesRoute
   ApiDrillComposeRoute: typeof ApiDrillComposeRoute
   ApiDrillNodeRoute: typeof ApiDrillNodeRoute
+  ApiDrillPartsRoute: typeof ApiDrillPartsRoute
   ApiReportsMintRoute: typeof ApiReportsMintRoute
 }
 
@@ -566,6 +579,13 @@ declare module '@tanstack/react-router' {
       preLoaderRoute: typeof ApiReportsMintRouteImport
       parentRoute: typeof rootRouteImport
     }
+    '/api/drill/parts': {
+      id: '/api/drill/parts'
+      path: '/api/drill/parts'
+      fullPath: '/api/drill/parts'
+      preLoaderRoute: typeof ApiDrillPartsRouteImport
+      parentRoute: typeof rootRouteImport
+    }
     '/api/drill/node': {
       id: '/api/drill/node'
       path: '/api/drill/node'
@@ -679,6 +699,7 @@ const rootRouteChildren: RootRouteChildren = {
   ApiDrillAxesRoute: ApiDrillAxesRoute,
   ApiDrillComposeRoute: ApiDrillComposeRoute,
   ApiDrillNodeRoute: ApiDrillNodeRoute,
+  ApiDrillPartsRoute: ApiDrillPartsRoute,
   ApiReportsMintRoute: ApiReportsMintRoute,
 }
 export const routeTree = rootRouteImport

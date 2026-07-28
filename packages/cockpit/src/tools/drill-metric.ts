@@ -17,7 +17,7 @@ import { and, desc, eq, inArray, like } from "drizzle-orm";
 import { config } from "#/config";
 import { metadataDb } from "#/db/metadata/client";
 import { currentLifecycleArtifacts, sqlSnippets } from "#/db/metadata/schema";
-import type { DrillAxesRequest } from "#/duckdb/drill";
+import type { DrillNodeRef } from "#/duckdb/drill";
 import {
 	type NodeStep,
 	narrowSnippetParts,
@@ -78,7 +78,7 @@ async function resolveSnippets(
  *  `missing` covers only the node itself — no metric definition, an
  *  unparseable one, or a measure field with no snippet at all. */
 export async function resolveNodeSteps(
-	req: DrillAxesRequest,
+	req: DrillNodeRef,
 ): Promise<NodeDrillSteps> {
 	if (req.standardField !== undefined) {
 		const byField = await resolveSnippets([req.standardField]);

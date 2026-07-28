@@ -54,10 +54,44 @@ describe("composeTierA", () => {
 			{ kind: "slice", column: "region" },
 		]);
 		expect(sql).toBe(
-			'SELECT "region", COUNT(*) AS "count", SUM("amount") AS "amount", SUM("qty") AS "qty"' +
+			'SELECT "region", COUNT(*) AS "count", SUM("amount") AS "sum(amount)", SUM("qty") AS "sum(qty)"' +
 				' FROM (SELECT * FROM sales) AS _drill GROUP BY "region"',
 		);
 		expect(params).toEqual([]);
+	});
+
+	// DAT-678: the aggregate is NAMED, never re-aliased onto the source column.
+	// Tier A wraps a result it knows nothing about, so a summable column may be a
+	// rate or an average; `SUM(avg_price) AS avg_price` would read as the same
+	// quantity the undrilled grid showed.
+	it("names each aggregate rather than shadowing the source column", () => {
+		const { sql } = composeTierA(
+			"SELECT * FROM sales",
+			[],
+			[
+				{ name: "region", type: "VARCHAR" },
+				{ name: "avg_price", type: "DOUBLE" },
+			],
+			[{ kind: "slice", column: "region" }],
+		);
+		expect(sql).toContain('SUM("avg_price") AS "sum(avg_price)"');
+		expect(sql).not.toContain('AS "avg_price"');
+	});
+
+	// The de-collision is generic, so a base column that happens to carry the
+	// aggregate's name cannot silently shadow it in the output.
+	it("de-collides an aggregate alias against the base columns", () => {
+		const { sql } = composeTierA(
+			"SELECT * FROM sales",
+			[],
+			[
+				{ name: "region", type: "VARCHAR" },
+				{ name: "amount", type: "DOUBLE" },
+				{ name: "sum(amount)", type: "VARCHAR" },
+			],
+			[{ kind: "slice", column: "region" }],
+		);
+		expect(sql).toContain('SUM("amount") AS "_sum(amount)"');
 	});
 
 	it("numbers pin params after the base params and renders NULL pins as IS NULL", () => {

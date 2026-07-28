@@ -10,6 +10,7 @@ import { notFound } from "@tanstack/react-router";
 import { createServerFn } from "@tanstack/react-start";
 import {
 	getReport,
+	getReportParentTitle,
 	renameReport,
 	setReportFingerprint,
 	softDeleteReport,
@@ -25,7 +26,14 @@ export const loadReport = createServerFn({ method: "GET" })
 		if (!report) return null;
 		let outdated = false;
 		try {
-			const { fingerprint } = await computeReportFingerprint(report.sql);
+			// A PINNED drill's frozen `sql` carries `$1…` placeholders — without
+			// its own bound params DuckDB throws and this catch swallows it,
+			// pinning `outdated` false forever for every pinned report (DAT-627
+			// fix; both reviewers, live-verified against duckdb-neo).
+			const { fingerprint } = await computeReportFingerprint(
+				report.sql,
+				report.sqlParams ?? undefined,
+			);
 			if (report.summaryFingerprint === null) {
 				// First time we can fingerprint this report — backfill, don't badge.
 				await setReportFingerprint(report.id, fingerprint);
@@ -37,7 +45,14 @@ export const loadReport = createServerFn({ method: "GET" })
 			// SQL, a lake hiccup), don't badge — the grid surfaces the real error.
 			console.error("[reports] drift check failed — not flagging:", err);
 		}
-		return { report, outdated };
+		// The evolve-lineage title (DAT-627) — a separate, minimal query only
+		// when a parent is actually set (most reports have none). Null when
+		// the parent id no longer resolves (soft-deleted/foreign); the route
+		// omits the link rather than rendering a dead one.
+		const parentTitle = report.parentId
+			? await getReportParentTitle(report.parentId)
+			: null;
+		return { report, outdated, parentTitle };
 	});
 
 export const renameReportFn = createServerFn({ method: "POST" })
@@ -61,7 +76,13 @@ export const regenerateSummaryFn = createServerFn({ method: "POST" })
 	.handler(async ({ data: reportId }) => {
 		const report = await getReport(reportId);
 		if (!report) throw notFound();
-		const { fingerprint, result } = await computeReportFingerprint(report.sql);
+		// Same DAT-627 fix as loadReport above — a pinned report's sql needs its
+		// own bound params or this throws (previously masked into an unrelated
+		// failure surface, since regenerate has no try/catch of its own).
+		const { fingerprint, result } = await computeReportFingerprint(
+			report.sql,
+			report.sqlParams ?? undefined,
+		);
 		const summary = await regenerateSummary(report.summary, result);
 		await updateReportSummary(reportId, summary, fingerprint);
 	});

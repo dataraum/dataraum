@@ -83,23 +83,39 @@ function useInView(): [React.RefObject<HTMLDivElement | null>, boolean] {
 	return [ref, inView];
 }
 
-/** A small frozen chart on a gallery card — rendered only once its card is in view. */
+/** A small frozen chart on a gallery card — rendered only once its card is in
+ *  view. `params` (DAT-627 fix, CRITICAL — reachable: pin a drill, author a
+ *  chart, mint a child report) MUST ride through to `useChartData` exactly
+ *  like `ReportChart` above: a PINNED report's `sql` carries `$1…`
+ *  placeholders, and without their bound values the query 400s — previously
+ *  a permanently blank 140px card, re-firing on every scroll (the
+ *  IntersectionObserver re-queries `useChartData` on each `inView` flip since
+ *  the failed query never populates the cache with data). */
 export function ReportChartThumbnail({
 	sql,
+	params,
 	config,
 	height = 140,
 }: {
 	sql: string;
+	params?: (string | number | boolean | null)[];
 	config: ChartConfig;
 	height?: number;
 }) {
 	const [ref, inView] = useInView();
-	const { data } = useChartData(sql, undefined, inView);
+	const { data, error } = useChartData(sql, params, inView);
 	const ready = data && data.columns.length > 0;
 
 	return (
 		<div ref={ref} style={{ height }} data-testid="report-thumbnail">
-			{inView && ready ? (
+			{error ? (
+				// Surfaced, not swallowed: destructuring only `{ data }` (as this
+				// used to) silently rendered nothing on a query failure — the exact
+				// class of bug params-threading would otherwise still hide.
+				<Alert color="red" data-testid="report-thumbnail-error">
+					Couldn’t render the chart.
+				</Alert>
+			) : inView && ready ? (
 				<ClientOnly>
 					<ChartView
 						config={config}

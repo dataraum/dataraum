@@ -56,7 +56,7 @@ import {
 } from "@mantine/core";
 import { useMutation, useQuery } from "@tanstack/react-query";
 import { Check, ChevronDown, Layers, X } from "lucide-react";
-import { type ReactNode, useMemo, useRef, useState } from "react";
+import { type ReactNode, useEffect, useMemo, useRef, useState } from "react";
 import type { ChartConfig } from "#/charts/chart-config";
 import type {
 	DrillAxesRequest,
@@ -280,6 +280,7 @@ export function DrillableGrid({
 	params,
 	axesRequest,
 	source,
+	initialSteps,
 	footerCells,
 	footerLabel,
 	columnAccents,
@@ -301,6 +302,16 @@ export function DrillableGrid({
 	 *  a canvas node's persisted ones (`/api/drill/node`) or an answer's proven
 	 *  declared ones (`/api/drill/parts`, DAT-678). */
 	source?: DrillSource;
+	/** Rehydrate a drill on mount (DAT-676) — the report-detail route's search
+	 *  param is the one caller today: on load it decodes its `?drill=` steps
+	 *  and hands them here so the grid re-composes and opens ALREADY drilled,
+	 *  instead of a reload silently snapping back to the base result. Composed
+	 *  the same way a live apply is (same endpoint, same acceptance rule); a
+	 *  step that no longer composes (the catalog or data changed underneath
+	 *  the saved link) degrades to the base result with a visible notice —
+	 *  never a silently different grid. Omitted/empty = no rehydrate, the
+	 *  ordinary empty-stack start every other caller gets. */
+	initialSteps?: DrillStep[];
 	/** Total-row cells (column name → value), shown as the grid's sticky footer
 	 *  WHILE a drill is active — the anchor a slice would otherwise lose. The
 	 *  layer above owns the values (DAT-712). */
@@ -347,6 +358,12 @@ export function DrillableGrid({
 		params: SqlParams;
 	} | null>(null);
 	const [refusal, setRefusal] = useState<string | null>(null);
+	// A REHYDRATE-specific notice (DAT-676), distinct from `refusal`: a live
+	// apply's refusal is the user's OWN action failing right now (dismissable,
+	// tied to the control they just used); a rehydrate failure is a SAVED link
+	// that no longer resolves — the grid opens on the base result instead, and
+	// this says why, once, on mount.
+	const [rehydrateNotice, setRehydrateNotice] = useState<string | null>(null);
 
 	const axesQuery = useQuery({
 		queryKey: ["drill-axes", axesRequest],
@@ -368,6 +385,27 @@ export function DrillableGrid({
 	// only in handlers/callbacks (rule 8's render restriction doesn't apply).
 	const generationRef = useRef(0);
 
+	// The ONE compose call, shared by a live apply (the mutation below) and the
+	// mount-time rehydrate (DAT-676) — same endpoint selection by `source`, so
+	// a rehydrate is composed exactly the way a live apply would be, never a
+	// second, drifting code path.
+	const runCompose = (candidate: DrillStep[]): Promise<ComposeResponse> =>
+		source === undefined
+			? postJson<ComposeResponse>("/api/drill/compose", {
+					sql,
+					params: baseParams,
+					steps: candidate,
+				})
+			: source.kind === "node"
+				? postJson<ComposeResponse>("/api/drill/node", {
+						...source.ref,
+						steps: candidate,
+					})
+				: postJson<ComposeResponse>("/api/drill/parts", {
+						...source.source,
+						steps: candidate,
+					});
+
 	// Applying a step stack is a user event → a mutation (rule 4). A refusal is
 	// a DOMAIN result (HTTP 200): surface it and keep the last accepted drill.
 	const compose = useMutation({
@@ -384,22 +422,7 @@ export function DrillableGrid({
 			candidate,
 			generation,
 			pinRow,
-			result:
-				source === undefined
-					? await postJson<ComposeResponse>("/api/drill/compose", {
-							sql,
-							params: baseParams,
-							steps: candidate,
-						})
-					: source.kind === "node"
-						? await postJson<ComposeResponse>("/api/drill/node", {
-								...source.ref,
-								steps: candidate,
-							})
-						: await postJson<ComposeResponse>("/api/drill/parts", {
-								...source.source,
-								steps: candidate,
-							}),
+			result: await runCompose(candidate),
 		}),
 		onSuccess: ({ candidate, generation, pinRow, result }) => {
 			if (generation !== generationRef.current) return; // superseded — drop
@@ -437,6 +460,55 @@ export function DrillableGrid({
 			setRefusal(err instanceof Error ? err.message : String(err));
 		},
 	});
+
+	// Rehydrate a saved drill on mount (DAT-676): the report-detail route
+	// decodes its `?drill=` search param and hands the steps here as
+	// `initialSteps`. Composed exactly like a live apply (same `runCompose`,
+	// same acceptance rule) — a step that no longer resolves (the catalog or
+	// data changed under a saved/shared link) leaves `steps`/`composed` at
+	// their empty defaults and surfaces `rehydrateNotice` instead: the grid
+	// opens on the BASE result with a visible reason, never a silently
+	// different grid and never a throw. Runs from the URL's state AT LOAD;
+	// a LATER change rides through `apply`/`onStepsChange`, never back
+	// through here — an external-system sync (React idiom rule 2), not a
+	// state mirror, and the one-time nature is the point.
+	// biome-ignore lint/correctness/useExhaustiveDependencies: mount-only rehydrate from the URL's state AT LOAD — a later initialSteps/onStepsChange/runCompose identity change must NOT re-fire this (that would re-hydrate on every live apply, fighting the user's own action).
+	useEffect(() => {
+		if (!initialSteps || initialSteps.length === 0) return;
+		const generation = ++generationRef.current;
+		let live = true;
+		void (async () => {
+			let result: ComposeResponse;
+			try {
+				result = await runCompose(initialSteps);
+			} catch (err) {
+				if (live && generation === generationRef.current) {
+					setRehydrateNotice(
+						`This link's saved slice couldn't be restored — showing the base result (${
+							err instanceof Error ? err.message : String(err)
+						}).`,
+					);
+				}
+				return;
+			}
+			if (!live || generation !== generationRef.current) return;
+			if (result.ok) {
+				setSteps(initialSteps);
+				setComposed({ sql: result.sql, params: result.params });
+				onStepsChange?.(initialSteps, {
+					sql: result.sql,
+					params: result.params,
+				});
+			} else {
+				setRehydrateNotice(
+					`This link's saved slice couldn't be restored — showing the base result (${result.reason}).`,
+				);
+			}
+		})();
+		return () => {
+			live = false;
+		};
+	}, []);
 
 	const apply = (
 		candidate: DrillStep[],
@@ -689,6 +761,18 @@ export function DrillableGrid({
 					: undefined
 			}
 		>
+			{rehydrateNotice && (
+				<Alert
+					color="yellow"
+					mb="xs"
+					withCloseButton
+					onClose={() => setRehydrateNotice(null)}
+					title="Showing the base result"
+					data-testid="drill-rehydrate-notice"
+				>
+					{rehydrateNotice}
+				</Alert>
+			)}
 			{refusal && (
 				<Alert
 					color="yellow"

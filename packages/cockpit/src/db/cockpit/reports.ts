@@ -13,6 +13,7 @@
 import { randomUUID } from "node:crypto";
 import { and, desc, eq, isNull } from "drizzle-orm";
 import type { ChartConfig } from "#/charts/chart-config";
+import type { DrillPinValue } from "#/duckdb/drill";
 import type { AnswerConfidence } from "#/ui/cockpit/canvas-state";
 import { cockpitDb } from "./client";
 import { assertBootWorkspace, bootWorkspaceId } from "./registry";
@@ -27,9 +28,10 @@ import { reports } from "./schema";
  * — newest-first; pagination is a follow-up when a workspace outgrows this. */
 export const REPORTS_LIMIT = 200;
 
-/** The fields captured when an answer is minted into a report. `conversationId` /
- * `messageId` / `parentId` are optional provenance/lineage; the rest is the frozen
- * artifact. `title` defaults from the answer at the call site. */
+/** The fields captured when an answer (or a drilled report) is minted into a
+ * report. `conversationId` / `messageId` / `parentId` are optional
+ * provenance/lineage; the rest is the frozen artifact. `title` defaults from
+ * the answer at the call site. */
 export interface CreateReportInput {
 	workspaceId: string;
 	conversationId?: string | null;
@@ -38,7 +40,14 @@ export interface CreateReportInput {
 	title: string;
 	summary: string;
 	sql: string;
-	confidence: AnswerConfidence;
+	/** Bound params for a PINNED drill's `sql` (DAT-627) — null/omitted for an
+	 *  unparameterized statement. */
+	sqlParams?: DrillPinValue[] | null;
+	/** The mint's confidence, or null when none describes it (DAT-627): a
+	 *  report minted from a sliced/pinned drill shows rows the frozen
+	 *  summary/confidence do not — carrying the parent's forward would
+	 *  misrepresent them, so the honest value is null, never a stale one. */
+	confidence: AnswerConfidence | null;
 	/** Frozen chart config (DAT-626) — null/omitted = table-only report. */
 	chartConfig?: ChartConfig | null;
 	/** Headline result fingerprint at mint (DAT-625). Drives drift detection on open;
@@ -57,7 +66,10 @@ export interface ReportRow {
 	summary: string;
 	summaryFingerprint: string | null;
 	sql: string;
-	confidence: AnswerConfidence;
+	/** Bound params for a PINNED drill's `sql` (DAT-627) — null for an
+	 *  unparameterized statement. */
+	sqlParams: DrillPinValue[] | null;
+	confidence: AnswerConfidence | null;
 	/** Frozen chart config (DAT-626) — null = table-only report. */
 	chartConfig: ChartConfig | null;
 	createdAt: Date;
@@ -81,6 +93,7 @@ export async function createReport(input: CreateReportInput): Promise<string> {
 		summary: input.summary,
 		summaryFingerprint: input.summaryFingerprint ?? null,
 		sql: input.sql,
+		sqlParams: input.sqlParams ?? null,
 		confidence: input.confidence,
 		chartConfig: input.chartConfig ?? null,
 	});
@@ -105,6 +118,7 @@ export async function listReports(
 			summary: reports.summary,
 			summaryFingerprint: reports.summaryFingerprint,
 			sql: reports.sql,
+			sqlParams: reports.sqlParams,
 			confidence: reports.confidence,
 			chartConfig: reports.chartConfig,
 			createdAt: reports.createdAt,
@@ -129,6 +143,7 @@ export async function getReport(reportId: string): Promise<ReportRow | null> {
 			summary: reports.summary,
 			summaryFingerprint: reports.summaryFingerprint,
 			sql: reports.sql,
+			sqlParams: reports.sqlParams,
 			confidence: reports.confidence,
 			chartConfig: reports.chartConfig,
 			createdAt: reports.createdAt,
@@ -143,6 +158,35 @@ export async function getReport(reportId: string): Promise<ReportRow | null> {
 		)
 		.limit(1);
 	return row ?? null;
+}
+
+/**
+ * The lineage title for a report's parent (DAT-627) — "evolved from …" on the
+ * detail page. A separate, minimal query (not a join on every `getReport`
+ * call, which is the hot path): most reports have no parent, and a join would
+ * pay a cost every open for a field almost never present. SELECTS ONLY
+ * `title` (fold-in fix — this used to call the full `getReport`, pulling
+ * `sql` + `chartConfig` + `confidence` jsonb for a page that renders one
+ * varchar). Null when the report has no parent, OR the parent id no longer
+ * resolves (soft-deleted or foreign — scoped to the boot workspace exactly
+ * like `getReport`) — either way the detail page just omits the link rather
+ * than rendering a dead one.
+ */
+export async function getReportParentTitle(
+	parentId: string,
+): Promise<string | null> {
+	const [row] = await cockpitDb
+		.select({ title: reports.title })
+		.from(reports)
+		.where(
+			and(
+				eq(reports.id, parentId),
+				eq(reports.workspaceId, bootWorkspaceId()),
+				isNull(reports.deletedAt),
+			),
+		)
+		.limit(1);
+	return row?.title ?? null;
 }
 
 /**

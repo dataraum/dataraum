@@ -81,6 +81,25 @@ CREATE TABLE cycle_families (
 
 CREATE UNIQUE INDEX uq_cycle_family_active ON cycle_families (vertical, family) WHERE superseded_at IS NULL;
 
+CREATE TABLE cycle_types (
+	cycle_type_id VARCHAR NOT NULL, 
+	vertical VARCHAR NOT NULL, 
+	name VARCHAR NOT NULL, 
+	description TEXT, 
+	business_value VARCHAR, 
+	aliases JSON, 
+	typical_stages JSON, 
+	completion_indicators JSON, 
+	feeds_into JSON, 
+	source VARCHAR, 
+	created_at TIMESTAMP WITHOUT TIME ZONE NOT NULL, 
+	superseded_at TIMESTAMP WITHOUT TIME ZONE, 
+	CONSTRAINT pk_cycle_types PRIMARY KEY (cycle_type_id), 
+	CONSTRAINT ck_cycle_types_source CHECK (source IS NULL OR source IN ('seed'))
+);
+
+CREATE UNIQUE INDEX uq_cycle_type_active ON cycle_types (vertical, name) WHERE superseded_at IS NULL;
+
 CREATE TABLE detected_business_cycles (
 	cycle_id VARCHAR NOT NULL, 
 	run_id VARCHAR NOT NULL, 
@@ -265,6 +284,9 @@ CREATE TABLE metrics (
 	unit VARCHAR, 
 	output_type VARCHAR, 
 	version VARCHAR, 
+	description TEXT, 
+	output JSON, 
+	dependencies JSON, 
 	source VARCHAR, 
 	created_at TIMESTAMP WITHOUT TIME ZONE NOT NULL, 
 	superseded_at TIMESTAMP WITHOUT TIME ZONE, 

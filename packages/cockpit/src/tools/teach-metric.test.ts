@@ -1,7 +1,12 @@
 // Unit tests for teach_metric (DAT-466). Pure — the schema + the shadow
 // detection run with no DB and no config tree. The DB-bound write path reuses
-// `teach()` (covered by the teach integration smoke); the live config-tree read
-// is browser/integration-smoke territory. What this guards:
+// `teach()` (covered by the teach integration smoke). Two readers now exist
+// (DAT-882 split — see teach-metric.ts's module header): `readShippedMetrics`
+// (the LIBRARY reader, fs/YAML) has its narrowing (`narrowShippedMetric`)
+// unit-tested below; its own fs read is browser/integration-smoke territory,
+// same as before the split. `readWorkspaceMetricDag` (the WORKSPACE reader, the
+// typed table) has its own DB-mock coverage in
+// teach-metric-workspace-read.test.ts. What THIS file guards:
 //   - the spec input is a top-level object whose `dependencies` is a DAG of typed
 //     steps; the schema is GUIDING (the engine GraphLoader is the final
 //     validator) so it accepts a valid graph and rejects only the hard requireds

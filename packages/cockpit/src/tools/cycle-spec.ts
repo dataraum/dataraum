@@ -139,10 +139,16 @@ export const CycleSpecSchema = z.object({
 });
 export type CycleSpecInput = z.infer<typeof CycleSpecSchema>;
 
-/** A shipped cycle as read off a vertical's `cycles.yaml` `cycle_types` mapping,
- * in the few fields the shadowing affordance surfaces. The full entry carries
- * more; we only echo what the UX shows when an override shadows a shipped cycle
- * (the thing a user typically tweaks is `completion_indicators`). */
+/** A shipped cycle in the few fields the shadowing affordance surfaces. TWO
+ * readers produce this shape, deliberately split (DAT-881 rework — see
+ * teach-cycle.ts's header for the split's full rationale): `readShippedCycles`
+ * (this module's `narrowShippedCycle`, off the raw vertical library on disk —
+ * a LIBRARY question, any vertical, valid before a workspace has seeded
+ * anything) and `readWorkspaceCycleTypes` (the typed `cycle_types` home,
+ * DAT-881 config→DB — a WORKSPACE question, the bound vertical's currently
+ * seeded set). The full entry carries more (aliases/typical_stages/feeds_into);
+ * we only echo what the UX shows when an override shadows a shipped cycle (the
+ * thing a user typically tweaks is `completion_indicators`). */
 export interface ShippedCycleSpec {
 	name: string;
 	description: string | null;
@@ -150,21 +156,13 @@ export interface ShippedCycleSpec {
 	completion_indicators: string[] | null;
 }
 
-function asString(v: unknown): string | null {
-	return typeof v === "string" ? v : null;
-}
-
-function asStringArray(v: unknown): string[] | null {
-	if (!Array.isArray(v)) return null;
-	const strings = v.filter((x): x is string => typeof x === "string");
-	return strings.length > 0 ? strings : null;
-}
-
 /** Narrow one parsed `cycle_types` entry (untrusted shape — rule 11) to a
  * ShippedCycleSpec. `name` is the mapping KEY (always present for a real entry);
  * a non-object def degrades to a name-only summary rather than throwing. Pure —
  * no fs/YAML here, so the reader's I/O stays mockable and this narrowing is
- * unit-tested directly. */
+ * unit-tested directly. Consumed by `readShippedCycles` (the LIBRARY reader,
+ * teach-cycle.ts) — the typed `readWorkspaceCycleTypes` reader narrows typed DB
+ * columns directly and needs no YAML-doc narrowing. */
 export function narrowShippedCycle(
 	name: string,
 	def: unknown,
@@ -178,6 +176,16 @@ export function narrowShippedCycle(
 		business_value: asString(raw.business_value),
 		completion_indicators: asStringArray(raw.completion_indicators),
 	};
+}
+
+function asString(v: unknown): string | null {
+	return typeof v === "string" ? v : null;
+}
+
+function asStringArray(v: unknown): string[] | null {
+	if (!Array.isArray(v)) return null;
+	const strings = v.filter((x): x is string => typeof x === "string");
+	return strings.length > 0 ? strings : null;
 }
 
 /**

@@ -1,7 +1,12 @@
 // Unit tests for teach_cycle (DAT-465). Pure — the schema + the shadow detection
 // run with no DB and no config tree. The DB-bound write path reuses `teach()`
-// (covered by the teach integration smoke); the live config-tree read is
-// browser/integration-smoke territory. What this guards:
+// (covered by the teach integration smoke). Two readers now exist (DAT-881
+// split — see teach-cycle.ts's module header): `readShippedCycles` (the LIBRARY
+// reader, fs/YAML) has its narrowing (`narrowShippedCycle`) unit-tested below;
+// its own fs read is browser/integration-smoke territory, same as before the
+// split. `readWorkspaceCycleTypes` (the WORKSPACE reader, the typed table) has
+// its own DB-mock coverage in teach-cycle-workspace-read.test.ts. What THIS file
+// guards:
 //   - the spec input is a top-level object whose `name` is FREE-FORM (no closed
 //     vocabulary — the cycle counterpart to validation's closed check_type) but
 //     whose `business_value` IS a closed enum;

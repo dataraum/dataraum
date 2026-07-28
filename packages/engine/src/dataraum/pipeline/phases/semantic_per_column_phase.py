@@ -17,6 +17,7 @@ from types import ModuleType
 from sqlalchemy import func, select
 
 from dataraum.analysis.cycles.cycle_family_store import ensure_cycle_families_seeded
+from dataraum.analysis.cycles.cycle_type_store import ensure_cycle_types_seeded
 from dataraum.analysis.semantic.concept_edge_store import ensure_concept_edges_seeded
 from dataraum.analysis.semantic.concept_store import (
     ensure_concepts_seeded,
@@ -189,6 +190,12 @@ class SemanticPerColumnPhase(BasePhase):
         # (seed ⊕ generated) instead of the YAML directory walk. Agentic induction adds
         # `source='generated'` rows in the operating_model stage.
         ensure_validations_seeded(ctx.session, ontology)
+        # Cycle types (DAT-881): seed the vertical's shipped cycle-type vocabulary into
+        # the typed `cycle_types` home — same idempotent config→DB seed. Shipped-baseline
+        # ONLY (never the overlay-layered view): the cockpit's shipped-only readers
+        # (teach_cycle's override-shadow detection, the frame induction seed) are the
+        # consumer; the engine judge keeps reading the overlay-inclusive config reader.
+        ensure_cycle_types_seeded(ctx.session, ontology)
         # Cycle families (DAT-856): seed the vertical's direction-axis declaration into
         # the typed `cycle_families` home — same idempotent config→DB seed. Committed in
         # add_source so the operating_model cycles phase serves the families to the judge

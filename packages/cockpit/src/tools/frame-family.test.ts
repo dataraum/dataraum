@@ -5,6 +5,22 @@
 // mock can only fake — the call SHAPE is pinned by induce-native.contract.test.ts
 // and the schemas by induction-schema.contract.test.ts; behaviour is verified by
 // the live frame→import smoke (DAT-597), not unit tests.
+//
+// `nearestSeedVertical`'s fallback scenario below uses an "honest fake" —
+// vertical-keyed, cross-vertical-capable — matching the REAL LIBRARY reader's
+// contract (`readShippedCycles`/`readShippedMetrics`, teach-cycle.ts /
+// teach-metric.ts) exactly, restored by the DAT-881/882 split (see those
+// modules' headers): both reviewers independently caught the first cut
+// unifying that LIBRARY reader with a WORKSPACE-scoped typed reader that
+// cannot answer a cross-vertical, frame-time question (empty pre-seed;
+// view-scoped to one vertical) — this file's fake was "a fiction" THEN because
+// it simulated a contract production could no longer deliver, not because
+// fakes are inherently wrong. Now that the split restores the real contract,
+// this fake is honest again. The STRONGER proof — the real reader against the
+// real `dataraum-config` tree, so a future re-unification fails on a run, not
+// only a manual probe — lives in frame-family-seed-library.integration.test.ts
+// (needs the bun runtime: the readers' `Bun.YAML` import cannot load under
+// Node, which is what `vitest run --project unit` runs under).
 
 import { describe, expect, it, vi } from "vitest";
 
@@ -93,7 +109,11 @@ describe("nearestSeedVertical", () => {
 
 	it("falls back to the richest OTHER shipped builtin when the framed vertical ships none", async () => {
 		// A brand-new framed vertical (`sales`) ships nothing; finance ships the
-		// most specs → it's the structural reference.
+		// most specs → it's the structural reference. `readSeed` here is
+		// vertical-keyed and cross-vertical-capable — the EXACT contract the real
+		// LIBRARY reader honors post the DAT-881/882 split (see the file header);
+		// the stronger, real-reader proof lives in
+		// frame-family-seed-library.integration.test.ts.
 		const library: Record<string, { id: string }[]> = {
 			finance: [{ id: "a" }, { id: "b" }, { id: "c" }],
 			retail: [{ id: "x" }],

@@ -277,13 +277,19 @@ export const MetricSpecSchema = z.object({
 });
 export type MetricSpecInput = z.infer<typeof MetricSpecSchema>;
 
-/** A shipped metric as read off a vertical's `metrics/**​/*.yaml` — the summary
- * fields PLUS the full DAG body (`output` shape + `dependencies` wiring). ONE
- * canonical metric spec for both jobs: the frame SEED needs the structure (the
- * dependency graph IS the knowledge — DAT-468/471), the teach SHADOW needs the
- * `graph_id` match. `output`/`dependencies` stay `unknown` (rule 11) — passed
- * through to the induce prompt / canvas, never inspected here. The lean agent-
- * facing override echo is the `ShippedMetricSummary` view below. */
+/** A shipped metric — the summary fields PLUS the full DAG body (`output` shape +
+ * `dependencies` wiring). TWO readers produce this shape, deliberately split
+ * (DAT-882 rework — see teach-metric.ts's header for the split's full
+ * rationale): `readShippedMetrics` (this module's `narrowShippedMetric`, off the
+ * raw vertical library on disk — a LIBRARY question, any vertical, valid before
+ * a workspace has seeded anything) and `readWorkspaceMetricDag` (the typed
+ * metric-DAG home, DAT-882 config→DB — a WORKSPACE question, the bound
+ * vertical's currently seeded set). ONE canonical spec for both jobs: the frame
+ * SEED needs the structure (the dependency graph IS the knowledge — DAT-468/471),
+ * the teach SHADOW needs the `graph_id` match. `output`/`dependencies` stay
+ * `unknown` (rule 11) — passed through to the induce prompt / canvas, never
+ * inspected here. The lean agent-facing override echo is the
+ * `ShippedMetricSummary` view below. */
 export interface ShippedMetricSpec {
 	graph_id: string;
 	name: string | null;
@@ -320,7 +326,10 @@ function asString(v: unknown): string | null {
  * the summary keys (graph_id + metadata.{name,description,category}) AND the DAG
  * body (`output` + `dependencies`) — the frame seed needs the structure; the
  * shadow affordance just ignores it. Pure — no fs/YAML here, so the reader's I/O
- * stays mockable and this narrowing is unit-tested directly. */
+ * stays mockable and this narrowing is unit-tested directly. Consumed by
+ * `readShippedMetrics` (the LIBRARY reader, teach-metric.ts) — the typed
+ * `readWorkspaceMetricDag` reader narrows typed DB columns directly and needs no
+ * YAML-doc narrowing. */
 export function narrowShippedMetric(doc: unknown): ShippedMetricSpec | null {
 	if (!doc || typeof doc !== "object") return null;
 	const raw = doc as Record<string, unknown>;

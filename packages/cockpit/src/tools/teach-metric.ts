@@ -17,13 +17,40 @@
 // tool adds over the generic `teach` is (1) a strict, graph-shaped input the
 // model can lean on, and (2) the override SHADOWING affordance: declaring with a
 // shipped metric's graph_id is an upsert-REPLACE, surfaced visibly, never silent.
+//
+// TWO SHIPPED-METRIC READERS, DELIBERATELY SPLIT (DAT-882 rework, both
+// reviewers FAIL-caught the first cut's unification): a LIBRARY question
+// ("what does vertical X ship, any X, cross-vertical") and a WORKSPACE question
+// ("what has THIS workspace's bound vertical seeded") are different questions
+// with different valid answer-times, and one reader cannot serve both:
+//   - `readShippedMetrics` (below) — the LIBRARY reader, fs/YAML off the config
+//     tree (config-is-data via the sanctioned seam — the same legitimacy class
+//     as list-verticals.ts's pre-frame picker). Used by `nearestSeedVertical` /
+//     `induceMetrics` (frame.ts) at FRAME TIME, which must be able to ask about
+//     a DIFFERENT vertical than the one being framed (the "richest other
+//     shipped vertical" fallback) — a question the typed table can never
+//     answer:
+//       (1) it's EMPTY at frame time (seeding runs in add_source, AFTER frame);
+//       (2) even once seeded, the mirrored view is scoped to the workspace's
+//           ONE bound active_vertical (storage/read_views.py's
+//           `_vertical_scoped_view_sql`) — cross-vertical is structurally
+//           unreachable, by design (DAT-848 leak prevention).
+//   - `readWorkspaceMetricDag` — the WORKSPACE reader, the typed metric-DAG home
+//     (DAT-882, config→DB). Used by `teachMetric`'s own shadow detection (below)
+//     AND `/api/shipped-metric-dag` (a post-add_source canvas render, never a
+//     frame-time call) — nowhere else: this IS the workspace question, answered
+//     correctly by the workspace-scoped view.
+// Do NOT re-unify these — a future editor tempted to save a function will
+// silently reintroduce the frame-time dead-few-shot regression the split fixes.
 
 import { readdir, readFile } from "node:fs/promises";
 import { join } from "node:path";
 import { toolDefinition } from "@tanstack/ai";
+import { isNull } from "drizzle-orm";
 import { z } from "zod";
 
 import { config } from "../config";
+import { metricDagRead } from "../db/metadata/read-surface";
 import {
 	findShadowedMetric,
 	MetricSpecSchema,
@@ -52,14 +79,18 @@ export interface TeachMetricResult {
 
 /**
  * Read the metric graphs a vertical SHIPS on disk (verticals/<v>/metrics/**​/*.yaml),
- * narrowed to ShippedMetricSpec (summary fields + the DAG body). ONE reader for
- * both jobs: the frame SEED reads the DAG structure as few-shot, the teach SHADOW
- * matches by `graph_id`. Metrics are a DIRECTORY (like validations, unlike cycles'
- * ONE cycles.yaml) nested by category (e.g. profitability/ebitda.yaml), so this
- * walks RECURSIVELY (mirrors the engine's `_read_metric_dir` rglob). Bun's YAML is
- * imported lazily so merely importing this tool doesn't pull "bun" into the
- * node-run test workers. A missing/unreadable directory yields []; a single
- * unreadable file is skipped, never sinking the whole read.
+ * narrowed to ShippedMetricSpec (summary fields + the DAG body) — the LIBRARY
+ * reader (see the module header for the split's rationale). Metrics are a
+ * DIRECTORY (like validations, unlike cycles' ONE cycles.yaml) nested by
+ * category (e.g. profitability/ebitda.yaml), so this walks RECURSIVELY (mirrors
+ * the engine's `_read_metric_dir` rglob). Bun's YAML is imported lazily so
+ * merely importing this tool doesn't pull "bun" into the node-run test workers.
+ * A missing/unreadable directory yields []; a single unreadable file is
+ * skipped, never sinking the whole read.
+ *
+ * Consumed by `nearestSeedVertical` (frame.ts's `induceMetrics`), which is the
+ * ONLY thing that needs to ask about a vertical OTHER than the workspace's
+ * bound one — see `readWorkspaceMetricDag` for the workspace-scoped sibling.
  *
  * Degradation note: a swallowed read failure makes an actual override LOOK like a
  * fresh declaration in the rail hint (`override:false`) — but the override itself
@@ -95,6 +126,66 @@ export async function readShippedMetrics(
 }
 
 /**
+ * Read the metric graphs the WORKSPACE has seeded, from the typed metric-DAG
+ * home (DAT-882, config→DB) — the WORKSPACE reader (see the module header for
+ * the split's rationale). ShippedMetricSpec (summary fields + the DAG body).
+ * `vertical` stays in the signature for interface stability, but the query
+ * itself doesn't filter on it: the mirrored view is ALREADY scoped to the
+ * workspace's bound active_vertical (storage/read_views.py's
+ * `_vertical_scoped_view_sql`), the same safety property
+ * `prompts/conventions.ts`'s `buildConventionsBlock` relies on. Ordered by
+ * `graph_id` for a deterministic result (the retired fs read was deterministic
+ * too — a DB read with no ORDER BY is not, and Sonnet 5 carries no temperature
+ * to mask that under repeat prompts).
+ *
+ * Consumed by `teachMetric`'s shadow detection below AND
+ * `/api/shipped-metric-dag` (both valid post add_source, when the bound
+ * vertical's typed rows exist).
+ *
+ * The metadata client is imported lazily (it constructs the reader-role SQL
+ * client at module scope): a static import would pull it into every consumer of
+ * this module + the node-run vitest workers.
+ *
+ * Degradation note: a swallowed read failure makes an actual override LOOK like a
+ * fresh declaration in the rail hint (`override:false`) — but the override itself
+ * is unaffected (the engine applier upsert-replaces by `graph_id` regardless; it
+ * is the source of truth). Only the visible-override label degrades, and only on
+ * a metadata-read blip — the same best-effort contract `buildConventionsBlock`
+ * documents (unlike the retired per-file fs read, a single malformed row isn't a
+ * distinct failure mode a typed column read can produce). */
+export async function readWorkspaceMetricDag(
+	_vertical: string,
+): Promise<ShippedMetricSpec[]> {
+	try {
+		const { metadataDb } = await import("#/db/metadata/client");
+		const rows = await metadataDb
+			.select({
+				graphId: metricDagRead.graphId,
+				name: metricDagRead.name,
+				description: metricDagRead.description,
+				category: metricDagRead.category,
+				output: metricDagRead.output,
+				dependencies: metricDagRead.dependencies,
+			})
+			.from(metricDagRead)
+			.where(isNull(metricDagRead.supersededAt))
+			.orderBy(metricDagRead.graphId);
+		return rows
+			.filter((r): r is typeof r & { graphId: string } => Boolean(r.graphId))
+			.map((r) => ({
+				graph_id: r.graphId,
+				name: r.name ?? null,
+				description: r.description ?? null,
+				category: r.category ?? null,
+				output: r.output ?? null,
+				dependencies: r.dependencies ?? null,
+			}));
+	} catch {
+		return [];
+	}
+}
+
+/**
  * Declare or override a metric graph. Writes a `metric`-typed `config_overlay`
  * row (via the shared `teach()` path — same table, same client) carrying the
  * full graph, and reports whether it shadows a shipped metric. The next
@@ -103,10 +194,12 @@ export async function readShippedMetrics(
 export async function teachMetric(
 	input: z.infer<typeof MetricSpecSchema>,
 	// The shipped-metric reader is injectable so the composition (read → shadow →
-	// write) is unit-testable without the config tree; production uses the default.
+	// write) is unit-testable without the DB; production uses the WORKSPACE
+	// reader default (this is a post-add_source teach, never a frame-time
+	// library question — see the module header for the split).
 	readShipped: (
 		vertical: string,
-	) => Promise<ShippedMetricSpec[]> = readShippedMetrics,
+	) => Promise<ShippedMetricSpec[]> = readWorkspaceMetricDag,
 ): Promise<TeachMetricResult> {
 	// Detect the override BEFORE the write so the result can echo the shadowed
 	// shipped metric. A new graph_id (no match) → a brand-new declaration.

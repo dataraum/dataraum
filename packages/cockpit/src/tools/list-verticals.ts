@@ -40,11 +40,13 @@ const Vertical = z.object({
 	// One-line domain description from the builtin's ontology.yaml; null for a
 	// framed vertical (it has no curated description).
 	description: z.string().nullable(),
-	// Concepts available for the vertical: a builtin's curated ontology.yaml
-	// concepts PLUS any active typed `concepts` rows naming it (so framed verticals
-	// report their declared concepts; DAT-728, config→DB). An UPPER BOUND: a shipped
-	// vertical's seeded rows double-count its on-disk concepts (a richness hint, not
-	// exact).
+	// Concepts available for the vertical (DAT-728, config→DB; DAT-883 fix): the
+	// typed `concepts` rows are the source of truth once they exist for this
+	// vertical in this workspace (seeded or frame-edited) — the on-disk
+	// ontology.yaml count is used ONLY as a pre-frame richness hint for a vertical
+	// this workspace hasn't touched yet. Never both summed (see
+	// `resolvedConceptCount` — a prior version double-counted a builtin's seeded
+	// rows on top of its own on-disk concepts).
 	concept_count: z.number(),
 	// Whether the builtin ships the richer operating-model objects. Always false
 	// for framed verticals (concepts only).
@@ -57,8 +59,9 @@ export type Vertical = z.infer<typeof Vertical>;
 /** Active typed `concepts` rows grouped by `vertical` (DAT-728, config→DB — the
  * concept vocabulary is a typed table, not `concept` overlay rows). Includes a
  * shipped vertical's seeded rows once its pipeline has run; the framed listing
- * filters those out by builtin-name, and the builtin count uses it only as an
- * upper-bound richness hint. */
+ * filters those out by builtin-name, and the builtin count uses it as the
+ * authoritative count once this vertical has any typed rows (see
+ * `resolvedConceptCount`). */
 async function conceptCountsByVertical(): Promise<Map<string, number>> {
 	const rows = await metadataWriteDb
 		.select({ vertical: conceptsWrite.vertical, n: count() })
@@ -98,19 +101,31 @@ async function readOntology(
 	}
 }
 
-/** How many concepts a SINGLE vertical resolves to — its builtin ontology.yaml
- * concepts (zero for a framed/directory-less vertical) plus active typed
- * `concepts` rows naming it (DAT-728; the frame stage's writes, and any seeded
- * rows once the pipeline has run). The add_source pre-flight guard uses this to
- * refuse a vertical that would ground against nothing. An UPPER BOUND (a shipped
- * vertical's seed rows double-count its on-disk concepts) — safe for the guard's
- * `=== 0` test, which over-count can never make falsely zero. */
+/** Resolve a vertical's concept count from EITHER source, never both summed
+ * (DAT-883 fix — the double-count `list-verticals.ts` shipped: a builtin whose
+ * pipeline had already run summed its on-disk YAML count on top of the SAME
+ * concepts re-seeded into the typed table, roughly doubling the reported
+ * richness). Typed `concepts` rows are the source of truth once they exist for
+ * this vertical in this workspace — whether from the seed or a `frame` edit
+ * (DAT-728's config→DB migration). The on-disk YAML count serves ONLY the
+ * pre-frame case: a vertical this workspace has never touched, where no typed
+ * rows exist yet to ask instead. */
+function resolvedConceptCount(ontoCount: number, typedCount: number): number {
+	return typedCount > 0 ? typedCount : ontoCount;
+}
+
+/** How many concepts a SINGLE vertical resolves to — its typed `concepts` rows
+ * (DAT-728; the frame stage's writes, or the seed once the pipeline has run)
+ * once any exist for this vertical in this workspace, else its builtin
+ * ontology.yaml concepts (zero for a framed/directory-less vertical not yet
+ * touched). The add_source pre-flight guard uses this to refuse a vertical
+ * that would ground against nothing. */
 export async function verticalConceptCount(vertical: string): Promise<number> {
 	const onto = await readOntology(
 		join(config.dataraumConfigPath, "verticals", vertical, "ontology.yaml"),
 	);
 	const typed = await countActiveConcepts(vertical);
-	return (onto?.concepts?.length ?? 0) + typed;
+	return resolvedConceptCount(onto?.concepts?.length ?? 0, typed);
 }
 
 /** The builtin verticals — every directory under `<config>/verticals/`. */
@@ -138,8 +153,10 @@ async function builtinVerticals(
 			name: entry.name,
 			kind: "builtin",
 			description: onto?.description?.trim() ?? null,
-			concept_count:
-				(onto?.concepts?.length ?? 0) + (typedCounts.get(entry.name) ?? 0),
+			concept_count: resolvedConceptCount(
+				onto?.concepts?.length ?? 0,
+				typedCounts.get(entry.name) ?? 0,
+			),
 			has_cycles: await pathExists(join(dir, "cycles.yaml")),
 			has_validations: await pathExists(join(dir, "validations")),
 			has_metrics: await pathExists(join(dir, "metrics")),

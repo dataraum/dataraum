@@ -105,6 +105,11 @@ export function startFixtureWorkspace(): FixtureWorkspace {
 		"run",
 		"--rm",
 		"-d",
+		// Teardown removes this container, but a SIGKILLed run cannot. The label
+		// makes any orphan identifiable and bulk-removable:
+		//   docker rm -f $(docker ps -aq --filter label=dataraum-fixture=1)
+		"--label",
+		"dataraum-fixture=1",
 		"-e",
 		"POSTGRES_PASSWORD=scratch",
 		"-e",

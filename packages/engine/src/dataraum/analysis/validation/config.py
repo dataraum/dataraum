@@ -18,6 +18,8 @@ from __future__ import annotations
 from pathlib import Path
 from typing import TYPE_CHECKING
 
+from pydantic import ValidationError
+
 from dataraum.analysis.validation.models import ValidationSpec
 from dataraum.analysis.validation.validation_store import load_workspace_validations
 from dataraum.core.logging import get_logger
@@ -63,6 +65,14 @@ def load_all_validation_specs(
     Neither given: returns EMPTY (a caller with no DB session has no typed home to
     read) — fail-quiet, mirroring the framed-vertical contract.
 
+    **Per-row fault isolation** (DAT-880 review correction, the
+    ``ensure_validations_seeded`` per-doc pattern): each overlay-merged row is
+    parsed on its own; a ``ValidationError`` (a malformed teach row, or the
+    ``expected_formula``/``check_type`` pairing invariant tripping) skips just
+    that row — logged — never the whole vocabulary load. Four callers
+    (including the validation phase and ``cross_table_consistency``) read
+    through this loader; one bad row must not take any of them down.
+
     Returns:
         Dict mapping validation_id to ValidationSpec.
     """
@@ -81,7 +91,16 @@ def load_all_validation_specs(
 
     specs: dict[str, ValidationSpec] = {}
     for data in collection.get("validations") or []:
-        spec = ValidationSpec.model_validate(data)
+        try:
+            spec = ValidationSpec.model_validate(data)
+        except ValidationError as exc:
+            logger.warning(
+                "validation_spec_parse_skip",
+                vertical=vertical,
+                validation_id=data.get("validation_id") if isinstance(data, dict) else None,
+                error=str(exc),
+            )
+            continue
         specs[spec.validation_id] = spec
         logger.debug("validation_spec_loaded", validation_id=spec.validation_id)
 

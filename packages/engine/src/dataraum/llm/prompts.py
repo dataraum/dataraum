@@ -135,6 +135,15 @@ class PromptRenderer:
         Uses sequential replacement instead of str.format() to avoid
         interpreting curly braces inside substituted values (e.g. JSON
         content in schema_info or snippet_context).
+
+        Order risk (pre-existing, unresolved): substitution runs key-by-key
+        over the SAME running `result`, so a value substituted early (e.g.
+        `sql_hints`, which composes free-text user guidance — and, since
+        DAT-880, an expected_formula declaration — analysis.validation.agent)
+        that happens to literally contain a LATER key's placeholder text (e.g.
+        "{schema}") gets re-scanned and corrupted when that later key's turn
+        comes. No live case has hit it; flagged because DAT-880 added a second
+        free-text string into an early-substituted slot.
         """
         result = text
         for key, value in context.items():

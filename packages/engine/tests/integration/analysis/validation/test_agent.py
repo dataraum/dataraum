@@ -291,6 +291,70 @@ class TestValidationAgentGenerateSQL:
         assert "line_items" in rendered_context["sql_hints"]
         assert "subtotal + tax" in rendered_context["sql_hints"]
 
+    def test_generate_sql_renders_guidance_only_into_sql_hints(
+        self, validation_agent, mock_provider
+    ):
+        """A plain guidance-only spec (no expected_formula) renders sql_hints from
+        guidance alone — the ordinary case, closing the render matrix alongside the
+        expected_formula-only and both-present cases above."""
+        spec = ValidationSpec(
+            validation_id="balance_check",
+            name="Balance Check",
+            description="d",
+            category="financial",
+            check_type="balance",
+            guidance="Sum debits and credits per account.",
+        )
+        schema = {"table_name": "t", "duckdb_path": "t", "columns": []}
+        mock_provider.converse.return_value = Result.ok(
+            _make_output_response(
+                {
+                    "sql": "SELECT 1 AS deviation, 1 AS magnitude",
+                    "columns_used": [],
+                    "can_validate": True,
+                    "skip_reason": "",
+                }
+            )
+        )
+
+        validation_agent._generate_sql(spec, schema)
+
+        rendered_context = validation_agent.renderer.render_split.call_args.args[1]
+        assert rendered_context["sql_hints"] == (
+            "<sql_hints>Sum debits and credits per account.</sql_hints>"
+        )
+
+    def test_generate_sql_neither_guidance_nor_expected_formula_yields_empty_sql_hints(
+        self, validation_agent, mock_provider
+    ):
+        """Neither guidance nor an expected_formula declaration → sql_hints is the
+        exact empty string, not an empty `<sql_hints></sql_hints>` element — the
+        prompt template's `{sql_hints}` slot is itself optional (validation_sql.yaml),
+        so an empty element would be a hollow-but-present tag."""
+        spec = ValidationSpec(
+            validation_id="constraint_check",
+            name="Constraint Check",
+            description="d",
+            category="data_quality",
+            check_type="constraint",
+        )
+        schema = {"table_name": "t", "duckdb_path": "t", "columns": []}
+        mock_provider.converse.return_value = Result.ok(
+            _make_output_response(
+                {
+                    "sql": "SELECT 1 AS deviation, 1 AS magnitude",
+                    "columns_used": [],
+                    "can_validate": True,
+                    "skip_reason": "",
+                }
+            )
+        )
+
+        validation_agent._generate_sql(spec, schema)
+
+        rendered_context = validation_agent.renderer.render_split.call_args.args[1]
+        assert rendered_context["sql_hints"] == ""
+
     def test_generate_sql_cannot_validate(self, validation_agent, mock_provider):
         """Test when LLM indicates validation cannot be performed."""
         spec = ValidationSpec(

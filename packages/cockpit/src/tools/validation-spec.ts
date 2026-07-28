@@ -11,19 +11,27 @@
 // `core/overlay.py` `_apply_validation` upsert-replaces by `validation_id` into
 // the vertical's declared set. A teach declares a new INSTANCE or overrides a
 // seeded one — NEVER a new TYPE: `check_type` is closed here to the four values
-// the engine's typed home enforces. The engine's `ValidationSpec.check_type`
-// is a plain `str` (no runtime validation today), and the evaluator does not
-// branch on it — the user's words shape WHAT gets grounded, never HOW results
-// get scored (ADR-0017: one `deviation <= tolerance` judgement for every type).
+// the engine's typed home enforces. The engine's `ValidationSpec.check_type` is
+// a closed union (`ValidationCheckType | Literal["expected_formula"]`, DAT-880)
+// with a `model_validator` — no longer "a plain str, no runtime validation" — but
+// the evaluator still does not branch on it — the user's words shape WHAT gets
+// grounded, never HOW results get scored (ADR-0017: one `deviation <= tolerance`
+// judgement for every type).
 //
-// `tolerance`/`guidance` replace the legacy `parameters`/`sql_hints` fields
-// (teach-surface retire, DAT-725): the typed home's columns are
-// `tolerance: double precision` (the declared pass threshold) and
+// `tolerance`/`guidance` replace the legacy `parameters`/`sql_hints` fields for
+// THIS tool's own writes (teach-surface retire, DAT-725): the typed home's
+// columns are `tolerance: double precision` (the declared pass threshold) and
 // `guidance: text` (free-form SQL-grounding guidance) — a straight 1:1 typed
-// mirror, not a free-form bag. NO migration of existing legacy `config_overlay`
-// rows written under the old shape (repo rule: no backwards-compat shims); a
-// pre-existing overlay row still carrying `parameters`/`sql_hints` is read by
-// the engine's legacy normalizer (untouched by this cockpit-only lane).
+// mirror, not a free-form bag, for a hand-authored `teach_validation` spec.
+// This does NOT mean the legacy shape is gone workspace-wide: `frame.ts`'s
+// INDUCE path (`validation-induction.ts`'s `InducedValidation`, a SEPARATE
+// schema from this one) still emits `parameters`/`sql_hints` for every
+// frame-induced validation, unmigrated (see that module's header for why), and
+// the engine's `mode="before"` fold on `ValidationSpec` reads it live —
+// DAT-880 confirmed this reading it after a review caught a lane's attempt to
+// delete that fold as dead. Migrating `InducedValidation` alongside this
+// module is the planned follow-on (lead-gated on a live constrained-decoding
+// compile probe), not something already done.
 //
 // DAT-725 band 3: finance's shipped `validations/*.yaml` are retired entirely
 // (no vertical ships one today), and `frame.ts`'s `induceValidations` no longer

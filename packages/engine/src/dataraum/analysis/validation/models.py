@@ -5,11 +5,12 @@ Contains data structures for validation specs and results.
 
 from __future__ import annotations
 
+import json
 from datetime import UTC, datetime
 from enum import StrEnum
 from typing import Any, Literal
 
-from pydantic import BaseModel, Field, model_validator
+from pydantic import BaseModel, ConfigDict, Field, model_validator
 
 
 def _utc_now() -> datetime:
@@ -94,8 +95,19 @@ class ValidationSpec(BaseModel):
     :func:`~dataraum.core.overlay.apply_overlay`-merged raw dict re-parsed through
     this model at load time (``analysis.validation.config.load_all_validation_specs``),
     so every field here (including ``expected_formula``, DAT-880) is the ROW'S wire
-    shape, typed — never a free-form bag a loader re-interprets downstream.
+    shape, typed — never a free-form bag a loader re-interprets downstream. ONE
+    wire shape is still legacy, and LIVE: see ``_fold_legacy_check_fields`` below.
+
+    ``extra="forbid"`` (DAT-880): the ``mode="before"`` fold below consumes the
+    one legacy wire shape's keys (``parameters``/``sql_hints``) before field
+    validation runs, so any OTHER unrecognized key reaching this point is a
+    genuine unknown field, not a variant the model has to be lenient about — a
+    malformed teach/induced row now fails loudly at construction instead of
+    silently dropping data (the DAT-880 review finding: a silently-ignored key
+    on a live wire shape is a worse failure mode than the shim it replaced).
     """
+
+    model_config = ConfigDict(extra="forbid")
 
     validation_id: str
     name: str
@@ -139,6 +151,68 @@ class ValidationSpec(BaseModel):
     version: str = "1.0"
     source: str = "config"
 
+    @model_validator(mode="before")
+    @classmethod
+    def _fold_legacy_check_fields(cls, data: Any) -> Any:
+        """Fold the LIVE ``parameters`` + ``sql_hints`` wire shape onto the typed fields.
+
+        LIVE, not a shim for a retired design (DAT-880 review correction: the
+        ticket's premise — "the expected_formula teach overlay is the one
+        remaining producer" — miscounted the SECOND, unrelated producer). The
+        cockpit's frame INDUCTION path still emits exactly this shape for the
+        four CANONICAL check types: ``validation-induction.ts``'s
+        ``InducedValidation`` schema is constrained-decoding shaped as
+        ``parameters`` (an array) + ``sql_hints`` (a string) — its own header
+        comment documents why it was never migrated alongside DAT-735's
+        ``ValidationSpecSchema`` — and ``toProposedValidation`` folds the array
+        into a ``{name: value}`` map and spreads ``sql_hints`` verbatim into the
+        overlay payload ``frame.ts``'s induce path writes straight to
+        ``config_overlay`` WITHOUT ever running it through
+        ``ValidationSpecSchema.parse`` (only the separate user-edited
+        ``opts.edited`` declare path does). Deleting this fold silently strips
+        ``tolerance``/``guidance`` from every frame-induced validation — probe-
+        verified by two independent reviewers (tolerance falls to
+        ``DEFAULT_TOLERANCE``, a 10x-looser gate; guidance empties the
+        ``sql_hints`` prompt slot).
+
+        This fold retires WITH the cockpit-migration follow-on that retypes
+        ``InducedValidation`` to the typed ``tolerance``/``guidance`` shape
+        (DAT-880 follow-on — a semantically-graded prompt change needing a live
+        constrained-decoding compile probe, lead-gated, out of this lane's
+        budget) — NOT before. It has no ``expected_formula`` branch and needs
+        none: the DAT-447 declaration rides the typed ``expected_formula``
+        submodel instead (above), and a row naming that check_type never
+        carries ``parameters``/``sql_hints`` in the first place — the two wire
+        shapes are disjoint by construction.
+
+        Normalization (unchanged from the pre-DAT-880 shape): ``parameters.
+        tolerance`` → ``tolerance``; ``sql_hints`` → ``guidance``, with any
+        NON-tolerance ``parameters`` folded into ``guidance``. Explicit typed
+        fields always win over the legacy inference. Runs before ``extra=
+        "forbid"`` is enforced, so the legacy keys are consumed here, never
+        seen as unrecognized fields.
+        """
+        if not isinstance(data, dict):
+            return data
+        data = dict(data)
+        params = data.pop("parameters", None)
+        sql_hints = data.pop("sql_hints", None)
+        if data.get("tolerance") is None and isinstance(params, dict) and "tolerance" in params:
+            data["tolerance"] = params["tolerance"]
+        if data.get("guidance") is None:
+            parts: list[str] = []
+            if sql_hints:
+                parts.append(str(sql_hints))
+            extra = (
+                {k: v for k, v in params.items() if k != "tolerance"}
+                if isinstance(params, dict)
+                else {}
+            )
+            if extra:
+                parts.append("Parameters: " + json.dumps(extra))
+            data["guidance"] = "\n\n".join(parts) if parts else None
+        return data
+
     @model_validator(mode="after")
     def _check_expected_formula_pairing(self) -> ValidationSpec:
         """Enforce the ``check_type``/``expected_formula`` pairing (DAT-880).
@@ -146,10 +220,12 @@ class ValidationSpec(BaseModel):
         ``expected_formula`` is not an optional add-on to any check — it IS the
         ``check_type == "expected_formula"`` row's declaration, always. A row
         naming that check_type with no declaration (or vice versa) is malformed
-        data, not a valid partial state — fail loudly at construction rather than
-        let the SQL binder silently receive an empty column-identity claim (the
-        "absence falls loud" contract, applied at the one place this wire shape is
-        typed-parsed: ``analysis.validation.config.load_all_validation_specs``).
+        data, not a valid partial state — fail loudly at construction. Absence
+        falls loud PER ROW: the one caller that parses arbitrary overlay-merged
+        data (``analysis.validation.config.load_all_validation_specs``) catches
+        this ``ValidationError`` and skips just that row (logged), mirroring
+        ``ensure_validations_seeded``'s per-doc isolation — one malformed teach
+        must not take the whole vocabulary load, or the phase it feeds, down.
         """
         is_formula_check = self.check_type == "expected_formula"
         has_declaration = self.expected_formula is not None
@@ -307,10 +383,12 @@ class ValidationRunResult(BaseModel):
 
 
 __all__ = [
+    "ExpectedFormulaDeclaration",
     "ValidationCheckType",
     "ValidationSeverity",
     "ValidationStatus",
     "ValidationSpec",
+    "ValidationSQLOutput",
     "GeneratedSQL",
     "ValidationResult",
     "ValidationRunResult",

@@ -67,7 +67,13 @@ def _row_values(vertical: str, spec: ValidationSpec, *, source: str) -> dict[str
         "description": spec.description,
         "category": spec.category,
         "severity": spec.severity.value,
-        "check_type": spec.check_type,
+        # str(): uniform for the ValidationCheckType enum member and the
+        # "expected_formula" Literal branch (DAT-880's check_type union) — a
+        # StrEnum member serializes fine bare in practice, but the psycopg
+        # dumper's exact behavior on one isn't exercised by the SQLite test
+        # fixtures, so an explicit str() removes the question rather than
+        # relying on it.
+        "check_type": str(spec.check_type),
         "tolerance": spec.tolerance,
         "guidance": spec.guidance,
         "expected_outcome": spec.expected_outcome,
@@ -116,7 +122,13 @@ def _staged_row_values(run_id: str, vertical: str, spec: ValidationSpec) -> dict
         "description": spec.description,
         "category": spec.category,
         "severity": spec.severity.value,
-        "check_type": spec.check_type,
+        # str(): uniform for the ValidationCheckType enum member and the
+        # "expected_formula" Literal branch (DAT-880's check_type union) — a
+        # StrEnum member serializes fine bare in practice, but the psycopg
+        # dumper's exact behavior on one isn't exercised by the SQLite test
+        # fixtures, so an explicit str() removes the question rather than
+        # relying on it.
+        "check_type": str(spec.check_type),
         "tolerance": spec.tolerance,
         "guidance": spec.guidance,
         "expected_outcome": spec.expected_outcome,
@@ -151,7 +163,7 @@ def _staged_to_spec(row: InducedValidation) -> ValidationSpec:
         description=row.description,
         category=row.category,
         severity=row.severity,  # type: ignore[arg-type]  # StrEnum coerces the str
-        check_type=row.check_type,
+        check_type=row.check_type,  # type: ignore[arg-type]  # DB CHECK enforces the vocabulary
         tolerance=row.tolerance,
         guidance=row.guidance,
         expected_outcome=row.expected_outcome,
@@ -171,7 +183,7 @@ def _row_to_spec(row: Validation) -> ValidationSpec:
         description=row.description,
         category=row.category,
         severity=row.severity,  # type: ignore[arg-type]  # StrEnum coerces the str
-        check_type=row.check_type,
+        check_type=row.check_type,  # type: ignore[arg-type]  # DB CHECK enforces the vocabulary
         tolerance=row.tolerance,
         guidance=row.guidance,
         expected_outcome=row.expected_outcome,
@@ -193,11 +205,13 @@ def ensure_validations_seeded(session: Session, vertical: str) -> int:
     re-run is a no-op, a generated/frame supersede is never clobbered, and it is
     race-safe against a concurrent seed. Mirrors ``ensure_conventions_seeded``.
 
-    Each YAML doc is re-typed through :class:`ValidationSpec` — the shipped shape IS
-    the typed ``tolerance``/``guidance`` fields today (DAT-880 retired the
-    ``mode="before"`` normalizer that once bridged a legacy ``parameters``/
-    ``sql_hints`` wire shape onto them) — so the seed rows carry the typed check
-    definition. A framed vertical (no on-disk YAML) seeds nothing. Returns the number
+    Each YAML doc is re-typed through :class:`ValidationSpec` (the ``mode="before"``
+    fold maps a legacy ``parameters``/``sql_hints`` shape onto the typed
+    ``tolerance``/``guidance`` fields — LIVE for the cockpit's frame-induced
+    validations, DAT-880; no vertical ships shipped YAML in that shape today, so
+    this seed path exercises it as a no-op passthrough only), so the seed rows
+    carry the typed check definition. A framed vertical (no on-disk YAML) seeds
+    nothing. Returns the number
     of rows actually inserted (conflicts skipped).
 
     **Per-doc fault isolation** (the ``ensure_metrics_seeded`` pattern): each doc is

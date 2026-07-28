@@ -162,6 +162,14 @@ warn_unused_ignores = false  # Allow unused ignores during migration
 disallow_untyped_defs = true
 plugins = ["pydantic.mypy"]
 
+[tool.pydantic-mypy]
+# DAT-880 review finding: the plugin was enabled but unconfigured, so every
+# pydantic BaseModel constructor call typed its kwargs as Any — mypy could
+# never have caught e.g. ValidationSpec(check_type="bogus") or a wrong kwarg
+# type at a construction site. init_typed makes the synthesized __init__
+# reflect the declared field types.
+init_typed = true
+
 # Ignore attr-defined errors for re-exported legacy types
 # These are false positives due to exec()-based re-export in core.models.__init__
 [[tool.mypy.overrides]]

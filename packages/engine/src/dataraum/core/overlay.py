@@ -209,11 +209,21 @@ def _apply_unit(base: dict[str, Any], rows: list[OverlayRow]) -> dict[str, Any]:
 def _apply_validation(base: dict[str, Any], rows: list[OverlayRow]) -> dict[str, Any]:
     """Upsert-replace validation rows into a vertical's ``validations:`` list.
 
-    Payload shape mirrors :class:`ValidationSpec`:
-    ``{vertical, validation_id, name, description, category, severity,
-    check_type, tolerance?, guidance?, expected_outcome?, expected_formula?,
-    tags?, relevant_cycles?, version?}``. ``vertical`` is matched by the caller
-    (this applier only sees rows already filtered to the loading vertical).
+    Payload shape mirrors :class:`ValidationSpec`: ``{vertical, validation_id,
+    name, description, category, severity, check_type, tolerance?, guidance?,
+    expected_outcome?, expected_formula?, tags?, relevant_cycles?, version?}`` —
+    PLUS the legacy ``parameters?``/``sql_hints?`` shape :class:`ValidationSpec`'s
+    ``mode="before"`` fold still accepts and is LIVE, not historical: the
+    cockpit's frame induction path (``validation-induction.ts``'s
+    ``InducedValidation``) writes exactly this shape for the four canonical check
+    types, straight to ``config_overlay``, without validating against the typed
+    ``ValidationSpecSchema`` first (DAT-880 review correction — see the fold's
+    docstring on the model for the full producer chain). This applier is
+    payload-agnostic (a raw dict merge), so it accepts either shape unchanged;
+    the fold runs downstream, when the merged row is re-parsed into
+    :class:`ValidationSpec` (``analysis.validation.config.
+    load_all_validation_specs``). ``vertical`` is matched by the caller (this
+    applier only sees rows already filtered to the loading vertical).
 
     Merge semantics mirror ``concept``: one row = one whole spec. Same
     ``validation_id`` replaces — the last row for a given id wins (rows are
@@ -232,10 +242,13 @@ def _apply_validation(base: dict[str, Any], rows: list[OverlayRow]) -> dict[str,
     load_declared_formula`` reads the same rows directly to pool the declaration as
     the ``human_declaration`` witness on the matching formula claim — but NO writer
     of a ``type='validation'`` overlay row can produce ``check_type:
-    "expected_formula"`` today (the cockpit's sole writer, ``teach_validation``, is
-    gated by a closed 4-value ``check_type`` enum that never admitted this fifth
-    value). This is a designed, typed contract this applier stays ready to merge,
-    not a currently-exercised one.
+    "expected_formula"`` today (the cockpit's sole writer of a hand-authored spec,
+    ``teach_validation``, is gated by a closed 4-value ``check_type`` enum that
+    never admitted this fifth value; frame induction's own ``InducedValidation``
+    enum is equally closed to the four canonical values). This one declaration
+    shape is a designed, typed contract this applier stays ready to merge, not a
+    currently-exercised one — unlike the legacy ``parameters``/``sql_hints`` shape
+    above, which frame induction exercises on every induced validation today.
     """
     out = dict(base)
     specs = [dict(s) for s in (out.get("validations") or [])]

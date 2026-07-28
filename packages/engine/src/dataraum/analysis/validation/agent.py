@@ -404,9 +404,16 @@ class ValidationAgent(LLMFeature):
         # Build context for template. ``guidance`` is the advisory binding hint
         # (the former sql_hints); it fills the ``sql_hints`` prompt slot. A DAT-447
         # ``expected_formula`` declaration (DAT-880: typed, no longer folded into
-        # ``guidance`` at load) renders as its own explicit sentence alongside any
-        # guidance prose — the binder needs the column-identity claim spelled out,
-        # not buried in free text. ``parameters`` carries ONLY the typed tolerance.
+        # ``guidance`` at load for a FRESH row — the legacy fold above still
+        # populates ``guidance`` for a frame-induced canonical-type row) renders as
+        # its own explicit sentence alongside any guidance prose — the binder needs
+        # the column-identity claim spelled out, not buried in free text.
+        # ``parameters`` carries ONLY the typed tolerance. Both ``ef.table.column``
+        # and ``ef.formula`` are quoted identically — neither is more "the value"
+        # than the other; both are the user's literal words. This is the SECOND
+        # free-text string landing in the ``sql_hints`` prompt slot (renderer.
+        # _render_text does sequential ``{key}`` substitution — see its docstring
+        # for the pre-existing re-inlining risk this widens).
         hint_parts: list[str] = []
         if spec.guidance:
             hint_parts.append(spec.guidance)
@@ -414,7 +421,7 @@ class ValidationAgent(LLMFeature):
             ef = spec.expected_formula
             hint_parts.append(
                 f'The user has declared that "{ef.table}.{ef.column}" should equal '
-                f"the formula: {ef.formula}"
+                f'the formula: "{ef.formula}"'
             )
         sql_hints = f"<sql_hints>{'\n\n'.join(hint_parts)}</sql_hints>" if hint_parts else ""
         expected = (

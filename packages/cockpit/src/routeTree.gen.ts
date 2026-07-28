@@ -35,6 +35,7 @@ import { Route as ApiReportsMintRouteImport } from './routes/api/reports/mint'
 import { Route as ApiDrillPartsRouteImport } from './routes/api/drill/parts'
 import { Route as ApiDrillNodeRouteImport } from './routes/api/drill/node'
 import { Route as ApiDrillComposeRouteImport } from './routes/api/drill/compose'
+import { Route as ApiDrillAxisGuidanceRouteImport } from './routes/api/drill/axis-guidance'
 import { Route as ApiDrillAxesRouteImport } from './routes/api/drill/axes'
 import { Route as ApiChartsAuthorRouteImport } from './routes/api/charts/author'
 import { Route as ApiAuthSplatRouteImport } from './routes/api/auth/$'
@@ -170,6 +171,11 @@ const ApiDrillComposeRoute = ApiDrillComposeRouteImport.update({
   path: '/api/drill/compose',
   getParentRoute: () => rootRouteImport,
 } as any)
+const ApiDrillAxisGuidanceRoute = ApiDrillAxisGuidanceRouteImport.update({
+  id: '/api/drill/axis-guidance',
+  path: '/api/drill/axis-guidance',
+  getParentRoute: () => rootRouteImport,
+} as any)
 const ApiDrillAxesRoute = ApiDrillAxesRouteImport.update({
   id: '/api/drill/axes',
   path: '/api/drill/axes',
@@ -222,6 +228,7 @@ export interface FileRoutesByFullPath {
   '/api/auth/$': typeof ApiAuthSplatRoute
   '/api/charts/author': typeof ApiChartsAuthorRoute
   '/api/drill/axes': typeof ApiDrillAxesRoute
+  '/api/drill/axis-guidance': typeof ApiDrillAxisGuidanceRoute
   '/api/drill/compose': typeof ApiDrillComposeRoute
   '/api/drill/node': typeof ApiDrillNodeRoute
   '/api/drill/parts': typeof ApiDrillPartsRoute
@@ -253,6 +260,7 @@ export interface FileRoutesByTo {
   '/api/auth/$': typeof ApiAuthSplatRoute
   '/api/charts/author': typeof ApiChartsAuthorRoute
   '/api/drill/axes': typeof ApiDrillAxesRoute
+  '/api/drill/axis-guidance': typeof ApiDrillAxisGuidanceRoute
   '/api/drill/compose': typeof ApiDrillComposeRoute
   '/api/drill/node': typeof ApiDrillNodeRoute
   '/api/drill/parts': typeof ApiDrillPartsRoute
@@ -287,6 +295,7 @@ export interface FileRoutesById {
   '/api/auth/$': typeof ApiAuthSplatRoute
   '/api/charts/author': typeof ApiChartsAuthorRoute
   '/api/drill/axes': typeof ApiDrillAxesRoute
+  '/api/drill/axis-guidance': typeof ApiDrillAxisGuidanceRoute
   '/api/drill/compose': typeof ApiDrillComposeRoute
   '/api/drill/node': typeof ApiDrillNodeRoute
   '/api/drill/parts': typeof ApiDrillPartsRoute
@@ -321,6 +330,7 @@ export interface FileRouteTypes {
     | '/api/auth/$'
     | '/api/charts/author'
     | '/api/drill/axes'
+    | '/api/drill/axis-guidance'
     | '/api/drill/compose'
     | '/api/drill/node'
     | '/api/drill/parts'
@@ -352,6 +362,7 @@ export interface FileRouteTypes {
     | '/api/auth/$'
     | '/api/charts/author'
     | '/api/drill/axes'
+    | '/api/drill/axis-guidance'
     | '/api/drill/compose'
     | '/api/drill/node'
     | '/api/drill/parts'
@@ -385,6 +396,7 @@ export interface FileRouteTypes {
     | '/api/auth/$'
     | '/api/charts/author'
     | '/api/drill/axes'
+    | '/api/drill/axis-guidance'
     | '/api/drill/compose'
     | '/api/drill/node'
     | '/api/drill/parts'
@@ -410,6 +422,7 @@ export interface RootRouteChildren {
   ApiAuthSplatRoute: typeof ApiAuthSplatRoute
   ApiChartsAuthorRoute: typeof ApiChartsAuthorRoute
   ApiDrillAxesRoute: typeof ApiDrillAxesRoute
+  ApiDrillAxisGuidanceRoute: typeof ApiDrillAxisGuidanceRoute
   ApiDrillComposeRoute: typeof ApiDrillComposeRoute
   ApiDrillNodeRoute: typeof ApiDrillNodeRoute
   ApiDrillPartsRoute: typeof ApiDrillPartsRoute
@@ -600,6 +613,13 @@ declare module '@tanstack/react-router' {
       preLoaderRoute: typeof ApiDrillComposeRouteImport
       parentRoute: typeof rootRouteImport
     }
+    '/api/drill/axis-guidance': {
+      id: '/api/drill/axis-guidance'
+      path: '/api/drill/axis-guidance'
+      fullPath: '/api/drill/axis-guidance'
+      preLoaderRoute: typeof ApiDrillAxisGuidanceRouteImport
+      parentRoute: typeof rootRouteImport
+    }
     '/api/drill/axes': {
       id: '/api/drill/axes'
       path: '/api/drill/axes'
@@ -697,6 +717,7 @@ const rootRouteChildren: RootRouteChildren = {
   ApiAuthSplatRoute: ApiAuthSplatRoute,
   ApiChartsAuthorRoute: ApiChartsAuthorRoute,
   ApiDrillAxesRoute: ApiDrillAxesRoute,
+  ApiDrillAxisGuidanceRoute: ApiDrillAxisGuidanceRoute,
   ApiDrillComposeRoute: ApiDrillComposeRoute,
   ApiDrillNodeRoute: ApiDrillNodeRoute,
   ApiDrillPartsRoute: ApiDrillPartsRoute,

@@ -17,7 +17,11 @@ import {
 } from "@testing-library/react";
 import { afterEach, describe, expect, it, vi } from "vitest";
 
-import type { DrillAxis, DrillSource } from "#/duckdb/drill";
+import {
+	type DrillAxis,
+	type DrillSource,
+	MAX_GUIDANCE_AXES,
+} from "#/duckdb/drill";
 import { theme } from "#/ui/theme";
 
 import { TestQueryProvider } from "../test-query-provider";
@@ -64,6 +68,12 @@ import { DrillableGrid } from "./drillable-grid";
 const axis = (
 	column: string,
 	temporal: DrillAxis["temporal"] = null,
+	guidance: Partial<
+		Pick<
+			DrillAxis,
+			"driverGain" | "sliceRelevance" | "sliceInterest" | "hierarchyNext"
+		>
+	> = {},
 ): DrillAxis => ({
 	column,
 	sliceType: "categorical",
@@ -71,6 +81,10 @@ const axis = (
 	valueCount: 3,
 	businessContext: null,
 	temporal,
+	driverGain: guidance.driverGain ?? null,
+	sliceRelevance: guidance.sliceRelevance ?? null,
+	sliceInterest: guidance.sliceInterest ?? null,
+	hierarchyNext: guidance.hierarchyNext ?? null,
 });
 
 const jsonResponse = (body: unknown) =>
@@ -85,9 +99,15 @@ let composeQueue: Array<(r: Response) => void>;
 /** The body of each compose POST, in call order — the wire-contract probe. */
 let composeBodies: unknown[];
 
+/** Axis-guidance calls (DAT-673) also resolve MANUALLY, same reason. */
+let guidanceQueue: Array<(r: Response) => void>;
+let guidanceBodies: unknown[];
+
 function stubFetch(axesResponse?: unknown) {
 	composeQueue = [];
 	composeBodies = [];
+	guidanceQueue = [];
+	guidanceBodies = [];
 	vi.stubGlobal(
 		"fetch",
 		vi.fn(async (url: RequestInfo | URL, init?: RequestInit) => {
@@ -102,6 +122,10 @@ function stubFetch(axesResponse?: unknown) {
 						],
 					},
 				);
+			}
+			if (u.endsWith("/api/drill/axis-guidance")) {
+				guidanceBodies.push(JSON.parse(String(init?.body ?? "null")));
+				return new Promise<Response>((resolve) => guidanceQueue.push(resolve));
 			}
 			if (
 				u.endsWith("/api/drill/compose") ||
@@ -552,5 +576,266 @@ describe("DrillableGrid — rehydrate on mount", () => {
 		renderGrid();
 		expect(composeBodies).toEqual([]);
 		expect(screen.queryByTestId("drill-rehydrate-notice")).toBeNull();
+	});
+});
+
+// --- axis guidance badge (DAT-673) ------------------------------------------
+
+describe("DrillableGrid — axis guidance badge", () => {
+	it("shows the driver-gain badge on an axis with a measured ranking", async () => {
+		renderGrid(undefined, undefined, {
+			axes: [axis("region", null, { driverGain: 0.1 }), axis("product")],
+		});
+		const button = screen.getByTestId<HTMLButtonElement>("drill-slice-button");
+		await waitFor(() => expect(button.disabled).toBe(false));
+		fireEvent.click(button);
+		await screen.findByText("region");
+		// 3 significant digits (review-round fix — 2dp collapsed small real
+		// gains into a self-contradicting "0.00").
+		expect(await screen.findByText("Driver · 0.100")).toBeTruthy();
+	});
+
+	it("shows nothing for a bare substrate axis with no catalog or driver signal", async () => {
+		renderGrid(undefined, undefined, {
+			axes: [axis("region"), axis("product")],
+		});
+		const button = screen.getByTestId<HTMLButtonElement>("drill-slice-button");
+		await waitFor(() => expect(button.disabled).toBe(false));
+		fireEvent.click(button);
+		await screen.findByText("region");
+		expect(screen.queryByText(/Driver|Primary|Supporting|Unjudged/)).toBeNull();
+	});
+});
+
+// --- hierarchy descent suggestion (DAT-673) ---------------------------------
+
+describe("DrillableGrid — hierarchy descent suggestion", () => {
+	it("shows no suggestion before any pin is committed", async () => {
+		renderGrid(undefined, undefined, {
+			axes: [
+				axis("region", null, { hierarchyNext: "product" }),
+				axis("product"),
+			],
+		});
+		const button = screen.getByTestId<HTMLButtonElement>("drill-slice-button");
+		await waitFor(() => expect(button.disabled).toBe(false));
+		fireEvent.click(button);
+		await screen.findByText("region");
+		expect(
+			screen.queryByTestId("drill-hierarchy-suggestion-product"),
+		).toBeNull();
+	});
+
+	it("suggests the hierarchy's next level after a pin on its coarser member", async () => {
+		renderGrid(undefined, undefined, {
+			axes: [
+				axis("region", null, { hierarchyNext: "product" }),
+				axis("product"),
+				axis("entry_id__date", "date"),
+			],
+		});
+		await sliceBy("region", "SQL1");
+
+		// Pin region=EU via the row-click path.
+		fireEvent.click(screen.getByTestId("mock-row"));
+		await waitFor(() => expect(composeQueue.length).toBeGreaterThan(0));
+		composeQueue.shift()?.(
+			jsonResponse({ ok: true, sql: "SQL_PINNED", params: [] }),
+		);
+		await screen.findByTestId("drill-step-pin-region");
+
+		fireEvent.click(screen.getByTestId("drill-slice-button"));
+		const suggestion = await screen.findByTestId(
+			"drill-hierarchy-suggestion-product",
+		);
+		expect(suggestion.textContent).toContain("Descend to product");
+	});
+
+	// Fold-in #7: the promoted entry used to render WITHOUT the target axis's
+	// guidance badge or valueCount, so the same axis looked like two
+	// different things depending on which entry offered it.
+	it("the promoted entry carries the SAME guidance badge and valueCount as the axis's plain list entry", async () => {
+		renderGrid(undefined, undefined, {
+			axes: [
+				axis("region", null, { hierarchyNext: "product" }),
+				axis("product", null, { driverGain: 0.2 }),
+			],
+		});
+		await sliceBy("region", "SQL1");
+		fireEvent.click(screen.getByTestId("mock-row"));
+		await waitFor(() => expect(composeQueue.length).toBeGreaterThan(0));
+		composeQueue.shift()?.(
+			jsonResponse({ ok: true, sql: "SQL_PINNED", params: [] }),
+		);
+		await screen.findByTestId("drill-step-pin-region");
+
+		fireEvent.click(screen.getByTestId("drill-slice-button"));
+		const suggestion = await screen.findByTestId(
+			"drill-hierarchy-suggestion-product",
+		);
+		// Same badge (driverGain 0.2 → "Driver · 0.200") and the same
+		// valueCount (3, the `axis()` helper's default) the plain entry for
+		// "product" would show further down the SAME menu.
+		expect(suggestion.textContent).toContain("Driver · 0.200");
+		expect(suggestion.textContent).toContain("3");
+	});
+
+	it("hides the suggestion once its target column is itself already sliced", async () => {
+		renderGrid(undefined, undefined, {
+			axes: [
+				axis("region", null, { hierarchyNext: "product" }),
+				axis("product"),
+			],
+		});
+		await sliceBy("region", "SQL1");
+		fireEvent.click(screen.getByTestId("mock-row"));
+		await waitFor(() => expect(composeQueue.length).toBeGreaterThan(0));
+		composeQueue.shift()?.(
+			jsonResponse({ ok: true, sql: "SQL_PINNED", params: [] }),
+		);
+		await screen.findByTestId("drill-step-pin-region");
+
+		// Slice "product" directly — it's now active, so it can no longer be
+		// the suggestion (the affordance would be a shortcut to a no-op).
+		fireEvent.click(screen.getByTestId("drill-slice-button"));
+		fireEvent.click(await screen.findByText("product"));
+		await waitFor(() => expect(composeQueue.length).toBeGreaterThan(0));
+		composeQueue.shift()?.(
+			jsonResponse({ ok: true, sql: "SQL_BOTH", params: [] }),
+		);
+		await screen.findByTestId("drill-step-slice-product");
+
+		fireEvent.click(screen.getByTestId("drill-slice-button"));
+		expect(
+			screen.queryByTestId("drill-hierarchy-suggestion-product"),
+		).toBeNull();
+	});
+});
+
+// --- Haiku guidance fallback (DAT-673) --------------------------------------
+
+describe("DrillableGrid — Haiku guidance fallback", () => {
+	it("offers 'Suggest' only when EVERY axis has no measured signal", async () => {
+		renderGrid(undefined, undefined, {
+			axes: [axis("region"), axis("product")], // no guidance fields on either
+		});
+		const button = screen.getByTestId<HTMLButtonElement>("drill-slice-button");
+		await waitFor(() => expect(button.disabled).toBe(false));
+		fireEvent.click(button);
+		await screen.findByText("region");
+		expect(screen.getByTestId("drill-suggest-guidance")).toBeTruthy();
+	});
+
+	it("does NOT offer 'Suggest' when even one axis carries a measured signal", async () => {
+		renderGrid(undefined, undefined, {
+			axes: [axis("region", null, { driverGain: 0.1 }), axis("product")],
+		});
+		const button = screen.getByTestId<HTMLButtonElement>("drill-slice-button");
+		await waitFor(() => expect(button.disabled).toBe(false));
+		fireEvent.click(button);
+		await screen.findByText("region");
+		expect(screen.queryByTestId("drill-suggest-guidance")).toBeNull();
+	});
+
+	it("fetches and renders the suggestion inline, then hides the 'Suggest' action", async () => {
+		renderGrid(undefined, undefined, {
+			axes: [axis("region"), axis("product")],
+		});
+		const button = screen.getByTestId<HTMLButtonElement>("drill-slice-button");
+		await waitFor(() => expect(button.disabled).toBe(false));
+		fireEvent.click(button);
+		fireEvent.click(await screen.findByTestId("drill-suggest-guidance"));
+
+		await waitFor(() => expect(guidanceQueue.length).toBe(1));
+		expect(guidanceBodies[0]).toMatchObject({
+			measureLabel: "m1",
+			axes: [
+				{ column: "region", sliceType: "categorical" },
+				{ column: "product", sliceType: "categorical" },
+			],
+		});
+		guidanceQueue.shift()?.(
+			jsonResponse({
+				suggestions: [
+					{ column: "region", guidance: "See if patterns cluster by area." },
+				],
+			}),
+		);
+		// The item click closed the menu, same as any other Menu.Item — reopen
+		// it to see the now-loaded suggestion rendered inline on "region".
+		await waitFor(() => expect(button.disabled).toBe(false));
+		fireEvent.click(button);
+
+		expect(
+			await screen.findByText(
+				"Suggested (unmeasured): See if patterns cluster by area.",
+			),
+		).toBeTruthy();
+		expect(screen.queryByTestId("drill-suggest-guidance")).toBeNull();
+	});
+
+	it("shows an inline error and leaves the menu unchanged on failure", async () => {
+		renderGrid(undefined, undefined, {
+			axes: [axis("region"), axis("product")],
+		});
+		const button = screen.getByTestId<HTMLButtonElement>("drill-slice-button");
+		await waitFor(() => expect(button.disabled).toBe(false));
+		fireEvent.click(button);
+		fireEvent.click(await screen.findByTestId("drill-suggest-guidance"));
+
+		await waitFor(() => expect(guidanceQueue.length).toBe(1));
+		guidanceQueue.shift()?.(
+			new Response(JSON.stringify({ error: "Internal server error." }), {
+				status: 500,
+				headers: { "Content-Type": "application/json" },
+			}),
+		);
+
+		await screen.findByTestId("drill-guidance-error");
+		// The action is still there — the user can retry (the menu closed on
+		// item click, same as any other Menu.Item — reopen it to check).
+		fireEvent.click(button);
+		expect(await screen.findByTestId("drill-suggest-guidance")).toBeTruthy();
+	});
+
+	// Review-round Critical 1: a pure-substrate node routinely has MORE than
+	// MAX_GUIDANCE_AXES axes — sending all of them 400'd on the route's own
+	// cap with a raw zod message. The client must cap BEFORE sending.
+	it("caps the request to MAX_GUIDANCE_AXES — never sends the whole substrate set", async () => {
+		const manyAxes = Array.from({ length: MAX_GUIDANCE_AXES + 5 }, (_, i) =>
+			axis(`col_${i}`),
+		);
+		renderGrid(undefined, undefined, { axes: manyAxes });
+		const button = screen.getByTestId<HTMLButtonElement>("drill-slice-button");
+		await waitFor(() => expect(button.disabled).toBe(false));
+		fireEvent.click(button);
+		fireEvent.click(await screen.findByTestId("drill-suggest-guidance"));
+
+		await waitFor(() => expect(guidanceQueue.length).toBe(1));
+		const sent = guidanceBodies[0] as { axes: unknown[] };
+		expect(sent.axes.length).toBe(MAX_GUIDANCE_AXES);
+		guidanceQueue.shift()?.(jsonResponse({ suggestions: [] }));
+	});
+
+	// Fold-in #4: a successful call with ZERO surviving suggestions must not
+	// be a silent dead end — the Suggest action used to just vanish with no
+	// text and no error.
+	it("shows an explicit 'No suggestions' state on a successful call with zero results", async () => {
+		renderGrid(undefined, undefined, {
+			axes: [axis("region"), axis("product")],
+		});
+		const button = screen.getByTestId<HTMLButtonElement>("drill-slice-button");
+		await waitFor(() => expect(button.disabled).toBe(false));
+		fireEvent.click(button);
+		fireEvent.click(await screen.findByTestId("drill-suggest-guidance"));
+
+		await waitFor(() => expect(guidanceQueue.length).toBe(1));
+		guidanceQueue.shift()?.(jsonResponse({ suggestions: [] }));
+
+		fireEvent.click(button); // reopen — the item click closed the menu
+		expect(
+			await screen.findByTestId("drill-suggest-guidance-empty"),
+		).toBeTruthy();
+		expect(screen.queryByTestId("drill-suggest-guidance")).toBeNull();
 	});
 });

@@ -31,6 +31,23 @@ import type { AnswerDrillSource } from "./answer-source";
 import type { TemporalKind } from "./grain";
 import { quoteIdentifier } from "./grid-query";
 
+// DAT-673 guidance fallback shared constants: BOTH the client (drillable-
+// grid.tsx, which caps its request before sending) and the server (the
+// axis-guidance route's zod schema + the agent module) need the SAME number,
+// or the two drift and the client can send a payload the route rejects with
+// a raw zod error (the review-round Critical 1 bug: the client sent every
+// axis, the route's `.max(8)` 400'd, and the fix must not become two
+// hand-copied literals under two different names). Defined here — not in the
+// server-only agent module — because this module is neo-free and widgets
+// already import types from it.
+export const MAX_GUIDANCE_AXES = 8;
+
+/** Bounds the Haiku call itself (server-side, inside the agent module) AND
+ *  the client's fetch (drillable-grid.tsx) — a hung model must not leave
+ *  "Asking…" disabled forever, and the route handler must not hold the
+ *  connection open indefinitely either. One shared number for both ends. */
+export const DRILL_GUIDANCE_TIMEOUT_MS = 20_000;
+
 /** A pin carries the clicked cell's JSON value — bigints/dates arrive as
  *  strings and DuckDB casts the bound param to the column type. */
 export type DrillPinValue = string | number | boolean | null;
@@ -92,6 +109,30 @@ export interface DrillAxis {
 	 *  (never a name heuristic) — non-null makes the slice grain-able and
 	 *  decides which grains the chip offers (DAT-712). */
 	temporal: TemporalKind | null;
+	/** DAT-673 guidance: the max measured `driver_rankings` gain naming this
+	 *  column, or `null` when no measured ranking exists for it. This is the
+	 *  SAME number `orderAxesByDrivers` already uses to reorder the menu — it
+	 *  used to be thrown away after ordering; now it rides the wire so the
+	 *  chip can disclose WHY an axis leads (fact-scoped: only ever set on the
+	 *  node/measure path — tier A doesn't know which fact backs a result
+	 *  column, so it stays null there). */
+	driverGain: number | null;
+	/** DAT-879 measured slice relevance in [0,1] when this column is
+	 *  catalogued, else `null` (substrate-only column — nothing curated it).
+	 *  Populated on BOTH the node and tier-A paths (the catalog read is
+	 *  fact-agnostic, only its dimension is). */
+	sliceRelevance: number | null;
+	/** 'primary' | 'supporting' | null — the cataloguing agent's absolute
+	 *  judgement, or null when the column is catalogued but never judged
+	 *  (still has `sliceRelevance`) or not catalogued at all (`sliceRelevance`
+	 *  also null). Populated on both paths, same as `sliceRelevance`. */
+	sliceInterest: string | null;
+	/** DAT-673 hierarchy descent: the next-finer column in a CONFIRMED
+	 *  drill-down chain this axis belongs to (`dimension_hierarchies`,
+	 *  kind='drilldown', needs_confirmation=false), when that next column is
+	 *  also among the currently-resolved axes — else `null`. Fact-scoped like
+	 *  `driverGain`: node/measure path only, always null on tier A. */
+	hierarchyNext: string | null;
 }
 
 export const sliceColumns = (steps: DrillStep[]): string[] => {

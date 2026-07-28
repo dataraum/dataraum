@@ -32,6 +32,13 @@ export const NAV_MODEL = "claude-haiku-4-5";
 // choice for this surface is explicit and tunable independently.
 export const SUMMARY_MODEL = "claude-haiku-4-5";
 
+// The drill Slice menu's guidance fallback (DAT-673) — a cheap Haiku one-shot
+// that suggests why an UNMEASURED axis might be worth slicing by, on-demand
+// (never eagerly — see axis-guidance-agent.ts). Same undated Haiku alias as
+// NAV_MODEL/SUMMARY_MODEL; its own constant for the same reason those are:
+// this surface's model choice stays explicit and independently tunable.
+export const DRILL_GUIDANCE_MODEL = "claude-haiku-4-5";
+
 // STREAMING calls only — every non-streaming call must use
 // STRUCTURED_OUTPUT_MAX_TOKENS below or the SDK throws before sending.
 export const MAX_OUTPUT_TOKENS = 24576;

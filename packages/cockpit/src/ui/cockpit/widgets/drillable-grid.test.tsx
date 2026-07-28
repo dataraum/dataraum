@@ -95,9 +95,15 @@ let composeQueue: Array<(r: Response) => void>;
 /** The body of each compose POST, in call order — the wire-contract probe. */
 let composeBodies: unknown[];
 
+/** Axis-guidance calls (DAT-673) also resolve MANUALLY, same reason. */
+let guidanceQueue: Array<(r: Response) => void>;
+let guidanceBodies: unknown[];
+
 function stubFetch(axesResponse?: unknown) {
 	composeQueue = [];
 	composeBodies = [];
+	guidanceQueue = [];
+	guidanceBodies = [];
 	vi.stubGlobal(
 		"fetch",
 		vi.fn(async (url: RequestInfo | URL, init?: RequestInit) => {
@@ -112,6 +118,10 @@ function stubFetch(axesResponse?: unknown) {
 						],
 					},
 				);
+			}
+			if (u.endsWith("/api/drill/axis-guidance")) {
+				guidanceBodies.push(JSON.parse(String(init?.body ?? "null")));
+				return new Promise<Response>((resolve) => guidanceQueue.push(resolve));
 			}
 			if (
 				u.endsWith("/api/drill/compose") ||
@@ -571,5 +581,92 @@ describe("DrillableGrid — hierarchy descent suggestion", () => {
 		expect(
 			screen.queryByTestId("drill-hierarchy-suggestion-product"),
 		).toBeNull();
+	});
+});
+
+// --- Haiku guidance fallback (DAT-673) --------------------------------------
+
+describe("DrillableGrid — Haiku guidance fallback", () => {
+	it("offers 'Suggest' only when EVERY axis has no measured signal", async () => {
+		renderGrid(undefined, undefined, {
+			axes: [axis("region"), axis("product")], // no guidance fields on either
+		});
+		const button = screen.getByTestId<HTMLButtonElement>("drill-slice-button");
+		await waitFor(() => expect(button.disabled).toBe(false));
+		fireEvent.click(button);
+		await screen.findByText("region");
+		expect(screen.getByTestId("drill-suggest-guidance")).toBeTruthy();
+	});
+
+	it("does NOT offer 'Suggest' when even one axis carries a measured signal", async () => {
+		renderGrid(undefined, undefined, {
+			axes: [axis("region", null, { driverGain: 0.1 }), axis("product")],
+		});
+		const button = screen.getByTestId<HTMLButtonElement>("drill-slice-button");
+		await waitFor(() => expect(button.disabled).toBe(false));
+		fireEvent.click(button);
+		await screen.findByText("region");
+		expect(screen.queryByTestId("drill-suggest-guidance")).toBeNull();
+	});
+
+	it("fetches and renders the suggestion inline, then hides the 'Suggest' action", async () => {
+		renderGrid(undefined, undefined, {
+			axes: [axis("region"), axis("product")],
+		});
+		const button = screen.getByTestId<HTMLButtonElement>("drill-slice-button");
+		await waitFor(() => expect(button.disabled).toBe(false));
+		fireEvent.click(button);
+		fireEvent.click(await screen.findByTestId("drill-suggest-guidance"));
+
+		await waitFor(() => expect(guidanceQueue.length).toBe(1));
+		expect(guidanceBodies[0]).toMatchObject({
+			measureLabel: "m1",
+			axes: [
+				{ column: "region", sliceType: "categorical" },
+				{ column: "product", sliceType: "categorical" },
+			],
+		});
+		guidanceQueue.shift()?.(
+			jsonResponse({
+				suggestions: [
+					{ column: "region", guidance: "See if patterns cluster by area." },
+				],
+			}),
+		);
+		// The item click closed the menu, same as any other Menu.Item — reopen
+		// it to see the now-loaded suggestion rendered inline on "region".
+		await waitFor(() => expect(button.disabled).toBe(false));
+		fireEvent.click(button);
+
+		expect(
+			await screen.findByText(
+				"Suggested (unmeasured): See if patterns cluster by area.",
+			),
+		).toBeTruthy();
+		expect(screen.queryByTestId("drill-suggest-guidance")).toBeNull();
+	});
+
+	it("shows an inline error and leaves the menu unchanged on failure", async () => {
+		renderGrid(undefined, undefined, {
+			axes: [axis("region"), axis("product")],
+		});
+		const button = screen.getByTestId<HTMLButtonElement>("drill-slice-button");
+		await waitFor(() => expect(button.disabled).toBe(false));
+		fireEvent.click(button);
+		fireEvent.click(await screen.findByTestId("drill-suggest-guidance"));
+
+		await waitFor(() => expect(guidanceQueue.length).toBe(1));
+		guidanceQueue.shift()?.(
+			new Response(JSON.stringify({ error: "Internal server error." }), {
+				status: 500,
+				headers: { "Content-Type": "application/json" },
+			}),
+		);
+
+		await screen.findByTestId("drill-guidance-error");
+		// The action is still there — the user can retry (the menu closed on
+		// item click, same as any other Menu.Item — reopen it to check).
+		fireEvent.click(button);
+		expect(await screen.findByTestId("drill-suggest-guidance")).toBeTruthy();
 	});
 });

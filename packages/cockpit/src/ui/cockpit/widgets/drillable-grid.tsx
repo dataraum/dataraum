@@ -55,7 +55,14 @@ import {
 	Tooltip,
 } from "@mantine/core";
 import { useMutation, useQuery } from "@tanstack/react-query";
-import { Check, ChevronDown, ChevronsDown, Layers, X } from "lucide-react";
+import {
+	Check,
+	ChevronDown,
+	ChevronsDown,
+	Layers,
+	Sparkles,
+	X,
+} from "lucide-react";
 import { type ReactNode, useMemo, useRef, useState } from "react";
 import type { ChartConfig } from "#/charts/chart-config";
 import type {
@@ -72,7 +79,10 @@ import { grainLabel, grainPresets, parseGrainToken } from "#/duckdb/grain";
 // the wire contract for the axes route's response, kept in sync with the server's
 // actual return shape instead of hand-duplicated here.
 import type { DrillAxesResult } from "#/tools/drill-axes";
-import { AxisGuidanceBadge } from "#/ui/cockpit/widgets/axis-guidance";
+import {
+	AxisGuidanceBadge,
+	axisGuidanceTier,
+} from "#/ui/cockpit/widgets/axis-guidance";
 import { ChartToolbarButton } from "#/ui/cockpit/widgets/chart-toolbar-button";
 import { WindowedGrid } from "#/ui/cockpit/widgets/result-grid";
 
@@ -360,6 +370,43 @@ export function DrillableGrid({
 		[axes],
 	);
 
+	// Haiku guidance fallback (DAT-673): offered ONLY when the node has NO
+	// measured signal at all — every axis's tier is null. A node with even one
+	// measured/curated axis never shows this; mixing a real badge with an
+	// unmeasured guess on the same menu would blur exactly the honesty this
+	// chip exists to preserve. Session-local state (no persistence — this is
+	// an on-demand affordance, and a fresh mount naturally clears it, React
+	// idiom #5).
+	const allUnmeasured =
+		axes.length > 0 && axes.every((a) => axisGuidanceTier(a) === null);
+	const [guidance, setGuidance] = useState<Map<string, string> | null>(null);
+	const [guidanceError, setGuidanceError] = useState<string | null>(null);
+	const guidanceMutation = useMutation({
+		mutationFn: () =>
+			postJson<{ suggestions: { column: string; guidance: string }[] }>(
+				"/api/drill/axis-guidance",
+				{
+					// No richer label is available at this layer (a node ref names a
+					// metric/measure key, an ad-hoc result has none at all) — the
+					// axes' own request shape is the best context on hand.
+					measureLabel:
+						"metricKey" in axesRequest
+							? axesRequest.metricKey
+							: "standardField" in axesRequest
+								? axesRequest.standardField
+								: "this result",
+					axes: axes.map((a) => ({ column: a.column, sliceType: a.sliceType })),
+				},
+			),
+		onSuccess: (res) => {
+			setGuidanceError(null);
+			setGuidance(new Map(res.suggestions.map((s) => [s.column, s.guidance])));
+		},
+		onError: (err) => {
+			setGuidanceError(err instanceof Error ? err.message : String(err));
+		},
+	});
+
 	// Monotonic apply generation, bumped in the EVENT HANDLER so it carries
 	// click order. TanStack Query neither serializes nor cancels overlapping
 	// `.mutate()` calls — their callbacks fire in network-resolution order — so
@@ -607,8 +654,37 @@ export function DrillableGrid({
 									{axis.businessContext}
 								</Text>
 							)}
+							{/* DAT-673: an on-demand Haiku suggestion, never dressed as
+							    measured — visually distinct (italic, muted, own prefix)
+							    from businessContext above, which is real catalog data. */}
+							{guidance?.get(axis.column) && (
+								<Text size="xs" c="dimmed" fs="italic" lineClamp={2}>
+									Suggested (unmeasured): {guidance.get(axis.column)}
+								</Text>
+							)}
 						</Menu.Item>
 					))}
+					{allUnmeasured && !guidance && (
+						<>
+							<Menu.Divider />
+							<Menu.Item
+								leftSection={
+									guidanceMutation.isPending ? undefined : (
+										<Sparkles size={13} />
+									)
+								}
+								onClick={() => guidanceMutation.mutate()}
+								disabled={guidanceMutation.isPending}
+								data-testid="drill-suggest-guidance"
+							>
+								<Text size="sm">
+									{guidanceMutation.isPending
+										? "Asking…"
+										: "Suggest which dimensions might matter"}
+								</Text>
+							</Menu.Item>
+						</>
+					)}
 				</Menu.Dropdown>
 			</Menu>
 			{axes.length === 0 && !axesQuery.isPending && (
@@ -734,6 +810,18 @@ export function DrillableGrid({
 					data-testid="drill-refusal"
 				>
 					{refusal}
+				</Alert>
+			)}
+			{guidanceError && (
+				<Alert
+					color="gray"
+					mb="xs"
+					withCloseButton
+					onClose={() => setGuidanceError(null)}
+					title="Couldn't fetch suggestions"
+					data-testid="drill-guidance-error"
+				>
+					{guidanceError}
 				</Alert>
 			)}
 

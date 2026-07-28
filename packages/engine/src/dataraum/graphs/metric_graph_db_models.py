@@ -117,9 +117,13 @@ class Metric(Base):
     the parsed dataclass's ``output_type``). This gives the bodies a home; it does not
     change the graph SHAPE — the vertex/edge structure (this table's other columns +
     :class:`MetricParameter` / :class:`MetricDerivesFrom`) is unchanged, DAT-732's.
-    The cockpit's ``teach_metric`` override-shadow detection and the frame induction
-    few-shot seed read these two JSON columns instead of walking the shipped
-    ``metrics/**`` directory.
+    The cockpit's ``teach_metric`` override-shadow detection (and the
+    ``/api/shipped-metric-dag`` canvas route) read these two JSON columns — a
+    WORKSPACE question, valid post add_source. The frame induction few-shot seed
+    is a DIFFERENT, cross-vertical question (any vertical, valid before any
+    workspace exists) these columns cannot serve; it still walks the shipped
+    ``metrics/**`` directory directly (``readShippedMetrics``, the cockpit's
+    teach-metric.ts — see that module's header for the LIBRARY/WORKSPACE split).
     """
 
     __tablename__ = "metrics"

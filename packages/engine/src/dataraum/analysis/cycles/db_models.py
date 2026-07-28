@@ -116,12 +116,15 @@ class CycleType(Base):
     own cycle judge keeps reading the overlay-inclusive resolved vocabulary via
     :func:`~dataraum.analysis.cycles.config.get_cycle_types` (shipped ⊕ taught,
     unchanged by this table). This table serves a DIFFERENT consumer: the cockpit's
-    shipped-only readers (``teach_cycle``'s override-shadow detection, the frame
-    induction few-shot seed) that need to know what the vertical SHIPS, distinct from
+    ``teach_cycle`` override-shadow detection (``readWorkspaceCycleTypes``) that
+    needs to know what the WORKSPACE's bound vertical has seeded, distinct from
     what a user has since taught — so the seed must read the SHIPPED base only
     (:meth:`~dataraum.core.vertical_loader.VerticalLoader.shipped_base`), never the
     overlay-layered ``collection()``, or a taught cycle would land here mislabeled
-    ``source='seed'``.
+    ``source='seed'``. The frame induction few-shot seed is a DIFFERENT, cross-
+    vertical question this table cannot serve (empty pre-seed; scoped to one
+    vertical) — it still reads the shipped ``cycles.yaml`` directly
+    (``readShippedCycles``, the cockpit's teach-cycle.ts).
 
     **Identity contract — NOT run-versioned (the DAT-728/789/856 pattern).** A cycle
     type is a stable node keyed by ``(vertical, name)``; ``cycle_type_id`` is a

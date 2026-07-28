@@ -22,11 +22,15 @@ does the same.
 KNOWLEDGE serving still reads the overlay-inclusive
 :func:`~dataraum.analysis.cycles.config.get_cycle_types` (shipped ⊕ taught) — it
 legitimately needs taught cycles visible to detection, which this shipped-only
-table must not carry. This table's only consumer is the cockpit's shipped-baseline
-readers (``teach_cycle``'s override-shadow detection, the frame induction few-shot
-seed), which query the mirrored read view directly — no engine-side Python reader
-is wired here, so none is built (a `load_workspace_cycle_types` with zero callers
-would be dead code).
+table must not carry. This table's only consumer is the cockpit's ``teach_cycle``
+override-shadow detection (``readWorkspaceCycleTypes``, a WORKSPACE question,
+valid post add_source), which queries the mirrored read view directly — no
+engine-side Python reader is wired here, so none is built (a
+`load_workspace_cycle_types` with zero callers would be dead code). The frame
+induction few-shot seed is a DIFFERENT, cross-vertical question (any vertical,
+valid before any workspace exists) this table cannot serve; it still reads the
+shipped ``cycles.yaml`` directly (``readShippedCycles``, the cockpit's
+teach-cycle.ts — see that module's header for the LIBRARY/WORKSPACE split).
 """
 
 from __future__ import annotations

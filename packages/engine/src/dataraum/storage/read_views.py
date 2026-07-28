@@ -169,9 +169,11 @@ _VERTICAL_SCOPED: tuple[str, ...] = (
     "cycle_families",
     # The cycle-type SHIPPED vocabulary (DAT-881) is likewise declaration-versioned
     # and PER VERTICAL (keyed ``(vertical, name)``, ``superseded_at`` the only
-    # lifecycle axis), so it scopes the same way. Cockpit-consumed today (the shipped-
-    # only readers behind ``teach_cycle``'s override-shadow detection + the frame
-    # induction few-shot seed) — the engine's own judge keeps reading the overlay-
+    # lifecycle axis), so it scopes the same way. Cockpit-consumed today by
+    # ``teach_cycle``'s override-shadow detection ONLY (a WORKSPACE question,
+    # valid post add_source) — the frame induction few-shot seed is a DIFFERENT,
+    # cross-vertical question this table cannot serve and still reads the shipped
+    # cycles.yaml directly; the engine's own judge keeps reading the overlay-
     # inclusive ``config.get_cycle_types``, never this table. No control-plane WRITE
     # grant: 'seed' is the only writer — a taught cycle stays in config_overlay.
     "cycle_types",

@@ -65,12 +65,14 @@ import {
 } from "lucide-react";
 import { type ReactNode, useMemo, useRef, useState } from "react";
 import type { ChartConfig } from "#/charts/chart-config";
-import type {
-	DrillAxesRequest,
-	DrillAxis,
-	DrillPinValue,
-	DrillSource,
-	DrillStep,
+import {
+	DRILL_GUIDANCE_TIMEOUT_MS,
+	type DrillAxesRequest,
+	type DrillAxis,
+	type DrillPinValue,
+	type DrillSource,
+	type DrillStep,
+	MAX_GUIDANCE_AXES,
 } from "#/duckdb/drill";
 
 import { grainLabel, grainPresets, parseGrainToken } from "#/duckdb/grain";
@@ -92,11 +94,16 @@ type ComposeResponse =
 	| { ok: true; sql: string; params: SqlParams }
 	| { ok: false; reason: string };
 
-async function postJson<T>(url: string, body: unknown): Promise<T> {
+async function postJson<T>(
+	url: string,
+	body: unknown,
+	signal?: AbortSignal,
+): Promise<T> {
 	const res = await fetch(url, {
 		method: "POST",
 		headers: { "Content-Type": "application/json" },
 		body: JSON.stringify(body),
+		signal,
 	});
 	if (!res.ok) {
 		const detail = (await res.json().catch(() => null)) as {
@@ -379,11 +386,33 @@ export function DrillableGrid({
 	// idiom #5).
 	const allUnmeasured =
 		axes.length > 0 && axes.every((a) => axisGuidanceTier(a) === null);
-	const [guidance, setGuidance] = useState<Map<string, string> | null>(null);
+	// Tri-state, not a plain nullable Map (fold-in #4): a successful call that
+	// returns ZERO surviving suggestions must not look identical to "never
+	// asked" — an empty-but-truthy Map made the Suggest action vanish with no
+	// text and no error, a dead end. "empty" renders an explicit "No
+	// suggestions" state instead.
+	const [guidance, setGuidance] = useState<
+		Map<string, string> | "empty" | null
+	>(null);
 	const [guidanceError, setGuidanceError] = useState<string | null>(null);
 	const guidanceMutation = useMutation({
-		mutationFn: () =>
-			postJson<{ suggestions: { column: string; guidance: string }[] }>(
+		mutationFn: () => {
+			// Bound the call — the SAME shared constant the route's schema and
+			// the agent module cap with (duckdb/drill.ts); review-round Critical
+			// 1: a pure-substrate node routinely has MORE than MAX_GUIDANCE_AXES
+			// axes, and sending all of them 400'd on the route's own cap with a
+			// raw zod message.
+			const capped = axes.slice(0, MAX_GUIDANCE_AXES);
+			// Fold-in #5: a hung model must not leave "Asking…" disabled
+			// forever — bound the client's own fetch independently of the
+			// server-side timeout (axis-guidance-agent.ts bounds its chat() call
+			// with the same duration).
+			const controller = new AbortController();
+			const timer = setTimeout(
+				() => controller.abort(),
+				DRILL_GUIDANCE_TIMEOUT_MS,
+			);
+			return postJson<{ suggestions: { column: string; guidance: string }[] }>(
 				"/api/drill/axis-guidance",
 				{
 					// No richer label is available at this layer (a node ref names a
@@ -395,12 +424,21 @@ export function DrillableGrid({
 							: "standardField" in axesRequest
 								? axesRequest.standardField
 								: "this result",
-					axes: axes.map((a) => ({ column: a.column, sliceType: a.sliceType })),
+					axes: capped.map((a) => ({
+						column: a.column,
+						sliceType: a.sliceType,
+					})),
 				},
-			),
+				controller.signal,
+			).finally(() => clearTimeout(timer));
+		},
 		onSuccess: (res) => {
 			setGuidanceError(null);
-			setGuidance(new Map(res.suggestions.map((s) => [s.column, s.guidance])));
+			setGuidance(
+				res.suggestions.length > 0
+					? new Map(res.suggestions.map((s) => [s.column, s.guidance]))
+					: "empty",
+			);
 		},
 		onError: (err) => {
 			setGuidanceError(err instanceof Error ? err.message : String(err));
@@ -594,6 +632,55 @@ export function DrillableGrid({
 			? axisByColumn.get(hierarchyNextColumn)
 			: undefined;
 
+	// Safe lookup over the tri-state (fold-in #4's "empty" isn't a Map).
+	const guidanceTextFor = (column: string): string | undefined =>
+		guidance instanceof Map ? guidance.get(column) : undefined;
+
+	/** One axis's rightSection (grain name / valueCount) — SHARED by the plain
+	 *  list entry and the promoted hierarchy-descent suggestion (fold-in #7:
+	 *  the same axis must never look like two different things depending on
+	 *  which entry renders it). */
+	const axisRightSection = (axis: DrillAxis): ReactNode =>
+		grainable && axis.temporal !== null ? (
+			<Text size="xs" c="dimmed">
+				{grainName(DEFAULT_TEMPORAL_GRAIN)}
+			</Text>
+		) : axis.valueCount !== null ? (
+			<Text size="xs" c="dimmed">
+				{axis.valueCount}
+			</Text>
+		) : undefined;
+
+	/** One axis's FULL Menu.Item body — the primary label (either the bare
+	 *  column name or the hierarchy-descent "Descend to X" framing) inline
+	 *  with its guidance badge, then curated business context and (DAT-673)
+	 *  any on-demand Haiku suggestion below. SHARED by the plain list entry
+	 *  and the promoted hierarchy-descent suggestion (fold-in #7: the same
+	 *  axis must never look like two different things depending on which
+	 *  entry renders it — the earlier version dropped the badge AND
+	 *  valueCount from the promoted entry). */
+	const axisItemBody = (axis: DrillAxis, label: string): ReactNode => (
+		<>
+			<Group gap={6} wrap="nowrap">
+				<Text size="sm">{label}</Text>
+				<AxisGuidanceBadge axis={axis} />
+			</Group>
+			{axis.businessContext && (
+				<Text size="xs" c="dimmed" lineClamp={1}>
+					{axis.businessContext}
+				</Text>
+			)}
+			{/* An on-demand Haiku suggestion, never dressed as measured —
+			    visually distinct (italic, muted, own prefix) from
+			    businessContext above, which is real catalog data. */}
+			{guidanceTextFor(axis.column) && (
+				<Text size="xs" c="dimmed" fs="italic" lineClamp={2}>
+					Suggested (unmeasured): {guidanceTextFor(axis.column)}
+				</Text>
+			)}
+		</>
+	);
+
 	// The drill controls live in the GRID's toolbar-left slot (where the row
 	// count used to sit — iteration 3), not on their own row above it.
 	const drillControls = (
@@ -618,12 +705,14 @@ export function DrillableGrid({
 							<Menu.Item
 								key={`suggested:${hierarchySuggestion.column}`}
 								leftSection={<ChevronsDown size={13} />}
-								onClick={() =>
-									hierarchySuggestion && slice(hierarchySuggestion)
-								}
+								onClick={() => slice(hierarchySuggestion)}
+								rightSection={axisRightSection(hierarchySuggestion)}
 								data-testid={`drill-hierarchy-suggestion-${hierarchySuggestion.column}`}
 							>
-								<Text size="sm">Descend to {hierarchySuggestion.column}</Text>
+								{axisItemBody(
+									hierarchySuggestion,
+									`Descend to ${hierarchySuggestion.column}`,
+								)}
 							</Menu.Item>
 							<Menu.Divider />
 						</>
@@ -633,38 +722,12 @@ export function DrillableGrid({
 							key={axis.column}
 							disabled={slicedColumns.has(axis.column)}
 							onClick={() => slice(axis)}
-							rightSection={
-								grainable && axis.temporal !== null ? (
-									<Text size="xs" c="dimmed">
-										{grainName(DEFAULT_TEMPORAL_GRAIN)}
-									</Text>
-								) : axis.valueCount !== null ? (
-									<Text size="xs" c="dimmed">
-										{axis.valueCount}
-									</Text>
-								) : undefined
-							}
+							rightSection={axisRightSection(axis)}
 						>
-							<Group gap={6} wrap="nowrap">
-								<Text size="sm">{axis.column}</Text>
-								<AxisGuidanceBadge axis={axis} />
-							</Group>
-							{axis.businessContext && (
-								<Text size="xs" c="dimmed" lineClamp={1}>
-									{axis.businessContext}
-								</Text>
-							)}
-							{/* DAT-673: an on-demand Haiku suggestion, never dressed as
-							    measured — visually distinct (italic, muted, own prefix)
-							    from businessContext above, which is real catalog data. */}
-							{guidance?.get(axis.column) && (
-								<Text size="xs" c="dimmed" fs="italic" lineClamp={2}>
-									Suggested (unmeasured): {guidance.get(axis.column)}
-								</Text>
-							)}
+							{axisItemBody(axis, axis.column)}
 						</Menu.Item>
 					))}
-					{allUnmeasured && !guidance && (
+					{allUnmeasured && guidance === null && (
 						<>
 							<Menu.Divider />
 							<Menu.Item
@@ -681,6 +744,19 @@ export function DrillableGrid({
 									{guidanceMutation.isPending
 										? "Asking…"
 										: "Suggest which dimensions might matter"}
+								</Text>
+							</Menu.Item>
+						</>
+					)}
+					{/* Fold-in #4: a successful call with ZERO surviving suggestions
+					    must not be a silent dead end — say so explicitly rather than
+					    letting the Suggest action just vanish with nothing to show. */}
+					{allUnmeasured && guidance === "empty" && (
+						<>
+							<Menu.Divider />
+							<Menu.Item disabled data-testid="drill-suggest-guidance-empty">
+								<Text size="sm" c="dimmed">
+									No suggestions
 								</Text>
 							</Menu.Item>
 						</>

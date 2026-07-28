@@ -6,7 +6,11 @@
 
 import { describe, expect, it } from "vitest";
 
-import { type AxisGuidanceInput, axisGuidanceTier } from "./axis-guidance";
+import {
+	type AxisGuidanceInput,
+	axisGuidanceTier,
+	formatSignificant,
+} from "./axis-guidance";
 
 const input = (over: Partial<AxisGuidanceInput> = {}): AxisGuidanceInput => ({
 	driverGain: null,
@@ -58,5 +62,35 @@ describe("axisGuidanceTier", () => {
 				input({ sliceInterest: "supporting", sliceRelevance: 0.9 }),
 			),
 		).toBe("supporting");
+	});
+});
+
+// Review-round fix: toFixed(2) collapsed small measured gains into a
+// self-contradicting "0.00" and merged distinct gains at 2dp — the ticket's
+// own recorded example (bank_transactions.amount → reconciled, gain 0.0016)
+// would have rendered as "0.00". 3 significant digits fixes both.
+describe("formatSignificant", () => {
+	it("keeps 3 significant digits for a small real gain instead of collapsing it to zero", () => {
+		expect(formatSignificant(0.0016)).toBe("0.00160");
+	});
+
+	it("matches the ticket's other recorded live gains", () => {
+		expect(formatSignificant(0.104)).toBe("0.104");
+		expect(formatSignificant(0.101)).toBe("0.101");
+	});
+
+	it("never renders a nonzero value as a lying '0.00' — omits the number instead", () => {
+		expect(formatSignificant(0.0000001)).not.toBe("0.00");
+		expect(formatSignificant(0.0000001)).not.toBeNull();
+	});
+
+	it("returns null for exactly zero — nothing honest to show", () => {
+		expect(formatSignificant(0)).toBeNull();
+	});
+
+	it("uses fixed notation, never exponential, at any realistic magnitude", () => {
+		for (const n of [0.1, 0.31, 0.999, 1.5, 12.345]) {
+			expect(formatSignificant(n)).not.toMatch(/e/i);
+		}
 	});
 });

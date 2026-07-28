@@ -56,22 +56,45 @@ const TIER_LABEL: Record<AxisGuidanceTier, string> = {
 	unjudged: "Unjudged",
 };
 
-/** 2-decimal fixed, matching `formatDrivers`'s `g()` convention
- *  (query-context.ts) — the same gain number rendered the same way wherever
- *  it appears. */
-const fixed2 = (n: number): string => n.toFixed(2);
+/**
+ * 3 significant digits, FIXED notation (this feeds a small UI chip, never
+ * exponential) — NOT `formatDrivers`'s 2-decimal `g()` (query-context.ts),
+ * which was the wrong precedent to match: that convention feeds an LLM
+ * PROMPT context block, where a real driver gain can be smaller than 2dp
+ * resolves (the ticket's own recorded example, `bank_transactions.amount` →
+ * `reconciled`, gain 0.0016) — 2dp collapses it into a self-contradicting
+ * "Driver · 0.00" AND merges genuinely distinct small gains onto the same
+ * displayed value. Returns `null` (omit the number) when the value still
+ * rounds to zero at 3 significant digits — there is nothing honest left to
+ * show at that point, so the chip drops the number rather than lie with
+ * "0.00".
+ */
+export function formatSignificant(n: number): string | null {
+	if (n === 0) return null;
+	const abs = Math.abs(n);
+	// 3 significant digits: a number of magnitude 10^k needs (2 - k) decimal
+	// places for its leading digit to be the 3rd significant one (e.g.
+	// 0.1 → k=-1 → 3dp "0.100"; 0.0016 → k=-3 → 5dp "0.00160").
+	const decimals = Math.max(0, Math.min(2 - Math.floor(Math.log10(abs)), 10));
+	const formatted = n.toFixed(decimals);
+	return Number(formatted) === 0 ? null : formatted;
+}
 
 /** The Slice menu's provenance chip for one axis — `null` (renders nothing)
  *  when the axis carries no catalog or driver signal at all. */
 export function AxisGuidanceBadge({ axis }: { axis: AxisGuidanceInput }) {
 	const tier = axisGuidanceTier(axis);
 	if (tier === null) return null;
-	const label =
+	// Only "driver" carries its number on the chip — a measured gain is worth
+	// disclosing precisely. "Unjudged" drops its raw relevance float (nit):
+	// the tier label alone reads better on a small chip, and the number added
+	// no honest disclosure `axisGuidanceTier` didn't already carry.
+	const gain =
 		tier === "driver" && axis.driverGain !== null
-			? `${TIER_LABEL[tier]} · ${fixed2(axis.driverGain)}`
-			: tier === "unjudged" && axis.sliceRelevance !== null
-				? `${TIER_LABEL[tier]} · ${fixed2(axis.sliceRelevance)}`
-				: TIER_LABEL[tier];
+			? formatSignificant(axis.driverGain)
+			: null;
+	const label =
+		gain !== null ? `${TIER_LABEL[tier]} · ${gain}` : TIER_LABEL[tier];
 	return (
 		<Badge color={TIER_COLOR[tier]} variant="light" size="sm" tt="none">
 			{label}

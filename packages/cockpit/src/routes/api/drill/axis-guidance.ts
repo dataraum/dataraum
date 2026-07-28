@@ -13,6 +13,7 @@
 import { createFileRoute } from "@tanstack/react-router";
 import { z } from "zod";
 
+import { MAX_GUIDANCE_AXES } from "#/duckdb/drill";
 import { suggestAxisGuidance } from "#/lib/axis-guidance-agent";
 
 const BodySchema = z.object({
@@ -25,7 +26,12 @@ const BodySchema = z.object({
 			}),
 		)
 		.min(1)
-		.max(8),
+		// Same constant the client caps its request with (drillable-grid.tsx)
+		// and the agent module caps its own input with — a hardcoded `8` here
+		// was the review-round Critical 1 bug: the client sent every axis, this
+		// schema rejected it with a raw zod message, and the two numbers had no
+		// way to stay in sync.
+		.max(MAX_GUIDANCE_AXES),
 });
 
 function badRequest(message: string): Response {

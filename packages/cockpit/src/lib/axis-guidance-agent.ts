@@ -27,12 +27,16 @@ import { createAnthropicChat } from "@tanstack/ai-anthropic";
 import { z } from "zod";
 
 import { config } from "#/config";
+import { DRILL_GUIDANCE_TIMEOUT_MS, MAX_GUIDANCE_AXES } from "#/duckdb/drill";
 import { llmOtel } from "#/lib/llm-otel";
 import { DRILL_GUIDANCE_MODEL, STRUCTURED_OUTPUT_MAX_TOKENS } from "#/llm";
 
-/** Bound the call — never an unbounded array, matching the UI-quality-bar
- *  "bound every data surface" principle generalized to LLM payload size. */
-export const MAX_GUIDANCE_AXES = 8;
+// MAX_GUIDANCE_AXES / DRILL_GUIDANCE_TIMEOUT_MS live in duckdb/drill.ts (the
+// neo-free, client-safe module), not here — the route's zod schema and the
+// client's pre-send cap must share the SAME cap this module enforces, or the
+// three drift into independently re-literalized copies (the review-round
+// Critical 1 bug: the client sent every axis, the route's OWN hardcoded
+// `.max(8)` 400'd on the raw zod message before this function ever ran).
 
 const SYSTEM = `You suggest why each listed dimension of a data analysis might be worth slicing/grouping by. You have NOT been given any measured relevance, driver, or effect-size data for these dimensions — only their column name and the measure they'd be grouped against. This is a SUGGESTION for a practitioner deciding what to explore next, not a measured fact.
 
@@ -69,20 +73,37 @@ export async function suggestAxisGuidance(
 		.map((a) => `- ${a.column} (${a.sliceType})`)
 		.join("\n")}`;
 
-	const { suggestions } = await chat({
-		adapter: createAnthropicChat(DRILL_GUIDANCE_MODEL, config.anthropicApiKey),
-		middleware: [...llmOtel("drill_axis_guidance")],
-		modelOptions: { max_tokens: STRUCTURED_OUTPUT_MAX_TOKENS },
-		systemPrompts: [{ content: SYSTEM }],
-		messages: [{ role: "user", content: userContent }],
-		outputSchema: z.object({
-			suggestions: z
-				.array(z.object({ column: z.string(), guidance: z.string() }))
-				.max(MAX_GUIDANCE_AXES),
-		}),
-	});
-	// Never fabricate coverage of an axis that wasn't asked about — silently
-	// drop any response entry whose column isn't one of the requested ones,
-	// rather than trusting the model's echo of the name back.
-	return suggestions.filter((s) => wanted.has(s.column));
+	// Bounds the call itself (fold-in #5): a hung model must not hold the
+	// route handler's connection open forever — the SAME reason
+	// drillable-grid.tsx bounds its own fetch with a client-side abort. Two
+	// independent timeouts, one shared duration.
+	const abortController = new AbortController();
+	const timer = setTimeout(
+		() => abortController.abort(),
+		DRILL_GUIDANCE_TIMEOUT_MS,
+	);
+	try {
+		const { suggestions } = await chat({
+			adapter: createAnthropicChat(
+				DRILL_GUIDANCE_MODEL,
+				config.anthropicApiKey,
+			),
+			middleware: [...llmOtel("drill_axis_guidance")],
+			modelOptions: { max_tokens: STRUCTURED_OUTPUT_MAX_TOKENS },
+			systemPrompts: [{ content: SYSTEM }],
+			messages: [{ role: "user", content: userContent }],
+			abortController,
+			outputSchema: z.object({
+				suggestions: z
+					.array(z.object({ column: z.string(), guidance: z.string() }))
+					.max(MAX_GUIDANCE_AXES),
+			}),
+		});
+		// Never fabricate coverage of an axis that wasn't asked about — silently
+		// drop any response entry whose column isn't one of the requested ones,
+		// rather than trusting the model's echo of the name back.
+		return suggestions.filter((s) => wanted.has(s.column));
+	} finally {
+		clearTimeout(timer);
+	}
 }

@@ -31,6 +31,23 @@ import type { AnswerDrillSource } from "./answer-source";
 import type { TemporalKind } from "./grain";
 import { quoteIdentifier } from "./grid-query";
 
+// DAT-673 guidance fallback shared constants: BOTH the client (drillable-
+// grid.tsx, which caps its request before sending) and the server (the
+// axis-guidance route's zod schema + the agent module) need the SAME number,
+// or the two drift and the client can send a payload the route rejects with
+// a raw zod error (the review-round Critical 1 bug: the client sent every
+// axis, the route's `.max(8)` 400'd, and the fix must not become two
+// hand-copied literals under two different names). Defined here — not in the
+// server-only agent module — because this module is neo-free and widgets
+// already import types from it.
+export const MAX_GUIDANCE_AXES = 8;
+
+/** Bounds the Haiku call itself (server-side, inside the agent module) AND
+ *  the client's fetch (drillable-grid.tsx) — a hung model must not leave
+ *  "Asking…" disabled forever, and the route handler must not hold the
+ *  connection open indefinitely either. One shared number for both ends. */
+export const DRILL_GUIDANCE_TIMEOUT_MS = 20_000;
+
 /** A pin carries the clicked cell's JSON value — bigints/dates arrive as
  *  strings and DuckDB casts the bound param to the column type. */
 export type DrillPinValue = string | number | boolean | null;

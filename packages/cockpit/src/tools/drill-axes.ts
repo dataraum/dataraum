@@ -742,9 +742,22 @@ async function resolveAxesForSources(
 					kind: currentDimensionHierarchies.kind,
 					members: currentDimensionHierarchies.members,
 					needsConfirmation: currentDimensionHierarchies.needsConfirmation,
+					signature: currentDimensionHierarchies.signature,
 				})
 				.from(currentDimensionHierarchies)
-				.where(inArray(currentDimensionHierarchies.tableId, factIds)),
+				.where(inArray(currentDimensionHierarchies.tableId, factIds))
+				// Deterministic row order — hierarchyDescentMap is first-wins per
+				// column across qualifying hierarchies, so an unordered read would
+				// let two drilldown chains sharing a coarse member flip "Descend to
+				// X" between valid targets across requests on IDENTICAL data
+				// (Postgres row-order roulette, the same trap the columns read
+				// guards above). `signature` is unique per (signature, run_id) —
+				// the engine's own tiebreak — so it's a genuine deterministic key,
+				// not an arbitrary one.
+				.orderBy(
+					asc(currentDimensionHierarchies.tableId),
+					asc(currentDimensionHierarchies.signature),
+				),
 			metadataDb
 				.select({
 					tableId: columns.tableId,

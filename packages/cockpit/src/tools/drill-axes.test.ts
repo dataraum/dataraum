@@ -58,6 +58,7 @@ vi.mock("#/duckdb/sql-ast", () => ({
 
 import {
 	columns,
+	currentDimensionHierarchies,
 	currentDriverRankings,
 	currentEnrichedViews,
 	currentLifecycleArtifacts,
@@ -828,6 +829,35 @@ describe("resolveDrillAxes (mocked metadata client)", () => {
 			"customer__segment",
 			"customer__region",
 		]);
+	});
+
+	// Critical review-round finding: this DB-read → descent wiring had ZERO
+	// coverage — the mutation `hierarchyDescentMap(hierarchyRows)` →
+	// `hierarchyDescentMap([])` left every other test in this file green,
+	// because none of them ever registered a row for
+	// `currentDimensionHierarchies` (the fluent mock silently returns `[]` for
+	// any unseeded table). This seeds a CONFIRMED drilldown chain over the
+	// fixture's own fact1 axes and asserts the wiring actually reaches the
+	// resolved axis, end to end through resolveDrillAxes.
+	it("wires a CONFIRMED drilldown hierarchy's next level onto the resolved axis (DAT-673 hierarchy descent)", async () => {
+		seed();
+		rowsByTable.set(currentDimensionHierarchies, [
+			{
+				tableId: "fact1",
+				kind: "drilldown",
+				needsConfirmation: false,
+				members: [
+					{ column_name: "customer__region", level: 0 },
+					{ column_name: "customer__segment", level: 1 },
+				],
+			},
+		]);
+		const { axes } = await resolveDrillAxes({ metricKey: "gross_margin" });
+		const region = axes.find((a) => a.column === "customer__region");
+		expect(region?.hierarchyNext).toBe("customer__segment");
+		// The finest level has nothing further to descend to.
+		const segment = axes.find((a) => a.column === "customer__segment");
+		expect(segment?.hierarchyNext).toBeNull();
 	});
 
 	it("resolves a single measure by standard field without the lifecycle read", async () => {

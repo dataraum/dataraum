@@ -366,6 +366,21 @@ CREATE TABLE validations (
 
 CREATE UNIQUE INDEX uq_validation_active ON validations (vertical, validation_id) WHERE superseded_at IS NULL;
 
+CREATE TABLE vertical_envelopes (
+	envelope_id VARCHAR NOT NULL, 
+	vertical VARCHAR NOT NULL, 
+	name VARCHAR NOT NULL, 
+	version VARCHAR, 
+	description TEXT, 
+	source VARCHAR NOT NULL, 
+	created_at TIMESTAMP WITHOUT TIME ZONE NOT NULL, 
+	superseded_at TIMESTAMP WITHOUT TIME ZONE, 
+	CONSTRAINT pk_vertical_envelopes PRIMARY KEY (envelope_id), 
+	CONSTRAINT ck_vertical_envelopes_source CHECK (source IN ('seed'))
+);
+
+CREATE UNIQUE INDEX uq_vertical_envelope_active ON vertical_envelopes (vertical) WHERE superseded_at IS NULL;
+
 CREATE TABLE workspace_calendar (
 	pin BOOLEAN NOT NULL, 
 	fiscal_year_start_month INTEGER NOT NULL, 

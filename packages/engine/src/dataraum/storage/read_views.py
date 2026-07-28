@@ -167,6 +167,14 @@ _VERTICAL_SCOPED: tuple[str, ...] = (
     # family/direction off the detected-cycle columns, not this table). No control-plane
     # WRITE grant: 'seed' is the only writer until a frame-family path lands.
     "cycle_families",
+    # The vertical envelope (DAT-883) is likewise a PER-VERTICAL singleton (keyed on
+    # ``vertical`` alone, ``superseded_at`` the only lifecycle axis) — without this it
+    # would get the plain cross-vertical pass-through every OTHER table here was scoped
+    # to avoid. Engine-internal today (``envelope_store`` reads the base table with its
+    # own active-vertical filter); scoped here anyway for the same reason the sibling
+    # typed homes are — a wrong ``--vertical`` (or the eval's wild-vertical stand-in)
+    # must never leak a foreign envelope to a future reader of this view.
+    "vertical_envelopes",
 )
 
 # Run-stamped tables SANCTIONED to lack a ``(key, run_id)`` UNIQUE — the

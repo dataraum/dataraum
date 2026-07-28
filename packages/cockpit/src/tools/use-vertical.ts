@@ -56,8 +56,10 @@ export async function useVertical(
 	}
 	// Born-loud at the adopt boundary (DAT-479): a vertical with no concepts would
 	// ground against nothing — add_source's semantic phase fails deep instead of
-	// here. `concept_count` is an UPPER BOUND (overlay overrides double-count), so
-	// `=== 0` can only be a true zero — safe to reject on.
+	// here. `concept_count` resolves from EITHER the typed rows or the on-disk
+	// count, never both summed (DAT-883's `resolvedConceptCount`) — it is zero iff
+	// BOTH sources are zero, so `=== 0` is always a true zero, never a real count
+	// masked by a source the resolver happened not to consult — safe to reject on.
 	if (match.concept_count === 0) {
 		throw new AgentActionableError(
 			`Vertical '${name}' has no concepts to ground against — adopting it would ` +

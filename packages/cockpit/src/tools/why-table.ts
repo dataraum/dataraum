@@ -368,7 +368,7 @@ export const whyTableTool = toolDefinition({
 	name: "why_table",
 	description:
 		"Explain ONE table's whole-table readiness — why it lands in its band for the " +
-		"query, aggregation, and reporting intents — grounded in the persisted " +
+		"query, aggregation, and presentation intents — grounded in the persisted " +
 		"drivers (ranked by how much fixing each would help) and the underlying " +
 		"detector evidence, with a short synthesized explanation. Read-only. Use " +
 		"after look_table to drill into the table-grain band; identify it by its " +

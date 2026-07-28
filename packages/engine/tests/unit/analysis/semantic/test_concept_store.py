@@ -172,6 +172,42 @@ def test_load_workspace_concepts_conventions_empty_without_convention_seed(
     assert load_workspace_concepts(session, "finance").conventions == []
 
 
+def test_load_workspace_concepts_envelope_when_seeded(session: Session) -> None:
+    """The envelope (name/version/description) comes from the typed
+    ``vertical_envelopes`` home now (DAT-883), same config→DB seam as concepts/
+    conventions."""
+    from dataraum.analysis.semantic.envelope_store import ensure_envelope_seeded
+
+    ensure_concepts_seeded(session, "finance")
+    ensure_envelope_seeded(session, "finance")
+    definition = load_workspace_concepts(session, "finance")
+    assert definition.name == "financial_reporting"
+    assert definition.version == "1.0.0"
+    assert definition.description is not None
+
+
+def test_load_workspace_concepts_version_is_none_when_envelope_unseeded(
+    session: Session,
+) -> None:
+    """DAT-883's whole point: an unseeded envelope must serve version=None, NEVER
+    the old fabricated "1.0.0" default.
+
+    Concepts seeded (so grounding can proceed) but the envelope deliberately NOT
+    (a workspace mid-migration, or any reader that races ahead of the seed) — the
+    definition must fall back to the vertical's own key for ``name`` (the one
+    honest fact available) and NULL for ``version``/``description``, never an
+    invented value. This is the regression the ticket exists to prevent: reverting
+    to ``version=yaml_def.version if yaml_def else "1.0.0"`` would leave every
+    OTHER test in this suite green (nothing else asserts on ``.version``) — this
+    is the one test that dies if the fabrication comes back.
+    """
+    ensure_concepts_seeded(session, "finance")
+    definition = load_workspace_concepts(session, "finance")
+    assert definition.name == "finance"  # the vertical key, not the curated YAML name
+    assert definition.version is None
+    assert definition.description is None
+
+
 def test_load_excludes_superseded_rows(session: Session) -> None:
     ensure_concepts_seeded(session, "finance")
     session.execute(

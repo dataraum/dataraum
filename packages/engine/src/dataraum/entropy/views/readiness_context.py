@@ -404,7 +404,7 @@ def assemble_readiness_context(
     # DirectSignals. The rollup (``_build_column_result``) is target-agnostic, so
     # a relationship's or a table's objects roll up the same intents as a
     # column's. ``table:`` carries the fact table's dimension_coverage measurement
-    # → query/reporting intent bands.
+    # → query/presentation intent bands.
     rollup_targets: dict[str, list[EntropyObject]] = {}
     other_targets: dict[str, list[EntropyObject]] = {}
     for target, target_objects in by_target.items():

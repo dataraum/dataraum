@@ -17,6 +17,10 @@
 // worse than no harness — that is the exact failure mode this lane exists to
 // remove.
 
+import { mkdtempSync, rmSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
+
 import type { TestProject } from "vitest/node";
 
 import {
@@ -27,21 +31,35 @@ import {
 	stopFixtureWorkspace,
 } from "./fixture-workspace";
 import { TEST_WORKSPACE_ID } from "./integration-env";
+import { buildJourneyLake, findCorpusDir } from "./journey-lake";
 import {
 	catalogSeedSql,
 	graphSnippetSeedSql,
 	metricArtifactSeedSql,
 } from "./seed-catalog";
+import { JOURNEY_DB, journeySeedSql } from "./seed-journey";
 
 export interface FixtureHandle {
 	metadataUrl: string;
 	cockpitUrl: string;
 }
 
+/** The journey workspace: its own metadata database AND its own real DuckLake
+ *  lake, both inside the shared fixture container. Null when the corpus is not
+ *  checked out — the journeys assert figures derived from it, so there is
+ *  nothing honest to run without it. */
+export interface JourneyHandle {
+	metadataUrl: string;
+	lakeCatalogUrl: string;
+	lakeDataPath: string;
+}
+
 declare module "vitest" {
 	interface ProvidedContext {
 		fixtureWorkspace: FixtureHandle | null;
 		fixtureSkipReason: string | null;
+		journeyWorkspace: JourneyHandle | null;
+		journeySkipReason: string | null;
 	}
 }
 
@@ -52,6 +70,11 @@ export default async function setup({ provide }: TestProject) {
 		provide(
 			"fixtureSkipReason",
 			`fixture workspace unavailable — ${unavailable}`,
+		);
+		provide("journeyWorkspace", null);
+		provide(
+			"journeySkipReason",
+			`journey workspace needs docker — ${unavailable}`,
 		);
 		console.warn(
 			`\n[fixture-workspace] SKIPPING all fixture-backed integration suites: ${unavailable}\n`,
@@ -84,7 +107,50 @@ export default async function setup({ provide }: TestProject) {
 	});
 	provide("fixtureSkipReason", null);
 
+	// --- the journey workspace: real catalog + real lake over the real corpus ---
+	//
+	// A MISSING CORPUS IS A SKIP, a failing BUILD is not. The journeys assert
+	// figures derived from `dataraum-testdata`, which is a sibling repo and may
+	// simply not be checked out; running them against anything else would assert
+	// nothing. But once the corpus IS present, a failure to build the lake or
+	// seed the catalog is OUR bug and must be loud — the same posture the shared
+	// fixture takes.
+	let lakeDir: string | null = null;
+	const corpusDir = findCorpusDir();
+	if (!corpusDir) {
+		provide("journeyWorkspace", null);
+		provide(
+			"journeySkipReason",
+			"dataraum-testdata corpus not found — set DATARAUM_TESTDATA_PATH or check " +
+				"out the sibling repo (the journeys assert figures derived from it)",
+		);
+		console.warn(
+			"\n[journey-workspace] SKIPPING the J1-J8 journey suite: corpus not found.\n",
+		);
+	} else {
+		try {
+			fixture.psql(journeySeedSql(), JOURNEY_DB);
+			lakeDir = mkdtempSync(join(tmpdir(), "dataraum-journey-lake-"));
+			await buildJourneyLake({
+				catalogLibpq: fixture.journeyLakeCatalogLibpq,
+				dataPath: join(lakeDir, "data"),
+				corpusDir,
+			});
+		} catch (err) {
+			throw new Error(
+				`journey workspace failed to build: ${(err as Error).message}`,
+			);
+		}
+		provide("journeyWorkspace", {
+			metadataUrl: fixture.journeyUrl,
+			lakeCatalogUrl: fixture.journeyLakeCatalogUrl,
+			lakeDataPath: join(lakeDir, "data"),
+		});
+		provide("journeySkipReason", null);
+	}
+
 	return () => {
 		stopFixtureWorkspace(fixture.containerId);
+		if (lakeDir) rmSync(lakeDir, { recursive: true, force: true });
 	};
 }

@@ -1274,9 +1274,11 @@ export async function buildGrainBlock(): Promise<string> {
 // authors reasoning over ONE structure): the engine renders each vocabulary
 // concept's `part_of`/`disjoint_with`/`reconciles_with` neighbourhood and its
 // groundings (`graphs/context_format.py::_append_concepts`) into its own
-// prompt; nothing equivalent reached this sub-agent before. `buildConceptGraph`
-// (`concept-graph.ts`) is the SAME model the Model route's Concepts view
-// renders — one structure, two consumers, matching the ticket's own framing.
+// prompt; nothing equivalent reached this sub-agent before. `loadConceptGraph`
+// (`concept-graph-load.ts`) serves the SAME model the Model route's Concepts
+// view renders — one structure, two consumers, matching the ticket's own
+// framing, and since DAT-671 R3 read from the operating-model property graph
+// rather than rebuilt in memory (ADR-0024: one resolution home).
 
 /**
  * Read the concept vocabulary graph and format it as the sub-agent's

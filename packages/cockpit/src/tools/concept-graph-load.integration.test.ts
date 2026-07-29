@@ -24,13 +24,16 @@ describe.skipIf(!fx.available)(
 	() => {
 		let loadConceptGraph: typeof import("./concept-graph-load").loadConceptGraph;
 		let formatConceptContext: typeof import("./concept-graph").formatConceptContext;
+		let AXIS_KEY_ALL: typeof import("./concept-graph").AXIS_KEY_ALL;
 		let graph: Awaited<
 			ReturnType<typeof import("./concept-graph-load").loadConceptGraph>
 		>;
 
 		beforeAll(async () => {
 			({ loadConceptGraph } = await import("./concept-graph-load"));
-			({ formatConceptContext } = await import("./concept-graph"));
+			({ formatConceptContext, AXIS_KEY_ALL } = await import(
+				"./concept-graph"
+			));
 			graph = await loadConceptGraph();
 		});
 
@@ -153,7 +156,11 @@ describe.skipIf(!fx.available)(
 					["time", "classified", "additive"],
 				]);
 				const time = revenue.additivity[1];
-				expect(time.axisKey).toBe("*");
+				// The class-row sentinel this package mirrors, checked against what
+				// the ENGINE actually serves rather than against the copy in
+				// `drill-axes.ts` — agreeing with a sibling mirror would prove
+				// nothing if both had drifted from the engine together.
+				expect(time.axisKey).toBe(AXIS_KEY_ALL);
 				expect(time.bucketGrain).toBe("month");
 				expect(revenue.additivity[0].abstainReason).toBe("unknown_aggregate");
 			});
@@ -235,7 +242,7 @@ describe.skipIf(!fx.available)(
 					"- additivity: any categorical axis — NOT CLASSIFIED (unknown_aggregate)",
 				);
 				expect(text).toContain(
-					"- additivity: any time axis — semi_additive (stock)",
+					"- additivity: any time axis — semi_additive (stock), bucketable no finer than month",
 				);
 				expect(text).toContain(
 					`- feeds metric: ${DERIVED_METRIC} (profitability, ratio in percent)`,

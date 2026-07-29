@@ -192,11 +192,17 @@ export interface ConceptGraph {
 	nodes: ConceptGraphNode[];
 }
 
-/** The class-row sentinel — must match `additivity_db_models.AXIS_KEY_ALL`,
- *  the same literal `drill-axes.ts` mirrors; pinned there and here by test
- *  (ADR-0024's mirrored-with-test discipline). Mirrored rather than imported
- *  because `drill-axes.ts` reaches for the metadata client and this module is
- *  pulled into the CLIENT bundle by the Model route's concept view. */
+/** The class-row sentinel — must match `additivity_db_models.AXIS_KEY_ALL`.
+ *  `drill-axes.ts` holds its own copy of the same literal; there is deliberately
+ *  NO cross-file equality test between the two, because agreeing with each
+ *  other would prove nothing — what matters is agreeing with the ENGINE. This
+ *  side is pinned against the engine's real rows instead:
+ *  `concept-graph-load.integration.test.ts` asserts the `axisKey` that comes
+ *  back from `og_has_additivity` is exactly this value.
+ *
+ *  Mirrored rather than imported because `drill-axes.ts` reaches for the
+ *  metadata client, and this module is pulled into the CLIENT bundle by the
+ *  Model route's concept view. */
 export const AXIS_KEY_ALL = "*";
 
 /** Parse a grounding's declared WHERE predicates — a JSON array of business-

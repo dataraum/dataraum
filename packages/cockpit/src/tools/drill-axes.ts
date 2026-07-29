@@ -451,22 +451,25 @@ export const ALREADY_AT_GRAIN_REASON =
  * Stamp the DAT-671 "already sliced" disabled-reason onto any axis whose
  * column name matches one of the result's existing non-measure identifier
  * columns (pure). Case-insensitive, matching the same spelling convention
- * tier-A's ambiguity fold already uses (`adHocAxesFromCatalog`) — SQL
- * identifiers are case-insensitive but case-PRESERVING, so comparing raw bytes
- * would miss an axis for a difference the database itself doesn't recognise.
+ * tier-A's projection already uses (`projectCatalogToResult`) — SQL identifiers
+ * are case-insensitive but case-PRESERVING, so comparing raw bytes would miss
+ * an axis for a difference the database itself doesn't recognise.
  *
- * `existing` is `null` when the structural read (`sql-ast.ts`'s
- * `existingIdentifierColumns`) couldn't decide, or wasn't run at all (no
- * current-SQL signal on this path) — every axis passes through unchanged
- * rather than guessing; the post-execution fold probe remains the tier-A net
- * for what this misses, and a miss on the parts-at-source path is an accepted
- * gap (see `DrillAxis.disabledReason`'s doc comment).
+ * `existing` is EMPTY when neither signal could decide — an unreadable base
+ * statement, no applied stack, or both — and every axis then passes through
+ * unchanged rather than guessing. It is a plain set, never nullable: the
+ * "couldn't decide" case used to arrive here as `null` from
+ * `existingIdentifierColumns`, but `alreadyInResult` now absorbs that into the
+ * union it returns, so the two cases were the same thing spelled twice. The
+ * post-execution fold probe remains the tier-A net for what this misses, and a
+ * miss on the parts-at-source path is an accepted gap (see
+ * `DrillAxis.disabledReason`'s doc comment).
  */
 export function markAlreadyInResult(
 	axes: DrillAxis[],
-	existing: ReadonlySet<string> | null,
+	existing: ReadonlySet<string>,
 ): DrillAxis[] {
-	if (existing === null || existing.size === 0) return axes;
+	if (existing.size === 0) return axes;
 	const lower = new Set([...existing].map((c) => c.toLowerCase()));
 	return axes.map((a) =>
 		a.disabledReason === null && lower.has(a.column.toLowerCase())

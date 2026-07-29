@@ -786,6 +786,32 @@ describe("DrillableGrid — already-in-result grey-out (DAT-671)", () => {
 		expect(enabledItem.getAttribute("data-disabled")).toBeFalsy();
 	});
 
+	// Senior review (DAT-671 R5): the greying is the SERVER's answer now, and it
+	// lands one metadata round-trip after a drill commits — `keepPreviousData`
+	// deliberately holds the previous menu meanwhile, so inside that window the
+	// just-sliced item is still enabled and clickable. Appending blindly would put
+	// two `{kind:"slice", column:X}` entries in the stack, which collide on the
+	// step chip's `slice:${column}` React key and make a remove-by-index click
+	// delete only one of them. The step stack is this component's own invariant,
+	// so `slice()` enforces it regardless of network timing.
+	it("re-slicing an already-sliced column is a NO-OP, whatever the menu says", async () => {
+		// The stub is told to grey NOTHING, which is exactly the state the widget
+		// sees for that one round-trip.
+		renderGrid(undefined, undefined, {
+			axes: [axis("region"), axis("product")],
+		});
+		await sliceBy("region", "SQL1");
+		expect(composeBodies).toHaveLength(1);
+
+		fireEvent.click(screen.getByTestId("drill-slice-button"));
+		fireEvent.click(await screen.findByTestId("drill-axis-region"));
+		// No second compose fired…
+		await waitFor(() => expect(composeQueue.length).toBe(0));
+		expect(composeBodies).toHaveLength(1);
+		// …and the stack still holds exactly one chip for the column.
+		expect(screen.getAllByTestId("drill-step-slice-region")).toHaveLength(1);
+	});
+
 	it("clicking the disabled item does not fire a compose call", async () => {
 		renderGrid(undefined, undefined, {
 			axes: [axis("region", null, { disabledReason: "already at this grain" })],

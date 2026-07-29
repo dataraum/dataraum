@@ -743,10 +743,14 @@ export interface RelationshipBlockRow {
  * dropped edge does not merely go unmentioned, it converts into a confident,
  * false abstention about data the workspace HAS. Naming the count and the reason
  * (the engine's `CuratedSlices.note` rule) turns that back into a knowable gap.
+ *
+ * REQUIRED, not defaulted (senior review): the disclosure's whole failure mode is
+ * being absent, so a caller must state the count — including stating zero. A
+ * default would let a future call site compile clean while silently dropping it.
  */
 export function formatRelationships(
 	rows: RelationshipBlockRow[],
-	omitted = 0,
+	omitted: number,
 ): string {
 	// Written for a model reader: the reason matters as much as the number,
 	// because "3 omitted" alone invites the assumption that they were junk.
@@ -813,7 +817,7 @@ export async function buildRelationshipsBlock(): Promise<string> {
 			r.toTableId &&
 			r.toColumnId,
 	);
-	if (defined.length === 0) return formatRelationships([]);
+	if (defined.length === 0) return formatRelationships([], 0);
 
 	// Resolve endpoint table addresses + column names in one pass each (no N+1).
 	const tableIds = new Set<string>();

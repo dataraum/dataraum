@@ -268,6 +268,29 @@ describe("aliased projections", () => {
 		).toEqual([]);
 	});
 
+	// Senior review (DAT-671 R5): renaming before the shared fold moves
+	// `compareSliceRows`'s last-resort name tiebreak from the CATALOG name to the
+	// RESULT's spelling. Only observable when two axes tie on interest AND
+	// relevance — the ordinary never-judged case — and the new order is the
+	// defensible one: this menu displays result spellings, so ordering by a name
+	// the practitioner cannot see would look arbitrary. Pinned so the choice is
+	// deliberate rather than incidental.
+	it("breaks an exact curation tie on the spelling the MENU shows", () => {
+		const axes = tierAAxes(
+			[
+				// Catalog order would put `aaa_col` first; result order puts `aaa` first.
+				row("aaa_col", { sliceInterest: null, sliceRelevance: null }),
+				row("zzz_col", { sliceInterest: null, sliceRelevance: null }),
+			],
+			[],
+			[
+				{ name: "aaa_col", source: "aaa_col" },
+				{ name: "aaa", source: "zzz_col" },
+			],
+		);
+		expect(axes.map((a) => a.column)).toEqual(["aaa", "aaa_col"]);
+	});
+
 	it("unions substrate on the source column too", () => {
 		const [axis] = tierAAxes(
 			[],

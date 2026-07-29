@@ -149,6 +149,14 @@ export function projectCatalogToResult(
 		// Renamed, otherwise untouched: the curation still speaks for the RANKING
 		// even where it cannot speak for the description — see
 		// `blankAmbiguousCuration`, which runs after the fold for that reason.
+		//
+		// Renaming BEFORE the fold also moves `compareSliceRows`'s last-resort
+		// name tiebreak onto the RESULT's spelling, where the old private fold
+		// broke ties on the catalog name (senior review, DAT-671 R5). It only
+		// shows when two axes tie on interest AND relevance — the common
+		// never-judged case — and the new order is the defensible one: the menu
+		// displays result spellings, so ordering by anything else would look
+		// arbitrary to the person reading it. Pinned by the tie test below.
 		sliceRows.push({ ...r, columnName: column });
 	}
 

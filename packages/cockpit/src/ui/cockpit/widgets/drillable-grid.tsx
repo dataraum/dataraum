@@ -728,8 +728,26 @@ export function DrillableGrid({
 	// between compose paths must trace to the data, never to which surface is
 	// asking.
 
-	/** Slice a fresh axis — temporal axes start at the default grain. */
+	/**
+	 * Slice a fresh axis — temporal axes start at the default grain.
+	 *
+	 * IDEMPOTENT PER COLUMN, and that is a local-state invariant, not a
+	 * capability decision (senior review, DAT-671 R5). Whether an axis is worth
+	 * OFFERING is the server's answer and arrives with its reason; but the step
+	 * stack is this component's own data structure, and the step chips key on
+	 * `slice:${column}` precisely because a column can appear at most once. The
+	 * greying now lands one metadata round-trip after a drill commits (the
+	 * request carries the steps, and `keepPreviousData` holds the previous menu
+	 * meanwhile), so within that window the just-sliced item is still clickable
+	 * — and appending blindly would put two identical keys in the chip list and
+	 * leave a remove-by-index click silently deleting only one of them. The
+	 * server-side composers already dedupe by column, so the SQL was never
+	 * wrong; the UI was. A second click on an applied slice is a no-op.
+	 */
 	const slice = (axis: DrillAxis) => {
+		if (steps.some((s) => s.kind === "slice" && s.column === axis.column)) {
+			return;
+		}
 		apply([
 			...steps,
 			axis.temporal !== null

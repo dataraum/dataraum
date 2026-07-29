@@ -299,6 +299,36 @@ class TestDescribeTable:
         result = GraphAgent._describe_table(duckdb_with_data, "nonexistent")
         assert result is None
 
+    def test_surrogate_excluded_from_prompt_and_validator_together(self, duckdb_with_data):
+        """DAT-878: one artifact, so the surrogate leaves both consumers at once.
+
+        ``_describe_table``'s result feeds the prompt's ``<data_schema>`` block AND
+        ``validate_grounding_basis``'s membership allow-list, via
+        ``schema_tables_from_info``. Before this cut the agent was offered a
+        ``_sk__*`` column as an analysable attribute *and* the contract validator
+        accepted a grounding that referenced one. Asserting both off the same
+        artifact is the point: a fix that filtered only one side would leave the
+        validator rejecting a column the prompt still shows, or the reverse.
+        """
+        from dataraum.analysis.relationships.surrogate import SURROGATE_PREFIX
+        from dataraum.graphs.grounding_validation import schema_tables_from_info
+
+        surrogate = f"{SURROGATE_PREFIX}id__amount"
+        # Exactly the mint's shape: the typed table is rebuilt with the hash projected.
+        duckdb_with_data.execute(
+            'CREATE OR REPLACE TABLE test_data AS SELECT *, md5("id"::VARCHAR) '
+            f'AS "{surrogate}" FROM (SELECT * FROM test_data)'
+        )
+        raw = [r[0] for r in duckdb_with_data.execute("DESCRIBE test_data").fetchall()]
+        assert surrogate in raw, "fixture must reproduce the mint's physical shape"
+
+        result = GraphAgent._describe_table(duckdb_with_data, "test_data")
+
+        assert result is not None
+        assert [c["name"] for c in result["columns"]] == ["id", "amount"]
+        served = schema_tables_from_info({"tables": [result]})
+        assert served["test_data"] == {"id", "amount"}
+
 
 class TestGraphAgentExecution:
     """Tests for GraphAgent SQL execution."""

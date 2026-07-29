@@ -99,7 +99,7 @@ def describe_served(
 
     Args:
         duckdb_conn: connection to DESCRIBE through.
-        relation: the table or view name.
+        relation: the BARE table or view name (quoted here, so pass it unquoted).
 
     Returns:
         ``(column_name, column_type)`` in physical order, without surrogates.
@@ -109,7 +109,10 @@ def describe_served(
             missing relation as skippable catch it themselves — this helper does
             not swallow it, so absence falls loud by default.
     """
-    rows = duckdb_conn.execute(f'DESCRIBE "{relation}"').fetchall()
+    # Embedded quotes are doubled: catalog names descend from source CSV headers
+    # under the VARCHAR-first load, so a `"` in an identifier is reachable.
+    quoted = '"' + relation.replace('"', '""') + '"'
+    rows = duckdb_conn.execute(f"DESCRIBE {quoted}").fetchall()
     return [(str(r[0]), str(r[1])) for r in rows if not is_surrogate_column(str(r[0]))]
 
 

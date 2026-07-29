@@ -27,6 +27,7 @@ import yaml
 from pydantic import ValidationError
 from sqlalchemy.orm import Session
 
+from dataraum.analysis.served_columns import describe_served
 from dataraum.core.logging import get_logger
 from dataraum.core.models.base import Result
 from dataraum.llm.config import LLMConfig
@@ -1627,11 +1628,25 @@ class GraphAgent(LLMFeature):
         improvised filters from. The authoritative, complete value enumeration is now the
         per-column **Value sets** block in the rich-context metadata document
         (`format_served_context`); this returns physical name + type only.
+
+        DAT-878: the DESCRIBE goes through `describe_served`, so mint-owned `_sk__*`
+        join keys are excluded. Both relation kinds this is called with carry them —
+        an enriched view through its `f.*` fact passthrough, a typed table from the
+        mint's DDL amendment — so a raw DESCRIBE leaks on either branch.
+
+        This result is deliberately ONE artifact feeding two consumers (see the call
+        site): the prompt's `<data_schema>` block and `validate_grounding_basis`'s
+        membership allow-list. Filtering here therefore has to be one cut — it stops
+        the agent being offered a surrogate AND stops the contract validator
+        accepting one, keeping "served" the same set in both. Filtering only the
+        prompt would leave the validator permitting a column the agent can no longer
+        see; filtering only the validator would reject what the prompt just offered.
         """
         try:
-            columns_result = duckdb_conn.execute(f'DESCRIBE "{table_name}"').fetchall()
-
-            columns = [{"name": col[0], "type": col[1]} for col in columns_result]
+            columns = [
+                {"name": name, "type": col_type}
+                for name, col_type in describe_served(duckdb_conn, table_name)
+            ]
 
             count_result = duckdb_conn.execute(f'SELECT COUNT(*) FROM "{table_name}"').fetchone()
             row_count = count_result[0] if count_result else 0

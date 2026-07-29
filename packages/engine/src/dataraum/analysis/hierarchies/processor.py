@@ -66,6 +66,7 @@ from dataraum.analysis.hierarchies.overlay import hierarchy_overlay_specs
 from dataraum.analysis.hierarchies.stats import RoleVerdict
 from dataraum.analysis.semantic.db_models import SemanticAnnotation
 from dataraum.analysis.semantic.utils import load_column_concepts
+from dataraum.analysis.served_columns import describe_served
 from dataraum.analysis.views.db_models import EnrichedView
 from dataraum.core.logging import get_logger
 from dataraum.storage import Column, Table
@@ -243,13 +244,22 @@ class _ViewScan:
 
 
 def _view_columns(duckdb_conn: duckdb.DuckDBPyConnection, view_name: str) -> list[str] | None:
-    """The view's column names, or ``None`` if it is not queryable (logged)."""
+    """The view's SERVED column names, or ``None`` if it is not queryable (logged).
+
+    Mint-owned ``_sk__*`` join keys are excluded (DAT-878). They reach the view
+    through its ``f.*`` fact passthrough and are the worst possible input to this
+    module in particular: a surrogate is a deterministic hash of its own
+    components, so it is a PERFECT functional dependency with them by
+    construction. The FD scan below would surface it as a drilldown or alias
+    candidate on every run, and the identity judge would then be asked to reason
+    about a column whose sample values are raw md5 hex.
+    """
     try:
-        rows = duckdb_conn.execute(f"DESCRIBE {_quote(view_name)}").fetchall()
+        served = describe_served(duckdb_conn, view_name)
     except Exception as e:  # noqa: BLE001 — any DuckDB error → skip this view, logged
         logger.warning("hierarchy_view_describe_failed", view=view_name, error=str(e))
         return None
-    return [str(r[0]) for r in rows]
+    return [name for name, _ in served]
 
 
 def _resolve_candidates(

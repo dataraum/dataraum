@@ -307,6 +307,79 @@ function selectItemName(item: unknown): string | null {
 }
 
 /**
+ * What each projected column of a result is a projection OF (DAT-671 R2):
+ * `result name → base column`, for the plain column references in the outer
+ * SELECT list.
+ *
+ * The tier-A drill can only group by columns the result actually projects, and
+ * it decides which of those are DIMENSIONS by matching them against the slice
+ * catalog. Both halves are right; the join between them was the bug. A model
+ * writes `account_id__name AS account` — a perfectly ordinary projection — and
+ * the catalog holds `account_id__name`, so nothing matched and a result with a
+ * visible dimension in it reported nothing to slice by. The alias is not a new
+ * column, it is a new NAME for one, and the parse tree says so explicitly.
+ *
+ * ALIASED OR NOT: an unaliased `SELECT region` maps `region → region`, so the
+ * caller has one uniform lookup instead of two cases.
+ *
+ * Only plain `COLUMN_REF` items appear. A computed projection
+ * (`SUM(credit) AS value`, `date_trunc(...) AS month`) has no single base
+ * column to be a projection of — inventing one would be the SQL-inference this
+ * module refuses — so it is simply absent, and the caller falls back to the
+ * result's own spelling.
+ *
+ * ONE HOP, no star-wrapper unwrap (unlike `existingIdentifierColumns`, whose
+ * hop is about an outer GROUP BY): a `SELECT * RENAME (...)` wrap RENAMES what
+ * it re-projects, so reading the inner list would attribute inner names to
+ * outer columns that no longer carry them. An empty map is the honest answer
+ * there — the caller then matches on the result's own spelling exactly as it
+ * did before.
+ */
+export async function projectedSourceColumns(
+	sql: string,
+): Promise<Map<string, string>> {
+	const out = new Map<string, string>();
+	let ast: unknown;
+	try {
+		ast = await parseSqlToJson(sql);
+	} catch {
+		return out;
+	}
+	if (ast === null || typeof ast !== "object") return out;
+	const root = ast as Record<string, unknown>;
+	if (root.error) return out;
+	const statements = root.statements;
+	if (!Array.isArray(statements) || statements.length !== 1) return out;
+	const first = statements[0];
+	const node =
+		typeof first === "object" && first !== null
+			? (first as Record<string, unknown>).node
+			: null;
+	if (
+		typeof node !== "object" ||
+		node === null ||
+		(node as Record<string, unknown>).type !== "SELECT_NODE"
+	) {
+		return out;
+	}
+	const selectList = (node as Record<string, unknown>).select_list;
+	if (!Array.isArray(selectList)) return out;
+	for (const item of selectList) {
+		if (typeof item !== "object" || item === null) continue;
+		const obj = item as Record<string, unknown>;
+		if (obj.class !== "COLUMN_REF") continue;
+		const source = bareColumn(obj.column_names);
+		if (source === null) continue;
+		const name = selectItemName(obj);
+		// First spelling wins — a result projecting the same column twice is
+		// already ambiguous to address, and picking deterministically beats
+		// picking by list order.
+		if (name !== null && !out.has(name)) out.set(name, source);
+	}
+	return out;
+}
+
+/**
  * Read the GROUP BY / projection identifiers off ONE already-validated
  * SELECT_NODE (pure, no further hops) — the shared core `existingIdentifierColumns`
  * applies to either the top-level node directly, or the ONE inner node a

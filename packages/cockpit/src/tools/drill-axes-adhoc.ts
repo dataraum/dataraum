@@ -38,7 +38,10 @@ import {
 	currentSliceDefinitions,
 } from "#/db/metadata/schema";
 import type { DrillAxis } from "#/duckdb/drill";
-import { existingIdentifierColumns } from "#/duckdb/sql-ast";
+import {
+	existingIdentifierColumns,
+	projectedSourceColumns,
+} from "#/duckdb/sql-ast";
 
 import {
 	compareSliceRows,
@@ -53,15 +56,34 @@ export interface AdHocSliceRow extends SliceRowInput {
 	tableId: string | null;
 }
 
+/** One column of the result, as the intersection reads it (DAT-671 R2): the
+ *  name the RESULT projects, and the base column that projection is OF. */
+export interface ResultColumn {
+	/** What the practitioner sees and what a further compose must name. */
+	name: string;
+	/** The catalog-addressable column behind it — `account_id__name` for
+	 *  `account_id__name AS account`. Equal to `name` when the projection is not
+	 *  a plain column reference (a computed expression has no single source), or
+	 *  when there is no alias at all. */
+	source: string;
+}
+
 /**
  * Catalog ∩ result columns → axes (pure).
  *
- * Matching is CASE-INSENSITIVE and the axis takes the RESULT's spelling: SQL
- * identifiers are case-insensitive in DuckDB but case-PRESERVING, so a query
- * writing `SELECT Region` yields a column named `Region` for the very same
- * catalogued `region`. Comparing the raw bytes would drop that axis for a
- * difference the database itself does not recognise; emitting the result's
- * spelling is what binds when the tier-A wrap quotes it.
+ * Matching is on the SOURCE column and the axis takes the RESULT's spelling
+ * (DAT-671 R2). Those are two different names whenever the query aliased a
+ * projection, and conflating them is what silently cost an aliased result its
+ * whole drill menu: the catalog holds `account_id__name`, a model writes
+ * `account_id__name AS account`, and matching the alias against the catalog
+ * found nothing — while emitting the catalogued name would name a column the
+ * tier-A wrap cannot group by, since the result does not project it.
+ *
+ * Matching is also CASE-INSENSITIVE: SQL identifiers are case-insensitive in
+ * DuckDB but case-PRESERVING, so a query writing `SELECT Region` yields a
+ * column named `Region` for the very same catalogued `region`. Comparing the
+ * raw bytes would drop that axis for a difference the database itself does not
+ * recognise.
  *
  * AMBIGUITY: one name catalogued on SEVERAL facts is still one honest axis —
  * the result column exists and grouping by it is valid arithmetic — but WHICH
@@ -74,14 +96,15 @@ export interface AdHocSliceRow extends SliceRowInput {
 export function adHocAxesFromCatalog(
 	rows: AdHocSliceRow[],
 	substrateColumns: readonly string[],
-	resultColumns: readonly string[],
+	resultColumns: readonly ResultColumn[],
 ): DrillAxis[] {
-	// First spelling wins — a result with two columns differing only in case is
-	// already ambiguous to address, and picking deterministically beats picking
-	// by row order.
+	// SOURCE column → the result's own spelling for it. First spelling wins — a
+	// result projecting the same column twice (or two columns differing only in
+	// case) is already ambiguous to address, and picking deterministically beats
+	// picking by row order.
 	const spelling = new Map<string, string>();
-	for (const name of resultColumns) {
-		const key = name.toLowerCase();
+	for (const { name, source } of resultColumns) {
+		const key = source.toLowerCase();
 		if (!spelling.has(key)) spelling.set(key, name);
 	}
 
@@ -191,6 +214,19 @@ export async function resolveAdHocDrillAxes(
 		return { axes: [], reason: "This result has no columns to slice by." };
 	}
 
+	// Resolve each projected column to the base column it projects, so an ALIAS
+	// cannot hide a catalogued dimension (DAT-671 R2). Structural, off the same
+	// parser that executes; absent SQL or an unreadable projection just leaves
+	// every column speaking for itself, exactly as before.
+	const sourceByName =
+		resultSql === undefined
+			? new Map<string, string>()
+			: await projectedSourceColumns(resultSql);
+	const columns: ResultColumn[] = resultColumns.map((name) => ({
+		name,
+		source: sourceByName.get(name) ?? name,
+	}));
+
 	const [sliceRows, viewRows] = await Promise.all([
 		metadataDb
 			.select({
@@ -223,7 +259,7 @@ export async function resolveAdHocDrillAxes(
 			: [],
 	);
 
-	const axes = adHocAxesFromCatalog(sliceRows, substrateColumns, resultColumns);
+	const axes = adHocAxesFromCatalog(sliceRows, substrateColumns, columns);
 	if (axes.length === 0) {
 		return {
 			axes,

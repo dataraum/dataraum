@@ -744,43 +744,33 @@ describe.skipIf(!jx.available)(
 				expect(Object.keys(rows[0])).toContain("account");
 			});
 
-			// RED PIN — CURRENT behaviour.
-			it("TODAY loses the drill affordance behind the alias", async () => {
-				const { body } = await postJson<AxesResponse>(
-					routes.axes,
-					"/api/drill/axes",
-					{ resultSql: aliasedSql },
-				);
-				// The catalog holds `account_id__name`; the result projects
-				// `account`. Nothing reconciles the two, so a result that visibly
-				// HAS a dimension in it reports nothing to slice by.
-				expect(axisFor(body, "account")).toBeUndefined();
-				expect(axisFor(body, ACCOUNT_NAME_COLUMN)).toBeUndefined();
-
-				// PIN THE SPECIFIC REASON, not just the emptiness. `resolveAdHocDrillAxes`
-				// has two distinct empty-verdicts and only one of them is this finding:
-				//   · "Nothing in this workspace is catalogued as a dimension yet" —
-				//     `sliceRows.length === 0`, i.e. the CATALOG IS EMPTY. That is what a
-				//     broken fixture or an unseeded lake looks like.
-				//   · the one below — the catalog HAS dimensions, this result just
-				//     projects none of them. That is the alias masking a real dimension.
-				// Asserting only "no axes" would let the first masquerade as the second
-				// and the pin would go on passing after the fixture rotted.
-				expect(body.reason).toContain(
-					"None of this result's columns is a catalogued dimension",
-				);
-			});
-
-			// RED PIN — TARGET behaviour.
-			it.fails("TARGET: the alias resolves back to the catalogued dimension", async () => {
+			// FLIPPED by R2 (was a red pin: the catalog holds `account_id__name`,
+			// the result projects `account`, nothing reconciled the two — so a
+			// result that visibly HAS a dimension in it reported nothing to slice
+			// by, with the reason "None of this result's columns is a catalogued
+			// dimension").
+			it("the alias resolves back to the catalogued dimension", async () => {
 				const { body } = await postJson<AxesResponse>(
 					routes.axes,
 					"/api/drill/axes",
 					{ resultSql: aliasedSql },
 				);
 				// Offered in the RESULT's spelling — that is what the practitioner
-				// sees and what a further compose must name.
+				// sees and what a further compose must name (tier A can only group by
+				// a column the result projects).
 				expect(axisFor(body, "account")).toBeDefined();
+				// …and NOT under the catalog's spelling, which this result does not
+				// project: offering `account_id__name` here would name a column the
+				// compose would then fail to bind.
+				expect(axisFor(body, ACCOUNT_NAME_COLUMN)).toBeUndefined();
+				// The dimension's curation came with it — the point of resolving the
+				// alias rather than offering a bare name.
+				expect(axisFor(body, "account")?.disabledReason).toEqual(
+					expect.any(String),
+				);
+				// Already broken out by this very result (GROUP BY 1), so it is
+				// offered DISABLED with a reason rather than as a fresh slice.
+				expect(axisFor(body, "account")?.disabledReason).toContain("already");
 			});
 		});
 

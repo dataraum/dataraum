@@ -9,6 +9,7 @@ import {
 	aggregatedColumns,
 	declaredValueExprRefusal,
 	existingIdentifierColumns,
+	projectedSourceColumns,
 } from "./sql-ast";
 
 describe("aggregatedColumns", () => {
@@ -314,5 +315,62 @@ describe("existingIdentifierColumns", () => {
 			);
 			expect(names).toEqual(new Set());
 		});
+	});
+});
+
+// DAT-671 R2: what each projected column is a projection OF. The tier-A drill
+// matches result columns against the slice catalog, so an alias between the two
+// silently cost an aliased result its entire drill menu.
+describe("projectedSourceColumns", () => {
+	it("maps an aliased dimension back to its catalogued column", async () => {
+		const map = await projectedSourceColumns(
+			`SELECT account_id__name AS account, SUM(total_amount) AS value ` +
+				"FROM lake.typed.current_orders_enriched GROUP BY 1",
+		);
+		expect(map.get("account")).toBe("account_id__name");
+		// The computed projection has no single source column, so it is absent
+		// rather than mapped to something invented.
+		expect(map.has("value")).toBe(false);
+	});
+
+	it("maps an UNALIASED column to itself, so callers have one lookup", async () => {
+		const map = await projectedSourceColumns(
+			`SELECT ${REGION_NAME_COLUMN}, account_id__name AS account ` +
+				"FROM lake.typed.current_orders_enriched",
+		);
+		expect(Object.fromEntries(map)).toEqual({
+			[REGION_NAME_COLUMN]: REGION_NAME_COLUMN,
+			account: "account_id__name",
+		});
+	});
+
+	it("drops the table qualifier from a qualified reference", async () => {
+		const map = await projectedSourceColumns(
+			"SELECT o.account_id__name AS account FROM lake.typed.current_orders_enriched AS o",
+		);
+		expect(map.get("account")).toBe("account_id__name");
+	});
+
+	it("reads nothing from a shape it cannot attribute", async () => {
+		// A star projection names no columns; our own RENAME wrap renames what it
+		// re-projects, so reading the inner list would attribute inner names to
+		// outer columns that no longer carry them. Empty = the caller matches on
+		// the result's own spelling, exactly as before.
+		expect(
+			(
+				await projectedSourceColumns(
+					"SELECT * FROM lake.typed.current_orders_enriched",
+				)
+			).size,
+		).toBe(0);
+		expect(
+			(
+				await projectedSourceColumns(
+					"SELECT * RENAME (a AS b) FROM (SELECT account_id__name AS a " +
+						"FROM lake.typed.current_orders_enriched) AS _clean",
+				)
+			).size,
+		).toBe(0);
+		expect((await projectedSourceColumns("NOT SQL AT ALL")).size).toBe(0);
 	});
 });

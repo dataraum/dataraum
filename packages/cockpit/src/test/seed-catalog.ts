@@ -159,6 +159,8 @@ export function graphSnippetSeedSql(
 			id: "snip_formula",
 			type: "formula",
 			field: "gross_margin",
+			// A formula step is not a grounding — no clause parts to carry.
+			expr: null,
 			sql: `SELECT (SUM(amount) - SUM(cost)) / NULLIF(SUM(amount), 0) FROM ${ENRICHED_VIEW}`,
 			failures: 0,
 		},
@@ -167,6 +169,7 @@ export function graphSnippetSeedSql(
 			id: "snip_revenue",
 			type: "extract",
 			field: "revenue",
+			expr: "SUM(amount)",
 			sql: `SELECT SUM(amount) FROM ${ENRICHED_VIEW}`,
 			failures: 0,
 		},
@@ -175,17 +178,48 @@ export function graphSnippetSeedSql(
 			id: "snip_cost",
 			type: "extract",
 			field: "cost",
+			expr: "SUM(cost)",
 			sql: `SELECT SUM(cost) FROM lake.typed.${ENRICHED_VIEW}`,
 			failures: 0,
 		},
+		{
+			// A RETAINED-FAILURE grounding (DAT-671 R2). Its own standard_field on
+			// purpose: a failed row for `revenue`/`cost` would be the NEWEST row for
+			// a field the metric path wants, and that path's "first per field
+			// decides" contract would then strip a healthy node's axes — a fixture
+			// change masquerading as a product regression. `shrinkage` belongs to no
+			// metric DAG, so only the readers that ask about it can see it.
+			id: "snip_shrinkage",
+			type: "extract",
+			field: "shrinkage",
+			expr: "SUM(shrinkage)",
+			sql: `SELECT SUM(shrinkage) FROM ${ENRICHED_VIEW}`,
+			failures: 3,
+		},
 	];
+
+	// The persisted PARTS (DAT-838 shape) ride along on every extract, because
+	// that is what a graph-authored extract carries in production — `from` BARE
+	// by contract (validate_grounding_basis), the value expression unaliased
+	// under the mandatory `value` alias. A parts-less extract is not a tidier
+	// fixture, it is a DIFFERENT row: `og_grounding.select_expr` reads straight
+	// out of this JSON, and the drill's identity check compares the value
+	// expression an answer declares against it (DAT-671 R2).
+	const partsJson = (expr: string | null): string =>
+		expr === null
+			? "NULL"
+			: `'${JSON.stringify({
+					select: [{ expr, alias: "value" }],
+					from: [ENRICHED_VIEW],
+					where: [],
+				}).replaceAll("'", "''")}'::json`;
 
 	const values = rows
 		.map(
 			(r) =>
 				`('${r.id}', '${workspaceId}', '${r.type}', '${r.field}', '${workspaceId}', ` +
 				`'${r.sql.replaceAll("'", "''")}', 'fixture snippet', 'graph:${graphId}', ` +
-				`0, ${r.failures}, ${ts}, ${ts})`,
+				`${partsJson(r.expr ?? null)}, 0, ${r.failures}, ${ts}, ${ts})`,
 		)
 		.join(",\n  ");
 
@@ -194,7 +228,8 @@ SET search_path TO engine;
 
 INSERT INTO sql_snippets (
   snippet_id, workspace_id, snippet_type, standard_field, schema_mapping_id,
-  sql, description, source, execution_count, failure_count, created_at, updated_at)
+  sql, description, source, parts, execution_count, failure_count,
+  created_at, updated_at)
 VALUES
   ${values};
 `;
@@ -279,5 +314,32 @@ VALUES (
 -- EMPTY graph without it, so its absence looks exactly like "no metrics".
 INSERT INTO metadata_snapshot_head (head_id, target, stage, run_id, promoted_at)
 VALUES ('head_om', 'catalog', 'operating_model', '${RUN_ID}', ${ts});
+`;
+}
+
+/**
+ * The ONTOLOGY concepts the fixture's groundings resolve to (DAT-671 R2).
+ *
+ * Seeded HERE, in global setup, rather than ad hoc in the one suite that first
+ * needed them: `og_grounded_by` and `og_has_additivity` both INNER JOIN
+ * `concepts` on `(name, superseded_at IS NULL)`, so whether a concept row
+ * exists decides whether an EDGE exists — and a test-local insert makes every
+ * other suite's view of the graph depend on execution order.
+ *
+ * `_adhoc` is the vertical because the fixture workspace is unbound (no
+ * `workspace_settings` row): the vertical-scoped `concepts` read view falls
+ * back to that placeholder (read_views.py's `_vertical_scoped_view_sql`), so
+ * rows under any other vertical would be invisible to every reader.
+ */
+export function conceptSeedSql(): string {
+	return `
+SET search_path TO engine;
+
+INSERT INTO concepts (concept_id, vertical, name, kind, source, created_at)
+VALUES
+  ('cpt_revenue',   '_adhoc', 'revenue',   'measure', 'seed', ${ts}),
+  ('cpt_cost',      '_adhoc', 'cost',      'measure', 'seed', ${ts}),
+  ('cpt_shrinkage', '_adhoc', 'shrinkage', 'measure', 'seed', ${ts})
+ON CONFLICT DO NOTHING;
 `;
 }

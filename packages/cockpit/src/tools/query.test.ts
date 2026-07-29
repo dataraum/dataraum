@@ -531,8 +531,16 @@ describe("candidateSource", () => {
 		expect(
 			await candidateSource(
 				[
-					{ name: "revenue", source: declared("lake.typed.o", "SUM(amt)") },
-					{ name: "cost", source: declared("lake.typed.o", "SUM(cost)") },
+					{
+						name: "revenue",
+						snippet_id: null,
+						source: declared("lake.typed.o", "SUM(amt)"),
+					},
+					{
+						name: "cost",
+						snippet_id: null,
+						source: declared("lake.typed.o", "SUM(cost)"),
+					},
 				],
 				"revenue - cost",
 			),
@@ -541,6 +549,7 @@ describe("candidateSource", () => {
 				sources: [
 					{
 						name: "revenue",
+						snippetId: null,
 						parts: {
 							selectExpr: "SUM(amt)",
 							relation: "o",
@@ -549,6 +558,7 @@ describe("candidateSource", () => {
 					},
 					{
 						name: "cost",
+						snippetId: null,
 						parts: {
 							selectExpr: "SUM(cost)",
 							relation: "o",
@@ -562,6 +572,35 @@ describe("candidateSource", () => {
 		});
 	});
 
+	// DAT-671 R2: the drill's IDENTITY, carried per source. `snippet_id` here is
+	// the CLASSIFIED id (classifyComponents already cleared a hallucinated one to
+	// null), and it is what lets the drill resolve this number's concept and read
+	// its additivity verdict. A reused step keeps it; a fresh one carries null,
+	// which is a real answer — no classified concept, so no time grain.
+	it("carries each step's classified snippet id onto its source", async () => {
+		const outcome = await candidateSource(
+			[
+				{
+					name: "revenue",
+					snippet_id: "snip_revenue",
+					source: declared("lake.typed.o", "SUM(amt)"),
+				},
+				{
+					name: "cost",
+					snippet_id: null,
+					source: declared("lake.typed.o", "SUM(cost)"),
+				},
+			],
+			"revenue - cost",
+		);
+		expect(
+			outcome.candidate?.sources.map((s) => [s.name, s.snippetId]),
+		).toEqual([
+			["revenue", "snip_revenue"],
+			["cost", null],
+		]);
+	});
+
 	// The house empty-aggregation guard (DAT-671): a scalar arrives wrapped in
 	// CASE WHEN COUNT(*) = 0, i.e. THREE aggregate calls in one value
 	// expression. That is the normal shape of a correct answer and must sail
@@ -571,7 +610,13 @@ describe("candidateSource", () => {
 		const guarded =
 			"CASE WHEN COUNT(*) = 0 THEN NULL ELSE COALESCE(SUM(credit), 0) - COALESCE(SUM(debit), 0) END";
 		const outcome = await candidateSource(
-			[{ name: "net", source: declared("lake.typed.gl", guarded) }],
+			[
+				{
+					name: "net",
+					snippet_id: null,
+					source: declared("lake.typed.gl", guarded),
+				},
+			],
 			"net",
 		);
 		expect(outcome.notes).toEqual([]);
@@ -584,8 +629,12 @@ describe("candidateSource", () => {
 	it("drops abstained steps and keeps the rest", async () => {
 		const outcome = await candidateSource(
 			[
-				{ name: "revenue", source: declared("lake.typed.o", "SUM(amt)") },
-				{ name: "joined", source: declared("", "") },
+				{
+					name: "revenue",
+					snippet_id: null,
+					source: declared("lake.typed.o", "SUM(amt)"),
+				},
+				{ name: "joined", snippet_id: null, source: declared("", "") },
 			],
 			"revenue",
 		);
@@ -602,9 +651,14 @@ describe("candidateSource", () => {
 			[
 				{
 					name: "revenue",
+					snippet_id: null,
 					source: declared("lake.typed.o", "SUM(amt) AS rev"),
 				},
-				{ name: "cost", source: declared("lake.typed.o", "SUM(cost)") },
+				{
+					name: "cost",
+					snippet_id: null,
+					source: declared("lake.typed.o", "SUM(cost)"),
+				},
 			],
 			"revenue - cost",
 		);
@@ -622,6 +676,7 @@ describe("candidateSource", () => {
 			[
 				{
 					name: "revenue",
+					snippet_id: null,
 					source: declared("lake.typed.o", "SUM(amt) FROM o WHERE x = 1"),
 				},
 			],
@@ -637,7 +692,13 @@ describe("candidateSource", () => {
 	it("yields no candidate without a combining expression", async () => {
 		expect(
 			await candidateSource(
-				[{ name: "revenue", source: declared("lake.typed.o", "SUM(amt)") }],
+				[
+					{
+						name: "revenue",
+						snippet_id: null,
+						source: declared("lake.typed.o", "SUM(amt)"),
+					},
+				],
 				"   ",
 			),
 		).toEqual({ candidate: null, notes: [] });
@@ -647,7 +708,7 @@ describe("candidateSource", () => {
 		expect(
 			(
 				await candidateSource(
-					[{ name: "joined", source: declared("", "") }],
+					[{ name: "joined", snippet_id: null, source: declared("", "") }],
 					"joined",
 				)
 			).candidate,

@@ -56,6 +56,12 @@ export const GROSS_MARGIN_METRIC = "gross_margin_finance";
 export const REVENUE_FIELD = "revenue";
 export const COGS_FIELD = "cogs";
 
+/** The grounding snippets those fields are grounded BY. An answer that reused a
+ *  curated snippet carries the id on its declared source, and it is the drill's
+ *  only identity: `snippet → concept → additivity verdict` (ADR-0024). */
+export const REVENUE_SNIPPET_ID = "snip_j_revenue";
+export const COGS_SNIPPET_ID = "snip_j_cogs";
+
 /** The revenue measure's clause parts, as they ride the `/api/drill/parts`
  *  wire and as `sql_snippets.parts` persists them. CASE-guarded because the
  *  house empty-aggregation rule wraps every scalar — the normal shape of a real
@@ -250,16 +256,31 @@ INSERT INTO sql_snippets (
   sql, description, source, parts, execution_count, failure_count,
   created_at, updated_at)
 VALUES
-  ('snip_j_revenue', '${JOURNEY_WORKSPACE_ID}', 'extract', '${REVENUE_FIELD}', '${JOURNEY_WORKSPACE_ID}',
+  ('${REVENUE_SNIPPET_ID}', '${JOURNEY_WORKSPACE_ID}', 'extract', '${REVENUE_FIELD}', '${JOURNEY_WORKSPACE_ID}',
    'SELECT ${sqlQuote(REVENUE_SELECT_EXPR)} FROM ${JOURNEY_RELATION} WHERE ${sqlQuote(REVENUE_PREDICATE)}',
    'total revenue', 'graph:${GROSS_MARGIN_METRIC}',
    '${sqlQuote(partsJson(REVENUE_SELECT_EXPR, JOURNEY_RELATION, [REVENUE_PREDICATE]))}'::json,
    0, 0, ${ts}, ${ts}),
-  ('snip_j_cogs', '${JOURNEY_WORKSPACE_ID}', 'extract', '${COGS_FIELD}', '${JOURNEY_WORKSPACE_ID}',
+  ('${COGS_SNIPPET_ID}', '${JOURNEY_WORKSPACE_ID}', 'extract', '${COGS_FIELD}', '${JOURNEY_WORKSPACE_ID}',
    'SELECT ${sqlQuote(COGS_SELECT_EXPR)} FROM ${JOURNEY_RELATION} WHERE ${sqlQuote(COGS_PREDICATE)}',
    'cost of goods sold', 'graph:${GROSS_MARGIN_METRIC}',
    '${sqlQuote(partsJson(COGS_SELECT_EXPR, JOURNEY_RELATION, [COGS_PREDICATE]))}'::json,
    0, 0, ${ts}, ${ts});
+
+-- The ONTOLOGY concepts the two carriers ground. Load-bearing, not decoration:
+-- the answer path resolves its verdict target by MATCHing
+-- \`(concept)-[grounded_by]->(grounding)\` on the property graph, and BOTH
+-- \`og_grounded_by\` and \`og_has_additivity\` INNER JOIN \`concepts\` on
+-- (name, superseded_at IS NULL) — no concept row, no edge, no identity.
+--
+-- vertical '_adhoc' because this workspace has no \`workspace_settings\` row:
+-- the vertical-scoped \`concepts\` read view falls back to that placeholder
+-- (read_views.py's _vertical_scoped_view_sql), so any other vertical here would
+-- be invisible to every reader.
+INSERT INTO concepts (concept_id, vertical, name, kind, source, created_at)
+VALUES
+  ('cpt_j_revenue', '_adhoc', '${REVENUE_FIELD}', 'measure', 'seed', ${ts}),
+  ('cpt_j_cogs',    '_adhoc', '${COGS_FIELD}',    'measure', 'seed', ${ts});
 
 INSERT INTO lifecycle_artifacts (
   artifact_id, artifact_type, artifact_key, run_id, state, state_reason,

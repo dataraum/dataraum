@@ -83,7 +83,24 @@ export type DrillAxesRequest =
 	| DrillNodeRef
 	| { resultSql: string; resultParams?: DrillPinValue[] }
 	| {
-			partsSources: { relation: string; selectExpr: string }[];
+			partsSources: {
+				relation: string;
+				selectExpr: string;
+				/** The source's grounding snippet, when its step declared reuse
+				 *  (`AnswerSource.snippetId`). This is what the server resolves to a
+				 *  concept and then to an additivity verdict — the answer path's
+				 *  ONLY identity, and therefore the only thing that can license a
+				 *  time grain here (DAT-671 R2). Absent = a fresh, unclassified
+				 *  computation: the grain is withheld with a stated reason. */
+				snippetId?: string | null;
+			}[];
+			/** The drill stack ALREADY APPLIED to the grid asking (DAT-671 R2).
+			 *  Without it the server could only grey axes that the answer's own base
+			 *  statement grouped by, so a column the practitioner just sliced by came
+			 *  back offered — and the client greyed it locally with no reason text at
+			 *  all. Sending it makes "which axes are still worth offering" one
+			 *  server-side answer with one explanation. */
+			steps?: DrillStep[];
 			/** The answer's own BASE statement — `state.sql` in
 			 *  answer-result.tsx, the ORIGINAL undrilled query the widget mounted
 			 *  with, NOT `shownSql` (which tracks whatever's currently displayed,

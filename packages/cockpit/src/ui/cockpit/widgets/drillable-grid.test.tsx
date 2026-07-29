@@ -124,11 +124,31 @@ let composeBodies: unknown[];
 let guidanceQueue: Array<(r: Response) => void>;
 let guidanceBodies: unknown[];
 
+/** The SQL each `/api/run-sql` read asked for — the footer's totals statement
+ *  is fetched that way (DAT-671 R2), so this is how the wire is asserted. */
+let runSqlBodies: { sql: string }[];
+
+/** One NDJSON result frame set, in the shape `/api/run-sql` streams: a header,
+ *  one COLUMNAR batch, a footer. Anything else and `readNdjsonIntoStore` would
+ *  build an empty store, which would read as "the footer had no row". */
+const ndjsonResponse = (columns: string[], row: unknown[]) =>
+	new Response(
+		`${[
+			{ t: "h", columns, types: columns.map(() => "DOUBLE") },
+			{ t: "b", cols: row.map((v) => [v]), n: 1 },
+			{ t: "f" },
+		]
+			.map((f) => JSON.stringify(f))
+			.join("\n")}\n`,
+		{ status: 200, headers: { "Content-Type": "application/x-ndjson" } },
+	);
+
 function stubFetch(axesResponse?: unknown) {
 	composeQueue = [];
 	composeBodies = [];
 	guidanceQueue = [];
 	guidanceBodies = [];
+	runSqlBodies = [];
 	vi.stubGlobal(
 		"fetch",
 		vi.fn(async (url: RequestInfo | URL, init?: RequestInit) => {
@@ -143,6 +163,13 @@ function stubFetch(axesResponse?: unknown) {
 						],
 					},
 				);
+			}
+			if (u.endsWith("/api/run-sql")) {
+				const body = JSON.parse(String(init?.body ?? "null")) as {
+					sql: string;
+				};
+				runSqlBodies.push(body);
+				return ndjsonResponse(["value"], [175]);
 			}
 			if (u.endsWith("/api/drill/axis-guidance")) {
 				guidanceBodies.push(JSON.parse(String(init?.body ?? "null")));
@@ -179,6 +206,7 @@ const PARTS_SOURCE: DrillSource = {
 		sources: [
 			{
 				name: "revenue",
+				snippetId: null,
 				parts: {
 					selectExpr: 'SUM("amount")',
 					relation: "lake.typed.enriched_orders",
@@ -344,14 +372,43 @@ const lastSteps = () =>
 		.steps;
 
 describe("DrillableGrid — time grain", () => {
-	it("WITHOUT a node source a temporal axis slices RAW — grain is a node-path capability", async () => {
-		renderGrid(); // tier-A path: /api/drill/compose rejects grained steps
+	it("on TIER A a temporal axis slices RAW — there is no raw date left to bucket", async () => {
+		// Tier A wraps an already-aggregated result, so `/api/drill/compose`
+		// rejects a grained step. A structural limit, not a doctrinal one.
+		renderGrid();
 		await sliceBy("entry_id__date", "SQL_RAW");
 		expect(lastSteps()).toEqual([{ kind: "slice", column: "entry_id__date" }]);
 		// A plain removable pill, not the grain chip.
 		expect(
 			screen.getByTestId("drill-step-slice-entry_id__date").textContent,
 		).not.toContain("Month");
+	});
+
+	// DAT-671 R2: grain follows the DATA, not the path. An answer that recomposes
+	// at source buckets exactly like a canvas node — and whether THIS axis may be
+	// bucketed was already decided by the axes resolver, which withholds
+	// `temporal` (with a reason) unless the engine's verdict licenses it. Before
+	// R2 the grid refused the grain on the parts path outright, so a classified
+	// answer's month was a path privilege.
+	it("on the PARTS path a temporal axis buckets, exactly as on the node path", async () => {
+		renderGrid(PARTS_SOURCE);
+		await sliceBy("entry_id__date", "SQL_M");
+		expect(lastSteps()).toEqual([
+			{ kind: "slice", column: "entry_id__date", grain: "1M" },
+		]);
+		expect(
+			screen.getByTestId("drill-step-slice-entry_id__date").textContent,
+		).toContain("Month");
+	});
+
+	it("still slices raw when the resolver WITHHELD the grain for that axis", async () => {
+		// The honest half of the same rule: no verdict, no `temporal`, no grain —
+		// on the very same path that just bucketed above.
+		renderGrid(PARTS_SOURCE, undefined, {
+			axes: [axis("entry_id__date", null)],
+		});
+		await sliceBy("entry_id__date", "SQL_RAW");
+		expect(lastSteps()).toEqual([{ kind: "slice", column: "entry_id__date" }]);
 	});
 
 	it("slices a temporal axis at MONTH grain by default; the chip is the grain control", async () => {
@@ -985,6 +1042,58 @@ describe("non-reconciling total (DAT-857)", () => {
 		expect(screen.getByTestId("mock-footer-value").textContent).toBe("42");
 		expect(screen.getByTestId("mock-footer-label").textContent).not.toContain(
 			"recomputed",
+		);
+	});
+});
+
+// --- the drilled answer's footer (DAT-671 R2) ---------------------------------
+
+describe("DrillableGrid — the footer a drilled ANSWER prints", () => {
+	// The composition serves the statement for its own undrilled total (the
+	// parts route ships it on every response, since an answer grid has no open
+	// call), and the grid reads it. Before R2 `footerCells` came ONLY from the
+	// metric overlay, so a drilled answer had no footer at all and the
+	// practitioner lost sight of the figure they started from.
+	it("fetches and prints the total the composition served", async () => {
+		renderGrid(PARTS_SOURCE);
+		const button = screen.getByTestId<HTMLButtonElement>("drill-slice-button");
+		await waitFor(() => expect(button.disabled).toBe(false));
+		fireEvent.click(button);
+		fireEvent.click(await screen.findByText("region"));
+		await waitFor(() => expect(composeQueue.length).toBeGreaterThan(0));
+		composeQueue.shift()?.(
+			jsonResponse({
+				ok: true,
+				sql: "SQL_SLICED",
+				params: [],
+				totals: { sql: "SELECT 175 AS value" },
+			}),
+		);
+
+		const value = await screen.findByTestId("mock-footer-value");
+		expect(value.textContent).toBe("175");
+		// …read through the ordinary grid query path, from the statement the
+		// SERVER composed — never a statement this widget assembled.
+		expect(runSqlBodies.map((b) => b.sql)).toContain("SELECT 175 AS value");
+	});
+
+	it("prints no footer when the composition served no total", async () => {
+		renderGrid(PARTS_SOURCE);
+		await sliceBy("region", "SQL_SLICED");
+		expect(screen.queryByTestId("mock-grid-footer")).toBeNull();
+		expect(runSqlBodies).toEqual([]);
+	});
+
+	it("lets a caller-supplied footer win", async () => {
+		// The analyse overlay reads the node path's totals itself (its equation
+		// header needs the same row) and hands it down; honouring its copy keeps
+		// header and footer on ONE number instead of two fetches of it.
+		renderGrid(NODE_SOURCE, undefined, undefined, {
+			footerCells: { value: 42 },
+		});
+		await sliceBy("region", "SQL_SLICED");
+		expect((await screen.findByTestId("mock-footer-value")).textContent).toBe(
+			"42",
 		);
 	});
 });

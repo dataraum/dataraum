@@ -15,7 +15,6 @@ import {
 	type AnswerDrillSource,
 	answerNodeSteps,
 	answerSourceProofSql,
-	bareRelationName,
 	composeAnswerSource,
 	narrowDeclaredSource,
 	runAnswerSourceProof,
@@ -51,6 +50,7 @@ const source = (
 const revenue2024 = (where: string[] = ["year = 2024"]) => [
 	{
 		name: "revenue",
+		snippetId: null,
 		parts: { selectExpr: "SUM(amount)", relation: "orders", where },
 	},
 ];
@@ -64,28 +64,6 @@ async function prove(
 	if ("refusal" in composed) return false;
 	return runAnswerSourceProof(conn, composed.sql, answerSql);
 }
-
-describe("bareRelationName", () => {
-	// The production format. The prompt tells the model `lake.<layer>.<name>`,
-	// and mosaic-sql would quote the whole string as ONE identifier — so without
-	// this reduction nothing a real answer declares can ever bind.
-	it("reduces the qualified form the model is told to write", () => {
-		expect(bareRelationName("lake.typed.orders")).toBe("orders");
-		expect(bareRelationName("  lake.typed.enriched_orders  ")).toBe(
-			"enriched_orders",
-		);
-		expect(bareRelationName("typed.orders")).toBe("orders");
-		expect(bareRelationName("orders")).toBe("orders");
-	});
-
-	it("refuses what it has no business rewriting", () => {
-		expect(bareRelationName('lake.typed."my orders"')).toBeNull();
-		expect(bareRelationName("a.b.c.d")).toBeNull();
-		expect(bareRelationName("lake..orders")).toBeNull();
-		expect(bareRelationName("lake.typed.")).toBeNull();
-		expect(bareRelationName("   ")).toBeNull();
-	});
-});
 
 describe("narrowDeclaredSource", () => {
 	it("reduces the relation to its bare name", () => {
@@ -142,6 +120,7 @@ describe("answerNodeSteps", () => {
 					...revenue2024(),
 					{
 						name: "cost",
+						snippetId: null,
 						parts: {
 							selectExpr: "SUM(cost)",
 							relation: "orders",
@@ -190,7 +169,10 @@ describe("the value proof", () => {
 		});
 		if (!parts) throw new Error("declaration should narrow");
 		expect(
-			await prove(source([{ name: "revenue", parts }], "revenue"), ANSWER_2024),
+			await prove(
+				source([{ name: "revenue", snippetId: null, parts }], "revenue"),
+				ANSWER_2024,
+			),
 		).toBe(true);
 	});
 
@@ -211,6 +193,7 @@ describe("the value proof", () => {
 					[
 						{
 							name: "revenue",
+							snippetId: null,
 							parts: {
 								selectExpr: "SUM(cost)",
 								relation: "orders",
@@ -229,6 +212,7 @@ describe("the value proof", () => {
 					[
 						{
 							name: "revenue",
+							snippetId: null,
 							parts: {
 								selectExpr: "SUM(amount)",
 								relation: "invoices",
@@ -275,6 +259,7 @@ describe("the value proof", () => {
 				...revenue2024(),
 				{
 					name: "cost",
+					snippetId: null,
 					parts: {
 						selectExpr: "SUM(cost)",
 						relation: "orders",

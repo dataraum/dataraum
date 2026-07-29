@@ -20,37 +20,12 @@ describe.skipIf(!fx.available)(
 		let queryOperatingModelGraph: typeof import("./property-graph").queryOperatingModelGraph;
 		let sqlTag: typeof import("drizzle-orm").sql;
 
+		// The concepts these MATCHes resolve to are seeded in GLOBAL SETUP
+		// (`seed-catalog.ts`'s `conceptSeedSql`, DAT-671 R2) rather than here: a
+		// concept row is what makes an `og_grounded_by` EDGE exist at all, so
+		// seeding it inside one suite would make every other suite's view of the
+		// graph depend on file execution order.
 		beforeAll(async () => {
-			const { SQL } = await import("bun");
-			// Engine-emulation scaffolding (same pattern as
-			// bus-matrix.integration.test.ts): the cockpit's own roles cannot write
-			// engine.* rows, so this seeds them directly.
-			const seedSql = new SQL(fx.metadataUrl as string);
-			try {
-				// Two concepts naming the two graph-authored extract groundings the
-				// SHARED fixture seed already writes (test/seed-catalog.ts's
-				// graphSnippetSeedSql: snip_revenue/snip_cost, standard_field
-				// revenue/cost, source graph:gross_margin — the only two rows that
-				// pass current_groundings' `snippet_type = 'extract' AND source LIKE
-				// 'graph:%'` filter; snip_formula is a formula, not a grounding).
-				// og_grounded_by resolves a grounding's `concept` to the ACTIVE
-				// concept row of the same name (name, superseded_at IS NULL).
-				// vertical='_adhoc': the fixture workspace is unbound (no
-				// workspace_settings row), and the vertical-scoped concepts read view
-				// falls back to that placeholder vertical
-				// (read_views.py's `_vertical_scoped_view_sql`).
-				await seedSql.unsafe(
-					`INSERT INTO engine.concepts
-					 (concept_id, vertical, name, kind, created_at)
-					 VALUES
-					   ($1, '_adhoc', 'revenue', 'measure', $3),
-					   ($2, '_adhoc', 'cost', 'measure', $3)
-					 ON CONFLICT DO NOTHING`,
-					["cpt_revenue", "cpt_cost", "2026-07-28 00:00:00"],
-				);
-			} finally {
-				await seedSql.close();
-			}
 			({ queryOperatingModelGraph } = await import("./property-graph"));
 			({ sql: sqlTag } = await import("drizzle-orm"));
 		});
@@ -69,6 +44,12 @@ describe.skipIf(!fx.available)(
 			// rule) — it would mean either seeding or the grant/graph wiring broke,
 			// not "no groundings yet", since the shared fixture always seeds
 			// snip_revenue/snip_cost.
+			//
+			// `snip_shrinkage` is the fixture's RETAINED-FAILURE grounding and it is
+			// listed here on purpose: this MATCH asks only "which concepts are
+			// grounded", so a failed grounding IS one of the edges. Whether a caller
+			// may ACT on it is a different question, asked with a different filter
+			// (`tools/concept-target.ts` excludes `g.failed`).
 			expect(
 				rows
 					.map((r) => [r.concept_name, r.snippet_id] as const)
@@ -76,6 +57,7 @@ describe.skipIf(!fx.available)(
 			).toEqual([
 				["cost", "snip_cost"],
 				["revenue", "snip_revenue"],
+				["shrinkage", "snip_shrinkage"],
 			]);
 		});
 

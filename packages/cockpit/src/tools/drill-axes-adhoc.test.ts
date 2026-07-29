@@ -12,7 +12,11 @@ import { describe, expect, it, vi } from "vitest";
 vi.mock("#/config", () => ({ config: { dataraumWorkspaceId: "ws-test" } }));
 vi.mock("#/db/metadata/client", () => ({ metadataDb: {} }));
 
-import { type AdHocSliceRow, adHocAxesFromCatalog } from "./drill-axes-adhoc";
+import {
+	type AdHocSliceRow,
+	adHocAxesFromCatalog,
+	type ResultColumn,
+} from "./drill-axes-adhoc";
 
 const row = (
 	columnName: string,
@@ -29,12 +33,18 @@ const row = (
 	...over,
 });
 
+/** Result columns as an UNALIASED projection: the name a query wrote is also
+ *  the base column it projects. The alias case — where the two differ, which is
+ *  what DAT-671 R2 fixed — is exercised explicitly below. */
+const asIs = (...names: string[]): ResultColumn[] =>
+	names.map((name) => ({ name, source: name }));
+
 describe("adHocAxesFromCatalog", () => {
 	it("offers only catalogued dimensions that are ON the result", () => {
 		const axes = adHocAxesFromCatalog(
 			[row("region"), row("product"), row("cost_center")],
 			[],
-			["region", "product", "value"],
+			asIs("region", "product", "value"),
 		);
 		// Equal curation ties break by column name (compareSliceRows), never by
 		// row insertion order — the same deterministic rule as every surface.
@@ -42,7 +52,7 @@ describe("adHocAxesFromCatalog", () => {
 	});
 
 	it("carries the catalog's curation onto the axis", () => {
-		const [axis] = adHocAxesFromCatalog([row("region")], [], ["region"]);
+		const [axis] = adHocAxesFromCatalog([row("region")], [], asIs("region"));
 		expect(axis).toMatchObject({
 			column: "region",
 			values: ["a", "b"],
@@ -69,7 +79,7 @@ describe("adHocAxesFromCatalog", () => {
 	// database itself does not recognise — and the axis must carry the RESULT's
 	// spelling, since that is what the tier-A wrap quotes.
 	it("matches case-insensitively and emits the result's own spelling", () => {
-		const [axis] = adHocAxesFromCatalog([row("region")], [], ["Region"]);
+		const [axis] = adHocAxesFromCatalog([row("region")], [], asIs("Region"));
 		expect(axis.column).toBe("Region");
 	});
 
@@ -89,7 +99,7 @@ describe("adHocAxesFromCatalog", () => {
 				}),
 			],
 			[],
-			["region"],
+			asIs("region"),
 		);
 		expect(axis).toMatchObject({
 			column: "region",
@@ -108,7 +118,7 @@ describe("adHocAxesFromCatalog", () => {
 		const [axis] = adHocAxesFromCatalog(
 			[row("region"), row("region")],
 			[],
-			["region"],
+			asIs("region"),
 		);
 		expect(axis.businessContext).toBe("the sales region");
 	});
@@ -119,7 +129,7 @@ describe("adHocAxesFromCatalog", () => {
 		const axes = adHocAxesFromCatalog(
 			[row("region")],
 			["entry_id__country", "region"],
-			["region", "entry_id__country"],
+			asIs("region", "entry_id__country"),
 		);
 		expect(axes.map((a) => a.column)).toEqual(["region", "entry_id__country"]);
 		expect(axes[1]).toMatchObject({
@@ -135,14 +145,14 @@ describe("adHocAxesFromCatalog", () => {
 				row("region", { sliceInterest: "primary", sliceRelevance: 0.4 }),
 			],
 			[],
-			["product", "region"],
+			asIs("product", "region"),
 		);
 		expect(axes.map((a) => a.column)).toEqual(["region", "product"]);
 	});
 
 	it("offers nothing when the result carries no catalogued dimension", () => {
 		expect(
-			adHocAxesFromCatalog([row("region")], [], ["value", "total"]),
+			adHocAxesFromCatalog([row("region")], [], asIs("value", "total")),
 		).toEqual([]);
 	});
 
@@ -151,8 +161,62 @@ describe("adHocAxesFromCatalog", () => {
 			adHocAxesFromCatalog(
 				[row("region", { columnName: null })],
 				[],
-				["region"],
+				asIs("region"),
 			),
 		).toEqual([]);
+	});
+});
+
+// DAT-671 R2 — an ALIAS is a new name for a column, not a new column.
+//
+// This was the live "no axes" cause on every aliased result: the catalog holds
+// `account_id__name`, a model writes `account_id__name AS account`, and the
+// intersection compared the alias to the catalog, found nothing, and reported a
+// result that visibly HAS a dimension in it as having nothing to slice by.
+describe("aliased projections", () => {
+	it("matches the SOURCE column and offers the RESULT's spelling", () => {
+		const [axis] = adHocAxesFromCatalog(
+			[row("account_id__name")],
+			[],
+			[{ name: "account", source: "account_id__name" }],
+		);
+		// Offered under what the practitioner sees — and what a further compose
+		// must name, since the tier-A wrap can only group by a projected column.
+		expect(axis.column).toBe("account");
+		// …carrying the curation of the CATALOGUED column behind the alias, which
+		// is the whole reason to resolve it rather than to offer a bare name.
+		expect(axis.values).toEqual(["a", "b"]);
+		expect(axis.sliceRelevance).toBe(0.8);
+	});
+
+	it("still matches the source when the alias happens to equal it", () => {
+		const [axis] = adHocAxesFromCatalog(
+			[row("region")],
+			[],
+			[{ name: "region", source: "region" }],
+		);
+		expect(axis.column).toBe("region");
+	});
+
+	it("does not offer an alias whose source is not catalogued", () => {
+		// The alias must not become a matchable name in its own right: `region`
+		// here is a LABEL over an uncatalogued column, and offering it would name
+		// a dimension nobody catalogued.
+		expect(
+			adHocAxesFromCatalog(
+				[row("region")],
+				[],
+				[{ name: "region", source: "internal_code" }],
+			),
+		).toEqual([]);
+	});
+
+	it("unions substrate on the source column too", () => {
+		const [axis] = adHocAxesFromCatalog(
+			[],
+			["entry_id__country"],
+			[{ name: "country", source: "entry_id__country" }],
+		);
+		expect(axis.column).toBe("country");
 	});
 });

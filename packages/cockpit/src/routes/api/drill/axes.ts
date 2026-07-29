@@ -42,10 +42,29 @@ const BodySchema = z
 				z.object({
 					relation: z.string().min(1).max(4096),
 					selectExpr: z.string().min(1).max(4096),
+					// DAT-671 R2: which grounding this source reuses. The server
+					// resolves it to a concept (a graph MATCH) and reads THAT target's
+					// additivity verdict — the answer path's only identity, and so the
+					// only thing that can license a time grain here. Absent (a fresh
+					// step) = unclassified: the grain is withheld with a reason.
+					snippetId: z.string().min(1).max(256).nullish(),
 				}),
 			)
 			.min(1)
 			.max(16)
+			.optional(),
+		// The drill stack the asking grid has ALREADY applied (DAT-671 R2), so the
+		// server can grey what is already sliced instead of the client disabling a
+		// menu item with no explanation. Carried alongside `partsSources` like
+		// `baseSql`, not a path selector.
+		steps: z
+			.array(
+				z.object({
+					kind: z.enum(["slice", "pin"]),
+					column: z.string().min(1).max(256),
+				}),
+			)
+			.max(64)
 			.optional(),
 		// DAT-671: the answer's own BASE statement (state.sql, NOT the currently
 		// -displayed shownSql), carried ONLY alongside `partsSources` so the
@@ -105,6 +124,7 @@ export const Route = createFileRoute("/api/drill/axes")({
 							await resolveAnswerDrillAxes(
 								parsed.data.partsSources,
 								parsed.data.baseSql,
+								parsed.data.steps,
 							),
 						);
 					}

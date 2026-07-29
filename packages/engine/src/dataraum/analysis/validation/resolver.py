@@ -46,7 +46,6 @@ def get_multi_table_schema_for_llm(
     duckdb_conn: duckdb.DuckDBPyConnection | None = None,
     *,
     base_runs: BaseRunMap,
-    max_sample_values: int = 10,
 ) -> dict[str, Any]:
     """Get schemas for multiple tables with semantic annotations and relationships.
 
@@ -62,16 +61,6 @@ def get_multi_table_schema_for_llm(
         base_runs: The run's pinned upstream heads. An absent pin
             (``relationship_run_id is None`` / table missing from
             ``semantic_runs``) reads EMPTY — fail-closed, never cross-run.
-        max_sample_values: ``privacy.max_sample_values`` — caps each column's
-            served ``distinct_values`` list (DAT-671 prompt-content bounds
-            policy). This function's ENTIRE output feeds only the validation
-            prompt (``format_multi_table_schema_for_prompt``, the sole
-            consumer), so capping here is safe — unlike the cycles builder's
-            slice value_counts, nothing else reads this copy. Defaults to the
-            shipped ``privacy.max_sample_values`` so callers that pre-date
-            this cap keep behaving identically; the real call site
-            (``validation_phase.py``) passes the loaded config value
-            explicitly.
 
     Returns:
         Dict with:
@@ -240,27 +229,38 @@ def get_multi_table_schema_for_llm(
     )
     slices = curated.served
 
-    # Build column_id → distinct_values lookup, capped per column (DAT-671:
-    # the persisted list can carry up to the profiler's stored top-K when no
-    # LLM ranking judged it — see slicing_phase.py's distinct_values fallback).
-    column_slices: dict[str, list[str]] = {}
+    # Membership per cataloged axis, keyed by ``(table_id, the axis's OWN
+    # name)`` — NOT by ``column_id`` (DAT-671). An enriched slice's
+    # ``column_id`` is the FACT's FK column (the DAT-756 referenced-dimension
+    # identity, which the cockpit's drill routes depend on), while its
+    # ``column_name`` is the joined ``{fk}__{attr}`` view column the values were
+    # actually measured on. Keying by id rendered a dimension attribute's values
+    # under the FK column's name — ``customer_id`` was served "Enterprise, SMB,
+    # Mid-Market" (its customers.segment join) in place of C-0001…C-0016, and
+    # ``product_id`` its product_group names — and, because several enriched
+    # axes share one FK column_id, last-one-wins silently overwrote the fact
+    # column's own value-set too. Name is the identity here.
+    #
+    # NOT capped: this is MEMBERSHIP the prompt tells the model to cite verbatim
+    # in WHERE/CASE clauses, so a top-10 amputates the citable space. Served
+    # whole up to the profiler's stored bound, with the shown-vs-distinct split
+    # disclosed (``_membership_attrs``) whenever that bound truncated the column.
+    slice_membership: dict[tuple[str, str], dict[str, Any]] = {}
     for sl in slices:
-        if sl.distinct_values:
-            column_slices[sl.column_id] = sl.distinct_values[:max_sample_values]
+        if sl.distinct_values and sl.column_name:
+            slice_membership[(sl.table_id, sl.column_name)] = {
+                "distinct_values": sl.distinct_values,
+                "distinct_total": sl.value_count,
+            }
 
-    # Attach slice values to table schemas
-    for table in tables:
-        table_schema = next((s for s in table_schemas if s["table_id"] == table.table_id), None)
-        if not table_schema:
-            continue
-        for col in table.columns:
-            if col.column_id in column_slices:
-                col_schema = next(
-                    (c for c in table_schema["columns"] if c["column_name"] == col.column_name),
-                    None,
-                )
-                if col_schema:
-                    col_schema["distinct_values"] = column_slices[col.column_id]
+    # Attach each axis's membership to the physical column of the same name.
+    for table_schema in table_schemas:
+        for col_schema in table_schema["columns"]:
+            membership = slice_membership.pop(
+                (table_schema["table_id"], col_schema["column_name"]), None
+            )
+            if membership:
+                col_schema.update(membership)
 
     # Fetch enriched views for these tables
     enriched_stmt = select(EnrichedView).where(EnrichedView.fact_table_id.in_(table_ids))
@@ -274,6 +274,16 @@ def get_multi_table_schema_for_llm(
             for tid in (ev.dimension_table_ids or [])
             if tid in table_id_to_name
         ]
+        # The axes left unattached above are the enriched ones: they name a
+        # joined ``{fk}__{attr}`` column that exists on the VIEW, not on the
+        # fact. Serve their membership HERE, where the column is actually
+        # queryable — dropping it would leave real, catalogued slice axes
+        # (e.g. an ``ar_invoice_id__status``) with no value-set at all.
+        view_columns = [
+            {"column_name": name, **slice_membership[(ev.fact_table_id, name)]}
+            for name in (ev.dimension_columns or [])
+            if (ev.fact_table_id, name) in slice_membership
+        ]
         formatted_views.append(
             {
                 "view_name": ev.view_name,
@@ -281,6 +291,7 @@ def get_multi_table_schema_for_llm(
                 "fact_table": fact_name,
                 "dimension_tables": dim_names,
                 "dimension_columns": ev.dimension_columns or [],
+                "columns": view_columns,
             }
         )
 
@@ -490,6 +501,36 @@ def _attr(value: str) -> str:
     return value.replace('"', "&quot;")
 
 
+def _membership_attrs(col: dict[str, Any]) -> str:
+    """Render one column's measured value-set, disclosing any truncation.
+
+    The prompt tells the model these are the actual values and to cite them
+    verbatim in WHERE/CASE clauses, so the list is served WHOLE — the DAT-671
+    top-10 cut turned a 41-value axis into a 5-value one and made every
+    predicate on its tail silently unwritable.
+
+    Whole means "whole up to the profiler's STORED bound", which is not one
+    number: 200 for typed fact columns, 10 for enriched dimension columns
+    (``enriched_views_phase``). So a truncated list is routine rather than
+    exotic, and it must never read as complete — when ``distinct_total``
+    exceeds what we hold, the marker says so in the same breath, following the
+    GraphAgent's disclosed-not-enumerated line (``graphs/context_format.py``
+    ``_build_value_sets``). No marker means the set IS complete; that silence
+    is load-bearing, so it is only ever emitted when the two counts agree.
+    """
+    values = col.get("distinct_values")
+    if not values:
+        return ""
+    attrs = f' distinct_values="{_attr(", ".join(values))}"'
+    total = col.get("distinct_total")
+    if total is not None and total > len(values):
+        attrs += (
+            f' distinct_values_note="showing {len(values)} of {total} distinct — '
+            f'most frequent first, NOT the complete set"'
+        )
+    return attrs
+
+
 def format_multi_table_schema_for_prompt(schema: dict[str, Any]) -> str:
     """Format multi-table schema dict as text for LLM prompt.
 
@@ -565,10 +606,8 @@ def format_multi_table_schema_for_prompt(schema: dict[str, Any]) -> str:
                 if tf.get("note"):
                     col_line += f' time_note="{_attr(tf["note"])}"'
 
-            # Distinct values from slicing phase (categorical columns)
-            if col.get("distinct_values"):
-                vals = _attr(", ".join(col["distinct_values"]))
-                col_line += f' distinct_values="{vals}"'
+            # The measured value-set of this column's cataloged slice axis.
+            col_line += _membership_attrs(col)
 
             col_line += " />"
             lines.append(col_line)
@@ -614,10 +653,23 @@ def format_multi_table_schema_for_prompt(schema: dict[str, Any]) -> str:
         lines.append("<!-- Pre-joined views available as alternative to manual JOINs -->")
         for ev in enriched_views:
             dims = ", ".join(ev["dimension_tables"]) if ev.get("dimension_tables") else ""
-            lines.append(
+            view_line = (
                 f'<view name="{ev["view_name"]}" duckdb_path="{ev["duckdb_path"]}" '
-                f'fact_table="{ev["fact_table"]}" dimension_tables="{dims}" />'
+                f'fact_table="{ev["fact_table"]}" dimension_tables="{dims}"'
             )
+            # A joined dimension column that is itself a cataloged slice axis
+            # carries its measured value-set here — this view is where the
+            # column exists, so this is the only place a WHERE on it can be
+            # grounded (DAT-671). Columns without one are simply absent, same
+            # as on a table block.
+            view_columns = ev.get("columns") or []
+            if not view_columns:
+                lines.append(view_line + " />")
+                continue
+            lines.append(view_line + ">")
+            for col in view_columns:
+                lines.append(f'  <column name="{col["column_name"]}"{_membership_attrs(col)} />')
+            lines.append("</view>")
         lines.append("</enriched_views>")
 
     # Add usage note

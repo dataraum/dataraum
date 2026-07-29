@@ -37,7 +37,7 @@ from dataraum.analysis.relationships.graph_topology import (
 from dataraum.analysis.relationships.utils import load_defined_relationships
 from dataraum.analysis.semantic.db_models import SemanticAnnotation, TableEntity, TableRole
 from dataraum.analysis.semantic.utils import load_column_concepts, truncate_sample_value
-from dataraum.analysis.served_columns import served_columns
+from dataraum.analysis.served_columns import enriched_dimension_columns, served_columns
 from dataraum.analysis.slicing.curation import curated_slices
 from dataraum.analysis.slicing.db_models import SliceDefinition
 from dataraum.analysis.statistics.db_models import StatisticalProfile
@@ -432,22 +432,43 @@ def build_cycle_detection_context(
         curated = curated_slices(list(session.execute(slice_stmt).scalars().all()))
         slices = curated.served
 
+    # The column each axis's VALUES were measured on — the fact's own column, or
+    # the enriched view's joined column for a ``{fk}__{attr}`` axis (DAT-671).
+    value_column_ids = _value_column_ids(session, slices)
+
     slice_list = []
     for sd in slices:
-        # Value counts from the statistical profile, scoped to the table's
-        # add_source generation head (``semantic_runs``) — the same per-table pin
-        # the annotations use, and the run the typed profile was written under.
-        # The verify floor (DAT-630) builds its membership set from these values,
-        # so an unscoped read would leak a stale run's values; fail-closed to []
-        # when the table has no pinned generation run.
-        value_counts = _get_value_counts_for_column(
-            session, sd.column_id, run_id=base_runs.semantic_runs.get(sd.table_id)
+        # Value counts from the statistical profile of the column this axis
+        # actually names. An own column is scoped to the table's add_source
+        # generation head (``semantic_runs``) — the same per-table pin the
+        # annotations use, and the run its typed profile was written under. The
+        # verify floor (DAT-630) builds its membership set from these values, so
+        # an unscoped read would leak a stale run's values; fail-closed to []
+        # when the table has no pinned generation run. An enriched column has no
+        # per-run row to pin to (see ``_get_enriched_value_counts``).
+        value_column_id = value_column_ids[sd.slice_id]
+        value_counts = (
+            _get_enriched_value_counts(session, value_column_id)
+            if value_column_id != sd.column_id
+            else _get_value_counts_for_column(
+                session, sd.column_id, run_id=base_runs.semantic_runs.get(sd.table_id)
+            )
         )
 
         slice_list.append(
             {
                 "table_name": sd.table.table_name,
-                "column_name": sd.column.column_name,
+                # The AXIS's own name, not ``sd.column.column_name`` (the ORM
+                # hop to ``column_id``, which for an enriched axis lands on the
+                # fact's FK column). Every ``customer_id__*`` axis used to render
+                # under the single heading "customer_id" — four blocks with the
+                # same title, each claiming different values — and
+                # ``verify_cycles`` keyed its membership floor by that heading,
+                # so the four value-sets collapsed into one union and a cycle
+                # completing on 'Enterprise' passed on the *id* column (DAT-671).
+                # Matches what the graph context already serves
+                # (``graphs/context_reads.py``).
+                "column_name": sd.column_name or sd.column.column_name,
                 "slice_type": sd.slice_type,
                 "values": sd.distinct_values or [],
                 "value_counts": value_counts,
@@ -820,20 +841,91 @@ def _get_value_counts_for_column(
         StatisticalProfile.run_id == run_id,
         StatisticalProfile.layer == "typed",
     )
-    profile = session.execute(profile_stmt).scalars().first()
+    return _top_value_counts(session.execute(profile_stmt).scalars().first(), limit)
 
+
+def _get_enriched_value_counts(
+    session: Session,
+    column_id: str,
+    *,
+    limit: int | None = None,
+) -> list[dict[str, Any]]:
+    """Value counts for a JOINED dimension column of an enriched view.
+
+    Deliberately not run-scoped, unlike its typed sibling: ``enriched_views_
+    phase`` profiles a dimension column ONCE, when the column is first
+    registered, and its reconcile-by-name keeps a surviving column's
+    ``column_id`` *and* that profile across re-runs. So exactly one
+    ``layer='enriched'`` row exists per live column_id — there is no coexisting
+    set to pick wrongly from, and a run filter would fail closed and silently
+    unmeasure every enriched axis.
+
+    Args:
+        session: SQLAlchemy session.
+        column_id: The enriched view's dimension column.
+        limit: Optional count cap; ``None`` = up to the profiler's stored top-K
+            (10 for enriched columns — the caller discloses that bound).
+
+    Returns:
+        List of {value, count, percentage} dicts, or empty list.
+    """
+    profile_stmt = select(StatisticalProfile).where(
+        StatisticalProfile.column_id == column_id,
+        StatisticalProfile.layer == "enriched",
+    )
+    return _top_value_counts(session.execute(profile_stmt).scalars().first(), limit)
+
+
+def _top_value_counts(
+    profile: StatisticalProfile | None, limit: int | None
+) -> list[dict[str, Any]]:
+    """Project a profile's stored ``top_values`` into the served shape."""
     if not profile or not profile.profile_data:
         return []
-
-    top_values = profile.profile_data.get("top_values", [])[:limit]
     return [
         {
             "value": tv.get("value", ""),
             "count": tv.get("count", 0),
             "percentage": round(tv.get("percentage", 0), 1),
         }
-        for tv in top_values
+        for tv in profile.profile_data.get("top_values", [])[:limit]
     ]
+
+
+def _value_column_ids(session: Session, slices: list[SliceDefinition]) -> dict[str, str]:
+    """Map each slice's ``slice_id`` → the column whose profile holds its values.
+
+    For a fact's own axis that is ``column_id`` itself. For an ENRICHED axis it
+    is NOT: ``column_id`` is the fact's FK column (the DAT-756 referenced-
+    dimension identity), while the values live on the joined
+    ``{fk}__{attr}`` column registered on the enriched VIEW. Reading the FK's
+    profile there labelled one column's values with another column's name —
+    ``ar_invoices.customer_id__segment`` was served customer *ids* — and fed
+    them straight into ``verify_cycles``' membership floor, so a cycle citing
+    any invoice id passed the anti-hallucination check on a status axis
+    (DAT-671).
+
+    Resolved through the view's REGISTERED columns rather than by splitting the
+    ``__`` out of a name: the registry is what actually holds the profile, and a
+    fact with no enriched view simply contributes no entries.
+    """
+    fact_ids = {sd.table_id for sd in slices}
+    if not fact_ids:
+        return {}
+    dim_col_id_by_fact_name: dict[tuple[str, str], str] = {}
+    for ev in (
+        session.execute(select(EnrichedView).where(EnrichedView.fact_table_id.in_(fact_ids)))
+        .scalars()
+        .all()
+    ):
+        if not ev.view_table_id:
+            continue
+        for col in enriched_dimension_columns(session, ev.view_table_id):
+            dim_col_id_by_fact_name[(ev.fact_table_id, col.column_name)] = col.column_id
+    return {
+        sd.slice_id: dim_col_id_by_fact_name.get((sd.table_id, sd.column_name or ""), sd.column_id)
+        for sd in slices
+    }
 
 
 def format_context_for_prompt(

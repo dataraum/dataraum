@@ -50,7 +50,6 @@ def _rec(column: str) -> SliceRecommendationOutput:
         table_name="journal_lines",
         column_name=column,
         interest="primary",
-        distinct_values=["CC100", "CC200"],
         reasoning="r",
         business_context="b",
         confidence=0.9,
@@ -90,7 +89,6 @@ def test_unknown_table_recommendation_is_dropped() -> None:
                 table_name="ghost_table",
                 column_name="cost_center",
                 interest="primary",
-                distinct_values=["A", "B"],
                 reasoning="r",
                 business_context="b",
                 confidence=0.9,
@@ -100,3 +98,48 @@ def test_unknown_table_recommendation_is_dropped() -> None:
     )
     result = _agent()._convert_output_to_result(output, _context())
     assert result.value.recommendations == []
+
+
+def test_output_schema_never_asks_the_model_for_membership() -> None:
+    """DAT-671: the slicing judgment carries NO value list.
+
+    Asserted on the SCHEMA, not on a rejected payload, because that is where
+    the mechanism lives: the schema is handed to the API as ``output_schema``
+    and constrained decoding emits only what it declares. Pydantic's default
+    ``extra='ignore'`` means a payload carrying the field would validate
+    silently — so a "does it raise?" test would pin nothing at all.
+    """
+    props = SlicingAnalysisOutput.model_json_schema()["$defs"]["SliceRecommendationOutput"][
+        "properties"
+    ]
+    assert "distinct_values" not in props
+    assert "interest" in props, "the judgment itself is still asked for"
+
+
+def test_a_response_that_still_carries_values_cannot_smuggle_them_through() -> None:
+    """The echo has no route back in: the field is ignored, not re-adopted.
+
+    Belt-and-braces for the ``extra='ignore'`` semantics above — a stale cache
+    entry or a provider that echoes the old shape must not resurrect the
+    fabricated membership the validation prompt used to serve.
+    """
+    output = SlicingAnalysisOutput.model_validate(
+        {
+            "recommendations": [
+                {
+                    "table_name": "journal_lines",
+                    "column_name": "cost_center",
+                    "interest": "primary",
+                    "distinct_values": ["Enterprise", "SMB", "Mid-Market"],
+                    "reasoning": "r",
+                    "business_context": "b",
+                    "confidence": 0.9,
+                }
+            ],
+            "time_columns": [],
+        }
+    )
+    assert not hasattr(output.recommendations[0], "distinct_values")
+
+    rec = _agent()._convert_output_to_result(output, _context()).value.recommendations[0]
+    assert not hasattr(rec, "distinct_values")

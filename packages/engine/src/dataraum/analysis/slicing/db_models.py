@@ -145,7 +145,23 @@ class SliceDefinition(Base):
     slice_relevance: Mapped[float | None] = mapped_column(Float)
     slice_interest: Mapped[str | None] = mapped_column(String)
     slice_type: Mapped[str] = mapped_column(String, nullable=False, default="categorical")
+
+    # The axis's MEMBERSHIP, always measured (DAT-671): this run's statistical
+    # profile for the column this row names — ``column_name``, which for an
+    # enriched row is the joined ``{fk}__{attr}`` view column, NOT the fact FK
+    # that ``column_id`` points at (see the DAT-756 note above). It is never the
+    # ranking agent's echo of a value list; a judged row and a structural row
+    # carry evidence of identical provenance.
+    #
+    # Bounded by the profiler's stored top-K, which is NOT one number: 200 for
+    # typed fact columns (``phases/statistics.yaml``), 10 for enriched dimension
+    # columns (``enriched_views_phase``). So a shorter-than-``value_count`` list
+    # is routine, and every consumer that serves these values MUST disclose the
+    # "N of M distinct" split rather than present them as the complete set.
     distinct_values: Mapped[list[str] | None] = mapped_column(JSON)
+
+    # The column's measured COUNT(DISTINCT) — never ``len(distinct_values)``
+    # (DAT-879). It is the disclosure that makes the bounded list above honest.
     value_count: Mapped[int | None] = mapped_column(Integer)
 
     # Analysis reasoning

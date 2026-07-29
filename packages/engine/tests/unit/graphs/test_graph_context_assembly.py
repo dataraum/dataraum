@@ -9,10 +9,22 @@ without Postgres. The live PGQ reads are covered by
 
 from __future__ import annotations
 
+from decimal import Decimal
 from types import SimpleNamespace
 from typing import Any
 
-from dataraum.graphs.context_reads import _assemble_concept_contexts
+from sqlalchemy import text
+from sqlalchemy.orm import Session
+
+from dataraum.analysis.semantic.reconciliation_db_models import (
+    ConceptReconciliation,
+    ReconciliationStatus,
+    ReconciliationVerdict,
+)
+from dataraum.graphs.context_reads import (
+    _assemble_concept_contexts,
+    _read_reconciliation_rows,
+)
 
 
 def _row(**kw: Any) -> SimpleNamespace:
@@ -188,3 +200,141 @@ def test_an_unevaluated_assertion_carries_no_observation() -> None:
     assert rec.status is None
     assert rec.observed_delta is None
     assert rec.pairs == 0
+
+
+class TestReadReconciliationRows:
+    """The served fold over real rows (DAT-739).
+
+    Exercised through an actual view over the real table rather than a
+    hand-built dict, because the fold, the ordering and the mirror-key
+    registration are the parts that make ONE stored row serve BOTH endpoints of
+    a symmetric assertion — and a pre-built dict proves none of them.
+    """
+
+    @staticmethod
+    def _served(session: Session) -> dict[tuple[str, str], Any]:
+        session.flush()
+        session.execute(
+            text(
+                "CREATE VIEW IF NOT EXISTS current_concept_reconciliation AS "
+                "SELECT * FROM concept_reconciliation"
+            )
+        )
+        return _read_reconciliation_rows(session, "main")
+
+    @staticmethod
+    def _row(**kw: Any) -> ConceptReconciliation:
+        base: dict[str, Any] = {
+            "run_id": "om-1",
+            "vertical": "finance",
+            "status": ReconciliationStatus.EVALUATED.value,
+            "verdict": ReconciliationVerdict.NO_TOLERANCE_DECLARED.value,
+        }
+        base.update(kw)
+        return ConceptReconciliation(**base)
+
+    def test_a_partner_assertion_serves_both_directions(self, session: Session) -> None:
+        """One stored row, both endpoints — the mirror-key registration."""
+        session.add(
+            self._row(
+                from_concept="ap",
+                to_concept="purchases",
+                pair_key="s-a|s-b",
+                left_snippet_id="s-a",
+                right_snippet_id="s-b",
+                left_value=Decimal(100),
+                right_value=Decimal(90),
+                delta=Decimal(10),
+                relative_delta=Decimal("0.1"),
+            )
+        )
+        served = self._served(session)
+
+        assert ("ap", "purchases") in served
+        # The mirrored edge direction must find the SAME evaluation, not a hole.
+        assert served[("ap", "purchases")] is served[("purchases", "ap")]
+        assert served[("ap", "purchases")]["delta"] == 10.0
+
+    def test_the_widest_divergence_wins_across_pairs(self, session: Session) -> None:
+        """Three pairs, and the one that puts the tie-out most in question wins."""
+        for pair_key, delta, relative in (
+            ("s-a|s-b", 10, "0.1"),
+            ("s-a|s-c", 50, "0.5"),
+            ("s-b|s-c", 20, "0.2"),
+        ):
+            session.add(
+                self._row(
+                    from_concept="ap",
+                    to_concept="ap",
+                    pair_key=pair_key,
+                    left_snippet_id=pair_key.split("|")[0],
+                    right_snippet_id=pair_key.split("|")[1],
+                    left_value=Decimal(100),
+                    right_value=Decimal(100) - Decimal(delta),
+                    delta=Decimal(delta),
+                    relative_delta=Decimal(relative),
+                )
+            )
+        served = self._served(session)[("ap", "ap")]
+
+        assert served["pairs"] == 3
+        assert served["evaluated_pairs"] == 3
+        # Not the first row read, and not the last — the widest.
+        assert served["relative_delta"] == 0.5
+        assert served["delta"] == 50.0
+
+    def test_a_partly_evaluated_assertion_stays_evaluated(self, session: Session) -> None:
+        """One comparable pair among abstentions still yields a measurement …
+
+        … and the counts keep the remainder visible, so a consumer can never read
+        a partial evaluation as a whole one.
+        """
+        session.add(
+            self._row(
+                from_concept="cash",
+                to_concept="cash",
+                pair_key="s-a|s-b",
+                left_snippet_id="s-a",
+                right_snippet_id="s-b",
+                left_value=Decimal(100),
+                right_value=Decimal(100),
+                delta=Decimal(0),
+                relative_delta=Decimal(0),
+            )
+        )
+        session.add(
+            self._row(
+                from_concept="cash",
+                to_concept="cash",
+                pair_key="s-a|s-c",
+                left_snippet_id="s-a",
+                right_snippet_id="s-c",
+                status=ReconciliationStatus.ABSTAINED.value,
+                verdict=None,
+                abstain_reason="different_reporting_instants",
+            )
+        )
+        served = self._served(session)[("cash", "cash")]
+
+        assert served["status"] == "evaluated"
+        assert served["pairs"] == 2
+        assert served["evaluated_pairs"] == 1
+
+    def test_an_all_abstained_assertion_carries_its_shared_reason(self, session: Session) -> None:
+        session.add(
+            self._row(
+                from_concept="cash",
+                to_concept="cash",
+                pair_key="s-a|s-b",
+                left_snippet_id="s-a",
+                right_snippet_id="s-b",
+                status=ReconciliationStatus.ABSTAINED.value,
+                verdict=None,
+                abstain_reason="different_reporting_instants",
+            )
+        )
+        served = self._served(session)[("cash", "cash")]
+
+        assert served["status"] == "abstained"
+        assert served["abstain_reason"] == "different_reporting_instants"
+        assert served["delta"] is None

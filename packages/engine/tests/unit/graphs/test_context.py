@@ -326,6 +326,43 @@ class TestConceptGraph:
             "different reporting instants" in out
         )
 
+    def test_a_partial_evaluation_never_reads_as_a_whole_one(self) -> None:
+        """3 of 5 pairs uncompared must not render as plain agreement (DAT-739)."""
+        concept = ConceptContext(
+            name="accounts_payable",
+            reconciles_with=[
+                ConceptReconciliation(
+                    partner="accounts_payable",
+                    status="evaluated",
+                    verdict="no_tolerance_declared",
+                    observed_delta=0.0,
+                    relative_delta=0.0,
+                    pairs=5,
+                    evaluated_pairs=2,
+                )
+            ],
+        )
+        out = format_served_context(GraphExecutionContext(concepts=[concept]))
+        assert "the groundings tie out exactly" in out
+        # …but never as verification of the whole assertion.
+        assert "3 of 5 pairs not comparable" in out
+
+    def test_the_witness_only_assertion_says_it_has_no_second_angle(self) -> None:
+        """DAT-739's own honest bound, served rather than left silent."""
+        concept = ConceptContext(
+            name="revenue",
+            reconciles_with=[
+                ConceptReconciliation(
+                    partner="revenue",
+                    status="abstained",
+                    abstain_reason="no_evaluable_pair",
+                    pairs=1,
+                )
+            ],
+        )
+        out = format_served_context(GraphExecutionContext(concepts=[concept]))
+        assert "not compared because only one grounding exists to measure" in out
+
     def test_no_section_without_concepts(self) -> None:
         assert "## Business Concepts" not in format_served_context(GraphExecutionContext())
 

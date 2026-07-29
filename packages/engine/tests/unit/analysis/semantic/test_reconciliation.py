@@ -300,10 +300,17 @@ class TestComparability:
         assert row.status == ReconciliationStatus.ABSTAINED.value
         assert row.abstain_reason == ReconciliationAbstainReason.DIFFERENT_AGGREGATIONS.value
 
-    def test_different_row_restrictions_are_still_compared(
+    def test_a_declared_row_restriction_is_not_a_comparability_barrier(
         self, session: Session, conn: duckdb.DuckDBPyConnection
     ) -> None:
-        """Two populations reaching one quantity IS the second angle, not a barrier."""
+        """The executor does not read `predicate` as a reason to refuse.
+
+        Two populations reaching one quantity IS the second angle (the GL's AP
+        accounts against the whole subledger), so a differing declared
+        restriction must not abstain. This pins exactly that — the snippets'
+        SQL is unchanged, so what it guards is the ABSENCE of a predicate check
+        in the comparability rules, not the execution of disjoint populations.
+        """
         _relation(conn, "gl", [50.0, 50.0])
         _relation(conn, "ap_subledger", [100.0])
         _grounding(session, "s-gl", "accounts_payable", "gl")
@@ -319,6 +326,26 @@ class TestComparability:
         (row,) = _rows(session)
         assert row.status == ReconciliationStatus.EVALUATED.value
         assert row.delta == Decimal(0)
+
+    def test_a_non_numeric_result_is_louder_than_no_support(
+        self, session: Session, conn: duckdb.DuckDBPyConnection
+    ) -> None:
+        """A grounding measuring the wrong KIND of thing is not "nothing to measure"."""
+        _relation(conn, "gl", [100.0])
+        conn.execute("CREATE TABLE ledger_names (amount VARCHAR)")
+        conn.execute("INSERT INTO ledger_names VALUES ('opening')")
+        _grounding(session, "s-gl", "accounts_payable", "gl")
+        _grounding(session, "s-txt", "accounts_payable", "ledger_names", expr="MAX(amount)")
+        _edge(session, "accounts_payable")
+
+        outcome = _run(session, conn)
+
+        (row,) = _rows(session)
+        assert row.abstain_reason == ReconciliationAbstainReason.NON_NUMERIC_VALUE.value
+        # It points at the grounding, so it rides the loud channel — not the
+        # "correctly declined to compare" one.
+        assert "accounts_payable" in outcome.failures
+        assert "accounts_payable" not in outcome.withheld
 
     def test_a_null_aggregate_is_no_value_never_zero(
         self, session: Session, conn: duckdb.DuckDBPyConnection
@@ -521,6 +548,73 @@ class TestRowContract:
         assert "accounts_payable" in outcome.failures
         # A malfunction rides ONE channel — the loud one.
         assert "accounts_payable" not in outcome.withheld
+
+    def test_every_broken_pair_is_disclosed_not_just_the_last(
+        self, session: Session, conn: duckdb.DuckDBPyConnection
+    ) -> None:
+        """An assertion's channel entry accumulates; it does not overwrite.
+
+        Three pairs failing for three reasons must not surface as one line — the
+        channel is a disclosure, and keeping only the last one defeats it.
+        """
+        _relation(conn, "gl", [100.0])
+        _grounding(session, "s-a", "accounts_payable", "gl")
+        _grounding(session, "s-gone1", "accounts_payable", "vanished_one")
+        _grounding(session, "s-gone2", "accounts_payable", "vanished_two")
+        _edge(session, "accounts_payable")
+
+        outcome = _run(session, conn)
+
+        assert len(_rows(session)) == 3
+        disclosed = outcome.failures["accounts_payable"]
+        assert "s-gone1" in disclosed
+        assert "s-gone2" in disclosed
+
+    def test_an_evaluated_row_cannot_omit_its_measurement(
+        self, session: Session, conn: duckdb.DuckDBPyConnection
+    ) -> None:
+        """status='evaluated' with no delta would read as a tie-out nobody computed."""
+        from sqlalchemy.exc import IntegrityError
+
+        session.add(
+            ConceptReconciliation(
+                run_id=OM_RUN,
+                vertical=VERTICAL,
+                from_concept="ap",
+                to_concept="ap",
+                pair_key="a|b",
+                left_snippet_id="a",
+                right_snippet_id="b",
+                status=ReconciliationStatus.EVALUATED.value,
+                verdict=ReconciliationVerdict.NO_TOLERANCE_DECLARED.value,
+            )
+        )
+        with pytest.raises(IntegrityError):
+            session.flush()
+        session.rollback()
+
+    def test_the_unpaired_sentinel_cannot_name_groundings(
+        self, session: Session, conn: duckdb.DuckDBPyConnection
+    ) -> None:
+        """'*' means no pair was formed; naming one would contradict it."""
+        from sqlalchemy.exc import IntegrityError
+
+        session.add(
+            ConceptReconciliation(
+                run_id=OM_RUN,
+                vertical=VERTICAL,
+                from_concept="ap",
+                to_concept="ap",
+                pair_key=PAIR_KEY_UNPAIRED,
+                left_snippet_id="a",
+                right_snippet_id="b",
+                status=ReconciliationStatus.ABSTAINED.value,
+                abstain_reason=ReconciliationAbstainReason.NO_EVALUABLE_PAIR.value,
+            )
+        )
+        with pytest.raises(IntegrityError):
+            session.flush()
+        session.rollback()
 
     def test_re_evaluating_the_same_run_is_idempotent(
         self, session: Session, conn: duckdb.DuckDBPyConnection

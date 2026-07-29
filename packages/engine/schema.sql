@@ -45,7 +45,7 @@ CREATE TABLE concept_reconciliation (
 	CONSTRAINT uq_concept_reconciliation_pair UNIQUE (vertical, from_concept, to_concept, pair_key, run_id), 
 	CONSTRAINT ck_concept_reconciliation_status CHECK (status IN ('abstained', 'evaluated')), 
 	CONSTRAINT ck_concept_reconciliation_verdict CHECK (verdict IS NULL OR verdict IN ('beyond_tolerance', 'no_tolerance_declared', 'within_tolerance')), 
-	CONSTRAINT ck_concept_reconciliation_abstain_reason CHECK (abstain_reason IS NULL OR abstain_reason IN ('different_aggregations', 'different_reporting_instants', 'execution_failed', 'no_evaluable_pair', 'no_value', 'unresolved_grounding')), 
+	CONSTRAINT ck_concept_reconciliation_abstain_reason CHECK (abstain_reason IS NULL OR abstain_reason IN ('different_aggregations', 'different_reporting_instants', 'execution_failed', 'no_evaluable_pair', 'no_value', 'non_numeric_value', 'unresolved_grounding')), 
 	CONSTRAINT ck_concept_reconciliation_status_verdict_reason CHECK ((status = 'evaluated' AND verdict IS NOT NULL AND abstain_reason IS NULL AND left_value IS NOT NULL AND right_value IS NOT NULL AND delta IS NOT NULL AND relative_delta IS NOT NULL) OR (status = 'abstained' AND verdict IS NULL AND abstain_reason IS NOT NULL AND delta IS NULL AND relative_delta IS NULL)), 
 	CONSTRAINT ck_concept_reconciliation_tolerance_verdict CHECK (verdict IS NULL OR (verdict = 'no_tolerance_declared' AND tolerance IS NULL) OR (verdict <> 'no_tolerance_declared' AND tolerance IS NOT NULL)), 
 	CONSTRAINT ck_concept_reconciliation_pair_key_snippets CHECK ((pair_key = '*' AND left_snippet_id IS NULL AND right_snippet_id IS NULL) OR (pair_key <> '*' AND left_snippet_id IS NOT NULL AND right_snippet_id IS NOT NULL))

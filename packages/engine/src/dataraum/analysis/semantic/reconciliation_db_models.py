@@ -107,6 +107,11 @@ class ReconciliationAbstainReason(StrEnum):
     #: A side executed and returned NULL — no measured support. There is no
     #: number to compare, and a NULL is never read as a zero.
     NO_VALUE = "no_value"
+    #: A side returned a value that is not a quantity (a VARCHAR, a date, a
+    #: boolean). Distinct from NO_VALUE: the grounding measured SOMETHING, and
+    #: what it measured cannot be reconciled — a louder fact than missing
+    #: support, and one that points at the grounding rather than at the data.
+    NON_NUMERIC_VALUE = "non_numeric_value"
 
 
 #: ``pair_key`` value for an assertion-level row that identifies NO pair — the

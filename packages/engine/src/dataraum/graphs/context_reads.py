@@ -873,7 +873,12 @@ def _read_reconciliation_rows(session: Session, read_schema: str) -> dict[tuple[
         text(  # noqa: S608 - read_schema is an internal identifier, not user input
             "SELECT from_concept, to_concept, status, verdict, abstain_reason,"
             " delta, relative_delta\n"
-            f'FROM "{read_schema}".current_concept_reconciliation'
+            f'FROM "{read_schema}".current_concept_reconciliation\n'
+            # The widest-divergence pick below breaks ties on FIRST seen, so an
+            # unordered read lets two pairs with equal relative deltas and
+            # opposite signs swap the served number between runs on identical
+            # data. Physical row order is not a tie-break.
+            "ORDER BY from_concept, to_concept, pair_key"
         )
     ).all()
 

@@ -443,6 +443,11 @@ class MetricsPhase(BasePhase):
             reconciliation = produced
         except Exception as e:
             _log.warning("concept_reconciliation_failed", error=str(e))
+            # A rolled-back block leaves ZERO rows and empty channels — byte-
+            # identical to the healthy "nothing was asserted" run. Absence must
+            # fall loud, so the failure is disclosed on the warning channel
+            # rather than living only in a log line nobody reads.
+            reconciliation.failures["*"] = f"reconciliation not evaluated: {e}"
 
         executed = sum(1 for a in artifacts.values() if a.state == "executed")
         grounded_stuck = sum(1 for a in artifacts.values() if a.state == "grounded")

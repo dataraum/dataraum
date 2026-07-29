@@ -92,12 +92,17 @@ class _Grounding:
 class ReconciliationOutcome:
     """What the evaluation produced, for the phase to disclose.
 
-    Three channels, and an assertion appears in at most one. ``observed`` is the
-    normal, informative outcome — a measured delta with no declared band to
-    grade it against — and is structured OUTPUT, not a warning: disclosing a
-    number nobody asked to be within a bound is not an alarm. ``breached`` and
-    ``failures`` are WARNINGS: a declared band was exceeded, or a stored
-    grounding that should still execute did not.
+    ``observed`` is the normal, informative outcome — a measured delta with no
+    declared band to grade it against — and is structured OUTPUT, not a warning:
+    disclosing a number nobody asked to be within a bound is not an alarm.
+    ``breached`` and ``failures`` are WARNINGS: a declared band was exceeded, or
+    a grounding malfunctioned (it no longer executes, or it returned something
+    that is not a quantity).
+
+    Each channel maps an ASSERTION to its detail, and one assertion can cover
+    several pairs with different outcomes — so an assertion may appear on more
+    than one channel, and entries ACCUMULATE within a channel rather than
+    overwrite (see :func:`_disclose`). The counts are per pair.
     """
 
     rows: int = 0
@@ -203,7 +208,11 @@ def _canonical_assertions(edges: list[ConceptEdge]) -> dict[tuple[str, str], flo
 
     A band declared on either direction is the assertion's band; the mirror
     rows are two spellings of one statement, so taking the declared one over a
-    NULL loses nothing. Self-loops are already canonical.
+    NULL loses nothing. Should both directions ever declare DIFFERENT bands —
+    unreachable today, since no producer writes a partner edge at all — the
+    name-ordered direction wins, deterministically: ``edges`` arrives ordered by
+    ``(from_concept, to_concept)`` and the first declared band is kept, so the
+    outcome never depends on row order. Self-loops are already canonical.
     """
     out: dict[tuple[str, str], float | None] = {}
     for edge in edges:
@@ -277,7 +286,7 @@ def _evaluate_assertion(
         # partner concept nothing grounded. Asserted and unevaluable is a fact
         # worth recording; silence would be indistinguishable from unasserted.
         outcome.abstained += 1
-        outcome.withheld[label] = "no second grounding to compare"
+        _disclose(outcome.withheld, label, "no second grounding to compare")
         return [
             _abstained_row(frm, to, vertical, run_id, ReconciliationAbstainReason.NO_EVALUABLE_PAIR)
         ]
@@ -366,12 +375,16 @@ def _evaluate_pair(
 
     if tolerance is None:
         verdict = ReconciliationVerdict.NO_TOLERANCE_DECLARED
-        outcome.observed[label] = _delta_text(delta, relative)
+        _disclose(outcome.observed, label, _delta_text(delta, relative))
     elif relative <= Decimal(str(tolerance)):
         verdict = ReconciliationVerdict.WITHIN_TOLERANCE
     else:
         verdict = ReconciliationVerdict.BEYOND_TOLERANCE
-        outcome.breached[label] = f"{_delta_text(delta, relative)} exceeds tolerance {tolerance:g}"
+        _disclose(
+            outcome.breached,
+            label,
+            f"{_delta_text(delta, relative)} exceeds tolerance {tolerance:g}",
+        )
 
     outcome.evaluated += 1
     row.update(
@@ -388,6 +401,10 @@ def _evaluate_pair(
 
 #: Sentinel distinguishing "executed, no measured support" from an error string.
 _NO_VALUE = "\x00no_value"
+#: Sentinel for a scalar that came back but is not a quantity (a VARCHAR, a date,
+#: a boolean). Distinct from _NO_VALUE because it is a different fact: the
+#: grounding measured SOMETHING, and that something cannot be reconciled.
+_NON_NUMERIC = "\x00non_numeric"
 
 
 def _value_of(
@@ -416,21 +433,28 @@ def _value_of(
 
 
 def _as_decimal(value: Any) -> Decimal | str:
-    """An executed scalar as an exact Decimal, or the no-value sentinel.
+    """An executed scalar as an exact Decimal, or a typed sentinel.
 
     NULL is NOT zero: an aggregate with no support measured nothing, and reading
     it as a zero would manufacture agreement (or a break) out of missing data.
     Floats convert through their string form so a binary artefact never shows up
     as a spurious delta.
+
+    Anything that came back but is not a quantity — a VARCHAR, a date, a boolean
+    — is NOT the same fact as no support, and collapsing the two would file a
+    grounding that measures the wrong KIND of thing under "nothing to measure".
+    It gets its own sentinel and is reported loudly.
     """
-    if value is None or isinstance(value, bool):
+    if value is None:
         return _NO_VALUE
+    if isinstance(value, bool):
+        return _NON_NUMERIC
     if isinstance(value, Decimal):
         return value
     try:
         return Decimal(str(value))
     except InvalidOperation, ValueError:
-        return _NO_VALUE
+        return _NON_NUMERIC
 
 
 def _relative_delta(left: Decimal, right: Decimal) -> Decimal:
@@ -475,6 +499,28 @@ def _pair_row(
     }
 
 
+#: Abstentions that mean something MALFUNCTIONED rather than that the executor
+#: correctly declined to compare — these ride the phase's warning channel.
+_LOUD_REASONS = frozenset(
+    {
+        ReconciliationAbstainReason.EXECUTION_FAILED,
+        ReconciliationAbstainReason.NON_NUMERIC_VALUE,
+    }
+)
+
+
+def _disclose(channel: dict[str, str], label: str, detail: str) -> None:
+    """Record one pair's detail under its assertion, without losing the others.
+
+    An assertion covering several pairs produces several details, and assigning
+    them to the same key would keep only the last — three broken groundings
+    would surface as one. The channel is a disclosure; dropping most of it
+    defeats the point.
+    """
+    prior = channel.get(label)
+    channel[label] = f"{prior}; {detail}" if prior else detail
+
+
 def _abstain(
     row: dict[str, Any],
     reason: ReconciliationAbstainReason,
@@ -485,16 +531,14 @@ def _abstain(
 ) -> dict[str, Any]:
     """Complete a pair row as a typed abstention, on exactly one channel.
 
-    An EXECUTION_FAILED abstention is the one that should not have happened — a
-    grounding this run composed no longer runs — so it rides the warning
-    channel. Every other reason is a correct refusal to compare and is
-    disclosed as structured output.
+    A malfunction — a grounding this run composed that no longer runs, or one
+    returning something that is not a quantity — rides the warning channel.
+    Every other reason is a correct refusal to compare and is disclosed as
+    structured output.
     """
     outcome.abstained += 1
-    if reason is ReconciliationAbstainReason.EXECUTION_FAILED:
-        outcome.failures[label] = detail or reason.value
-    else:
-        outcome.withheld[label] = detail or reason.value
+    channel = outcome.failures if reason in _LOUD_REASONS else outcome.withheld
+    _disclose(channel, label, detail or reason.value)
     row.update(status=ReconciliationStatus.ABSTAINED.value, abstain_reason=reason.value)
     return row
 
@@ -514,6 +558,14 @@ def _abstain_for_observation(
             outcome,
             label,
             detail=f"{side.snippet_id}: no measured support",
+        )
+    if observed == _NON_NUMERIC:
+        return _abstain(
+            row,
+            ReconciliationAbstainReason.NON_NUMERIC_VALUE,
+            outcome,
+            label,
+            detail=f"{side.snippet_id}: returned a non-numeric value",
         )
     return _abstain(
         row,

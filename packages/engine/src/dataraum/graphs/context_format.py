@@ -435,6 +435,7 @@ _ABSTAIN_PHRASING: dict[str, str] = {
     "unresolved_grounding": "a grounding has no executable form",
     "execution_failed": "a grounding failed to execute",
     "no_value": "a grounding measured no support",
+    "non_numeric_value": "a grounding returned a value that is not a quantity",
 }
 
 
@@ -457,6 +458,13 @@ def _reconciliation_state(rec: ConceptReconciliation) -> str:
         return f"must tie out; not compared because {reason}"
 
     scope = f" (widest of {rec.evaluated_pairs} pairs)" if rec.evaluated_pairs > 1 else ""
+    # A partial evaluation must never read as a whole one. Reporting "ties out
+    # exactly" for a concept where three of five asserted pairs were never
+    # compared states verification the run did not do — the exact class this
+    # whole path exists to prevent, so the remainder rides every verdict.
+    uncompared = rec.pairs - rec.evaluated_pairs
+    if uncompared > 0:
+        scope += f"; {uncompared} of {rec.pairs} pairs not comparable"
     relative = rec.relative_delta or 0.0
     if rec.verdict == "beyond_tolerance":
         return f"evaluated: {relative:.3g} relative divergence exceeds the tolerance{scope}"

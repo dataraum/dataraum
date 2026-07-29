@@ -345,6 +345,11 @@ class TestReconciliationWireIn:
             select(LifecycleArtifact).where(LifecycleArtifact.artifact_key == "ap_total")
         ).scalar_one()
         assert artifact.state == ArtifactState.EXECUTED.value
+        # Surviving is not enough. A rolled-back block leaves zero rows and empty
+        # channels — byte-identical to a healthy run where nothing was asserted —
+        # so the failure has to be DISCLOSED, not just logged.
+        assert any("reconciliation grounding failed" in w for w in result.warnings)
+        assert any("reconciliation exploded" in w for w in result.warnings)
 
     def test_a_single_grounding_concept_is_untouched(
         self, session: Session, recon_duckdb: duckdb.DuckDBPyConnection

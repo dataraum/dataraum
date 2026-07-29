@@ -167,6 +167,19 @@ class DimensionalEntropyDetector(EntropyDetector):
         so it self-excludes; one with a real zero-pattern dependency is a genuine
         signal a teach can close. (Excluding them dropped the debit/credit mutex,
         since the correlations dedup flags debit = net_amount + credit.)
+
+        DAT-671 R6 (ADR-0024: names are display, not keys). The ``_id``-suffix test
+        is a NAME heuristic standing in for a fact the catalogue already holds
+        typed: FK-ness lives in ``relationships`` (from_column_id / to_column_id on
+        a confirmed row), which is both wider (it catches an FK named ``acct``) and
+        narrower (it does not condemn a real dimension named ``region_id`` that no
+        relationship references). DECISION: replace the suffix test with that
+        typed signal, not delete it outright — the intent (identifiers carry no
+        cross-column dependency to score) is right, only its evidence is a string match.
+        BLOCKED ON: this changes which columns the detector scores, i.e. its
+        precision/recall, and correctness here is settled by calibration in
+        ``dataraum-eval`` — locked for this slice. Do not land the swap on unit
+        tests alone.
         """
         name = (col.column_name or "").lower()
         if name == "id" or name.endswith("_id"):

@@ -1064,7 +1064,10 @@ export function DrillableGrid({
 				// the label carries the why (the cell itself is the house `—`).
 				footerLabel={
 					footerRow !== undefined && footerRow !== footerCells
-						? `${footerLabel} — parts don't sum`
+						? // WindowedGrid defaults an ABSENT label to "Total" — composing
+							// here happens before that default, so repeat it or an
+							// unlabeled caller renders "undefined — parts don't sum".
+							`${footerLabel ?? "Total"} — parts don't sum`
 						: footerLabel
 				}
 				columnAccents={columnAccents}

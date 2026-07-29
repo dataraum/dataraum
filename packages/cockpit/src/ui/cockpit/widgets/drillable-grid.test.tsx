@@ -957,9 +957,12 @@ describe("non-reconciling total (DAT-857)", () => {
 			expect(screen.getByTestId("mock-grid-footer")).toBeTruthy(),
 		);
 		expect(screen.getByTestId("mock-footer-value").textContent).toBe("—");
-		// A dead end with no reason reads as a bug — the label says why.
-		expect(screen.getByTestId("mock-footer-label").textContent).toContain(
-			"parts don't sum",
+		// A dead end with no reason reads as a bug — the label says why. Exact
+		// match: composing the mask over an ABSENT caller label must fall back
+		// to WindowedGrid's own "Total" default, never stringify undefined
+		// (found live on the closing smoke: "undefined — parts don't sum").
+		expect(screen.getByTestId("mock-footer-label").textContent).toBe(
+			"Total — parts don't sum",
 		);
 	});
 

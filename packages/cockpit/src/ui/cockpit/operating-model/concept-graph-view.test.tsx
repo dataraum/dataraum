@@ -167,7 +167,38 @@ describe("ConceptGraphView (DAT-737)", () => {
 		expect(screen.getByText(/→ assets/)).toBeTruthy();
 		expect(screen.getByText(/liability/)).toBeTruthy();
 		expect(screen.getByText(/across its own groundings/)).toBeTruthy();
+		// The evaluated state rides the panel line too (DAT-739): a fixture with
+		// status null must say UNCHECKED, never render as bare "must tie out".
+		expect(screen.getByText(/must tie out \(not yet evaluated\)/)).toBeTruthy();
 		expect(screen.getByText(/ending balance @ trial_balance/)).toBeTruthy();
+	});
+
+	it("renders an abstained tie-out with its typed reason in the panel (DAT-739)", () => {
+		renderView({
+			nodes: [
+				node({
+					name: "transaction_amount",
+					reconcilesWith: [
+						{
+							partner: "transaction_amount",
+							tolerance: null,
+							status: "abstained",
+							verdict: null,
+							abstainReason: "different_aggregations",
+							observedDelta: null,
+							relativeDelta: null,
+							pairs: 1,
+							evaluatedPairs: 0,
+						},
+					],
+				}),
+			],
+		});
+		expect(
+			screen.getByText(
+				/not compared because the groundings aggregate differently/,
+			),
+		).toBeTruthy();
 	});
 
 	it("shows the honest not-grounded note when a concept has zero groundings", () => {

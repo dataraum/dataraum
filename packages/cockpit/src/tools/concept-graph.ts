@@ -598,7 +598,7 @@ const ABSTAIN_PHRASING: Record<string, string> = {
  *  held, and a delta observed with no declared tolerance is a MEASUREMENT,
  *  never a graded failure. A partial evaluation must never read as a whole
  *  one, so the un-compared remainder rides every verdict. */
-function reconciliationState(rec: ConceptReconciliation): string {
+export function reconciliationState(rec: ConceptReconciliation): string {
 	if (rec.status === null) return "must tie out (not yet evaluated)";
 	if (rec.status === "abstained") {
 		const reason =

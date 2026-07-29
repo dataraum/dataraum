@@ -25,7 +25,10 @@ import {
 	Title,
 } from "@mantine/core";
 import type { ConceptGraph, ConceptGraphNode } from "#/tools/concept-graph";
-import { isReusableGrounding } from "#/tools/concept-graph";
+import {
+	isReusableGrounding,
+	reconciliationState,
+} from "#/tools/concept-graph";
 
 // Cap the CONCEPTS rendered into the DOM (rule 15) — a vertical ships a
 // bounded vocabulary (tens, not thousands of concepts), but the cap keeps
@@ -149,8 +152,8 @@ function ConceptDetail({ concept }: { concept: ConceptGraphNode }) {
 					{rec.partner === concept.name
 						? "across its own groundings"
 						: `with ${rec.partner}`}
-					{rec.tolerance !== null ? ` (tolerance ${rec.tolerance})` : ""} — must
-					tie out
+					{rec.tolerance !== null ? ` (tolerance ${rec.tolerance})` : ""} —{" "}
+					{reconciliationState(rec)}
 				</Text>
 			))}
 			{concept.groundings.length === 0 && (

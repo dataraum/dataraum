@@ -1,14 +1,14 @@
-// Real in-process DuckDB integration for connect's FILE path (DAT-386/DAT-381).
+// Real in-process DuckDB integration for the file sniff (DAT-386/DAT-381).
 //
-// connect's file path now accepts ONLY an `s3://<bucket>/<key>` URI — local
-// paths are an arbitrary-file-read hole and are refused (DAT-386). So the file
-// round-trip is proven against a real object staged in SeaweedFS (gated below);
-// the rejection of a local path is asserted hermetically. The database path is
-// unit-tested with a mocked probe (connect.test.ts); probe's own ATTACH
-// round-trip is probe.integration.
+// The sniff accepts ONLY an `s3://<bucket>/<key>` URI — local paths are an
+// arbitrary-file-read hole and are refused (DAT-386). So the file round-trip is
+// proven against a real object staged in SeaweedFS (gated below); the rejection
+// of a local path is asserted hermetically. The external-source ATTACH
+// machinery it used to share with the retired database branch is covered by
+// probe.integration.
 //
-// Importing connect transitively boots config.ts (via probe), so we stub the
-// required env before the dynamic import — same approach as teach.integration.
+// Importing the module boots config.ts, so we stub the required env before the
+// dynamic import — same approach as teach.integration.
 
 import { beforeAll, describe, expect, it } from "vitest";
 
@@ -21,15 +21,15 @@ import {
 applyIntegrationEnv();
 
 // biome-ignore lint/suspicious/noExplicitAny: dynamic-imported module shape
-let connect: any;
+let sniffFileSchema: any;
 
 beforeAll(async () => {
 	// Dynamic import so the env stub above is in place before config.ts loads.
-	({ connect } = await import("./connect"));
+	({ sniffFileSchema } = await import("./connect"));
 });
 
-describe("connect file path rejects non-bucket paths (DAT-386)", () => {
-	// Real boot of connect() (config.ts loaded): a local path must be refused
+describe("the file sniff rejects non-bucket paths (DAT-386)", () => {
+	// Real boot of the module (config.ts loaded): a local path must be refused
 	// before any DuckDB work — proves the validator is wired into the live module,
 	// not just the unit mock. This is the arbitrary-file-read fix.
 	it.each([
@@ -37,15 +37,15 @@ describe("connect file path rejects non-bucket paths (DAT-386)", () => {
 		"/app/.env",
 		"../foo.csv",
 		"file:///etc/passwd",
-	])("rejects connect(file, path=%s)", async (path: string) => {
-		await expect(connect({ source_kind: "file", path })).rejects.toThrow();
+	])("rejects sniffFileSchema(%s)", async (path: string) => {
+		await expect(sniffFileSchema(path)).rejects.toThrow();
 	});
 });
 
-// connect's s3:// FILE path (DAT-386): stage a CSV to the SAME SeaweedFS bucket
-// via the real @aws-lite PutObject, then sniff it over `s3://` through the SAME
-// ConnectSchema — proving the upload→bucket→connect round-trip end-to-end and
-// that connectFile registers the S3 secret for s3:// paths. Gated on a reachable
+// The s3:// file path (DAT-386): stage a CSV to the SAME SeaweedFS bucket via
+// the real @aws-lite PutObject, then sniff it over `s3://` into a
+// `ConnectSchema` — proving the upload→bucket→sniff round-trip end-to-end and
+// that the sniff registers the S3 secret for s3:// paths. Gated on a reachable
 // SeaweedFS S3 gateway (compose stack up); self-skips otherwise so the default
 // integration run on a bare checkout stays green.
 const S3_ENDPOINT = process.env.S3_ENDPOINT ?? "127.0.0.1:8333";
@@ -85,7 +85,7 @@ async function seaweedReachable(): Promise<boolean> {
 
 describe.skipIf(!S3_CREDENTIALED)(
 	suiteTitle(
-		"connect s3:// path against live SeaweedFS (DAT-386)",
+		"file sniff over s3:// against live SeaweedFS (DAT-386)",
 		S3_SKIP_REASON,
 	),
 	() => {
@@ -115,7 +115,7 @@ describe.skipIf(!S3_CREDENTIALED)(
 			);
 
 			const uri = buildUploadUri(S3_BUCKET, key);
-			const schema = await connect({ source_kind: "file", path: uri });
+			const schema = await sniffFileSchema(uri);
 
 			expect(schema.sourceKind).toBe("file");
 			expect(schema.source).toBe(uri);

@@ -43,7 +43,6 @@ export const sourcesWrite = pgTable("sources", {
 	updatedAt: timestamp("updated_at", { mode: "date" }).notNull(),
 	stage: varchar("stage"),
 	backend: varchar("backend"),
-	discoveredSchema: jsonb("discovered_schema"),
 	archivedAt: timestamp("archived_at", { mode: "date" }),
 });
 

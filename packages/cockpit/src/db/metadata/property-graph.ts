@@ -54,6 +54,19 @@ export const OPERATING_MODEL_GRAPH = "operating_model";
  * Returns rows exactly as Postgres names the `COLUMNS` aliases — this bypasses
  * Drizzle's schema-driven camelCase mapping (there is no declared schema for a
  * graph projection), so callers own their own alias spelling.
+ *
+ * **INJECTION WARNING — read before threading a request-derived value (a
+ * snippet id, a concept name) into a MATCH clause.** `sql.raw(str)` and a
+ * parametrized `` sql`...` `` template both produce the SAME nominal `SQL`
+ * type — this signature cannot tell them apart, and neither can the compiler
+ * at a call site. A dynamic value MUST ride inside a NESTED `` sql`...${value}` ``
+ * fragment composed into `matchAndColumns` (Drizzle binds it as a real
+ * parameter there); it must NEVER be string-concatenated into `sql.raw(...)` —
+ * that reintroduces exactly the SQL-injection class parametrization exists to
+ * close, and nothing here will flag it. `sql.raw` is for STATIC
+ * pattern/label/column syntax only (see the worked example in
+ * `property-graph.integration.test.ts` for both idioms side by side — one
+ * static `MATCH`, one filtered on a bound value).
  */
 export async function queryOperatingModelGraph<
 	TRow extends Record<string, unknown> = Record<string, unknown>,

@@ -78,5 +78,28 @@ describe.skipIf(!fx.available)(
 				["revenue", "snip_revenue"],
 			]);
 		});
+
+		it("binds a value through a NESTED sql fragment into the MATCH's WHERE — the idiom future callers MUST copy", async () => {
+			// The precedent property-graph.ts's header warns about: `sql.raw()` is
+			// for STATIC pattern/label syntax only. Any request-derived value (here
+			// standing in for a snippet/concept id R2/R3 will thread through) rides
+			// a nested `` sql`...${value}` `` fragment instead, composed into the
+			// MATCH/COLUMNS argument, which is itself composed into the outer
+			// GRAPH_TABLE template inside queryOperatingModelGraph — two levels of
+			// composition, both binding the value as a real parameter rather than
+			// interpolating it into raw text.
+			const conceptName = "revenue";
+			const nameFilter = sqlTag`c.name = ${conceptName}`;
+			const rows = await queryOperatingModelGraph<{
+				concept_name: string;
+				snippet_id: string;
+			}>(
+				sqlTag`MATCH (c IS concept_node WHERE ${nameFilter})-[e IS grounded_by]->(g IS grounding_node)
+				       COLUMNS (c.name AS concept_name, g.snippet_id AS snippet_id)`,
+			);
+			expect(rows.map((r) => [r.concept_name, r.snippet_id])).toEqual([
+				["revenue", "snip_revenue"],
+			]);
+		});
 	},
 );

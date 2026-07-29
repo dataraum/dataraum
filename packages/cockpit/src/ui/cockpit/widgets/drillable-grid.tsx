@@ -65,6 +65,7 @@ import {
 } from "lucide-react";
 import { type ReactNode, useEffect, useMemo, useRef, useState } from "react";
 import type { ChartConfig } from "#/charts/chart-config";
+import { useChartData } from "#/charts/use-chart-data";
 import {
 	DRILL_GUIDANCE_TIMEOUT_MS,
 	type DrillAxesRequest,
@@ -92,7 +93,18 @@ import { WindowedGrid } from "#/ui/cockpit/widgets/result-grid";
 type SqlParams = (string | number | boolean | null)[];
 
 type ComposeResponse =
-	| { ok: true; sql: string; params: SqlParams }
+	| {
+			ok: true;
+			sql: string;
+			params: SqlParams;
+			/** The UNDRILLED scalar, projected with its operand components — the
+			 *  footer row's statement. Served by the parts path on every
+			 *  composition (an answer grid has no open call) and by the node path
+			 *  on its open one, which the analyse overlay reads for itself and
+			 *  hands back as `footerCells`. Absent when the composition has no
+			 *  honest total to show. */
+			totals?: { sql: string };
+	  }
 	| { ok: false; reason: string };
 
 async function postJson<T>(
@@ -378,6 +390,13 @@ export function DrillableGrid({
 		sql: string;
 		params: SqlParams;
 	} | null>(null);
+	// The footer statement the LAST accepted composition served (DAT-671 R2).
+	// Kept beside `composed` because it belongs to the same response: a drill
+	// that was accepted is a drill whose undrilled total is still the honest
+	// anchor for what is now on screen.
+	const [composedTotalsSql, setComposedTotalsSql] = useState<string | null>(
+		null,
+	);
 	const [refusal, setRefusal] = useState<string | null>(null);
 	// A REHYDRATE-specific notice (DAT-676), distinct from `refusal`: a live
 	// apply's refusal is the user's OWN action failing right now (dismissable,
@@ -386,9 +405,24 @@ export function DrillableGrid({
 	// this says why, once, on mount.
 	const [rehydrateNotice, setRehydrateNotice] = useState<string | null>(null);
 
+	// The axes request CARRIES THE DRILL STACK on a parts-at-source grid
+	// (DAT-671 R2). Without it the server could not know what this grid has
+	// already sliced by, so an axis the practitioner just used came back offered
+	// and was greyed here, client-side, with no reason text and no tooltip — a
+	// dead menu item explaining nothing. Sending the steps makes "still worth
+	// offering?" one server-side answer WITH its reason. It also re-keys the
+	// query per drill, which is the point: the menu is drill-dependent.
+	const resolvedAxesRequest = useMemo(
+		() =>
+			"partsSources" in axesRequest && steps.length > 0
+				? { ...axesRequest, steps }
+				: axesRequest,
+		[axesRequest, steps],
+	);
 	const axesQuery = useQuery({
-		queryKey: ["drill-axes", axesRequest],
-		queryFn: () => postJson<DrillAxesResult>("/api/drill/axes", axesRequest),
+		queryKey: ["drill-axes", resolvedAxesRequest],
+		queryFn: () =>
+			postJson<DrillAxesResult>("/api/drill/axes", resolvedAxesRequest),
 		staleTime: 60_000,
 	});
 	const axes = axesQuery.data?.axes ?? [];
@@ -526,6 +560,7 @@ export function DrillableGrid({
 				const nextPinCount = candidate.filter((s) => s.kind === "pin").length;
 				setSteps(candidate);
 				setComposed({ sql: result.sql, params: result.params });
+				setComposedTotalsSql(result.totals?.sql ?? null);
 				setRefusal(null);
 				onStepsChange?.(candidate, {
 					sql: result.sql,
@@ -590,6 +625,7 @@ export function DrillableGrid({
 			if (result.ok) {
 				setSteps(initialSteps);
 				setComposed({ sql: result.sql, params: result.params });
+				setComposedTotalsSql(result.totals?.sql ?? null);
 				onStepsChange?.(initialSteps, {
 					sql: result.sql,
 					params: result.params,
@@ -615,6 +651,7 @@ export function DrillableGrid({
 			// still-in-flight compose so it can't resurrect the cleared drill.
 			setSteps([]);
 			setComposed(null);
+			setComposedTotalsSql(null);
 			setRefusal(null);
 			onStepsChange?.([], { sql, params: baseParams });
 			onRowHover?.(null);
@@ -663,13 +700,18 @@ export function DrillableGrid({
 				}
 			: undefined;
 
-	// Grain is a NODE-path capability. composeNodeQuery can bucket for the answer
-	// path too, but nothing may: time bucketing is only honest under an
-	// additivity verdict, and an answer's ad-hoc concept has none — so the answer
-	// axes resolver withholds the grain and `/api/drill/parts` refuses a grained
-	// step, exactly like tier A. On both of those paths a temporal axis slices
-	// raw and no grain control renders.
-	const grainable = source?.kind === "node";
+	// Grain is a capability of RECOMPOSING AT SOURCE — node or parts, the two
+	// paths that rebuild from clause parts and can therefore bucket the raw
+	// column before aggregating (DAT-671 R2; it used to be node-only, which made
+	// an answer's month grain a path privilege rather than a data one). Tier A is
+	// excluded for a structural reason, not a doctrinal one: it WRAPS an already
+	// aggregated result, so there is no raw date left to bucket, and
+	// `/api/drill/compose` refuses a grained step outright.
+	//
+	// WHETHER a given axis may be bucketed is not decided here at all — the axes
+	// resolver withholds `temporal` (with a reason) unless the engine's verdict
+	// licenses it, so `axis.temporal !== null` below is the data-driven half.
+	const grainable = source !== undefined;
 
 	/** Slice a fresh axis — temporal axes start at the default grain. */
 	const slice = (axis: DrillAxis) => {
@@ -785,12 +827,30 @@ export function DrillableGrid({
 		</>
 	);
 
+	// The footer's own row, when the composition served its statement (DAT-671
+	// R2 — the answer path). One bounded query on the shared chart-data cache,
+	// exactly how the analyse overlay fetches the node path's.
+	const totalsQuery = useChartData(
+		composedTotalsSql ?? "",
+		[],
+		composedTotalsSql !== null,
+	);
+
 	// The total row anchors a DRILLED view; the undrilled grid IS the scalar, so
 	// a footer there would duplicate the single row. A recomputed value (ratio,
 	// average) PRINTS its real total — it is the formula over the carrier totals
 	// beside it, the same number the header shows — and the label below says so
 	// (DAT-857; lead ruling 2026-07-29 retired the dash mask).
-	const footerRow = steps.length > 0 ? footerCells : undefined;
+	//
+	// A caller-supplied row WINS: the analyse overlay reads the node path's open
+	// call for its own equation header and hands the same row down, so honouring
+	// its copy keeps the header and the footer showing one number rather than two
+	// fetches of it.
+	const footerRow =
+		steps.length > 0
+			? (footerCells ??
+				(totalsQuery.data?.rows[0] as Record<string, Json | null> | undefined))
+			: undefined;
 	const recomputedTotal =
 		steps.length > 0 &&
 		totalIsRecomputed(steps, axes, axesQuery.data?.reconciles);

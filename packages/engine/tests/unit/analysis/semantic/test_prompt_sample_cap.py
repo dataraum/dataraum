@@ -14,12 +14,17 @@ from __future__ import annotations
 
 import json
 from datetime import UTC, datetime
+from unittest.mock import MagicMock, patch
+
+import pytest
 
 from dataraum.analysis.semantic.agent import SemanticAgent
 from dataraum.analysis.semantic.column_agent import ColumnAnnotationAgent
+from dataraum.analysis.semantic.ontology import OntologyConcept, OntologyDefinition
 from dataraum.analysis.semantic.utils import prompt_samples
 from dataraum.analysis.statistics.models import ColumnProfile, ValueCount
-from dataraum.core.models.base import ColumnRef
+from dataraum.core.models.base import ColumnRef, Result
+from dataraum.llm.config import load_llm_config
 
 _STORED = 200  # phases/statistics.yaml: top_k_values
 _BUDGET = 10  # llm/config.yaml: privacy.max_sample_values
@@ -37,6 +42,11 @@ def _profile(table: str, column: str, *, stored: int = _STORED) -> ColumnProfile
         cardinality_ratio=0.5,
         top_values=[ValueCount(value=-3900.0 - i, count=2, percentage=0.2) for i in range(stored)],
     )
+
+
+def test_shipped_config_declares_the_budget() -> None:
+    """The cap is CONFIGURED, not implicit in a default (DAT-890)."""
+    assert load_llm_config().privacy.max_sample_values == _BUDGET
 
 
 def test_prompt_samples_applies_the_budget() -> None:
@@ -82,3 +92,97 @@ def test_semantic_per_table_tables_json_carries_at_most_the_budget() -> None:
     (table,) = tables_json
     for col in table["columns"]:
         assert len(col["sample_values"]) <= _BUDGET
+
+
+# --- Wiring: the REAL config value must be what reaches prompt_samples --------
+#
+# The tests above prove the helper caps and that a capped dict yields a small
+# prompt — but both feed the limit in by hand. Nothing there would catch the
+# actual defect class: an agent passing a hardcoded number, the wrong config
+# path, or no limit at all. These two spy on the call the agent really makes,
+# with the config loaded from disk exactly as the worker loads it.
+
+
+@pytest.fixture
+def real_budget() -> int:
+    """A SENTINEL budget, deliberately != the shipped value.
+
+    Asserting against the shipped 10 would be satisfied by a hardcoded ``10``
+    at the call site — exactly the defect these tests exist to catch. Offsetting
+    it means only a value that genuinely travelled from the config object can
+    match.
+    """
+    return load_llm_config().privacy.max_sample_values + 7
+
+
+def _stub_config(real: int) -> MagicMock:
+    config = MagicMock()
+    config.features.column_annotation = MagicMock(enabled=True, model_tier="balanced", effort=None)
+    config.features.semantic_analysis = MagicMock(enabled=True, model_tier="balanced", effort=None)
+    config.limits.max_output_tokens_per_request = 8192
+    config.privacy.max_sample_values = real
+    return config
+
+
+_ONTOLOGY = OntologyDefinition(
+    name="finance", concepts=[OntologyConcept(name="revenue", kind="measure")]
+)
+
+
+@patch("dataraum.analysis.semantic.column_agent.load_workspace_concepts")
+@patch("dataraum.analysis.semantic.column_agent.prompt_samples")
+def test_column_agent_passes_the_configured_budget(
+    spy: MagicMock, concepts: MagicMock, real_budget: int
+) -> None:
+    """``column_annotation``'s limit is the loaded config's, not a literal."""
+    concepts.return_value = _ONTOLOGY
+    spy.return_value = {}
+    provider = MagicMock()
+    provider.get_model_for_tier.return_value = "claude-test"
+    provider.converse.return_value.unwrap.return_value = MagicMock(
+        content='{"tables": []}', stop_reason="end_turn", output_tokens=1
+    )
+    renderer = MagicMock()
+    renderer.render_split.return_value = ("sys", "user", 0.0)
+
+    agent = ColumnAnnotationAgent(
+        config=_stub_config(real_budget), provider=provider, prompt_renderer=renderer
+    )
+    agent.annotate(
+        session=MagicMock(),
+        table_ids=["t1"],
+        ontology="finance",
+        profiles=[_profile("orders", "amount")],
+    )
+
+    spy.assert_called_once()
+    assert spy.call_args.kwargs["limit"] == real_budget
+
+
+@patch("dataraum.analysis.semantic.agent.load_persisted_annotations", lambda s, t: [])
+@patch("dataraum.analysis.semantic.agent.load_workspace_concepts")
+@patch("dataraum.analysis.semantic.agent.prompt_samples")
+def test_semantic_per_table_passes_the_configured_budget(
+    spy: MagicMock, concepts: MagicMock, real_budget: int
+) -> None:
+    """``semantic_per_table`` shares the cut — same wiring, same source."""
+    concepts.return_value = _ONTOLOGY
+    spy.return_value = {}
+    provider = MagicMock()
+    provider.get_model_for_tier.return_value = "claude-test"
+    provider.converse.return_value.unwrap.return_value = MagicMock(
+        content='{"tables": [], "relationships": []}', stop_reason="end_turn", output_tokens=1
+    )
+    renderer = MagicMock()
+    renderer.render_split.return_value = ("sys", "user", 0.0)
+
+    agent = SemanticAgent(
+        config=_stub_config(real_budget), provider=provider, prompt_renderer=renderer
+    )
+    agent._load_profiles = MagicMock(  # type: ignore[method-assign]
+        return_value=Result.ok([_profile("orders", "amount")])
+    )
+    agent.synthesize_tables(session=MagicMock(), table_ids=["t1"], ontology="finance")
+
+    spy.assert_called_once()
+    assert spy.call_args.kwargs["limit"] == real_budget

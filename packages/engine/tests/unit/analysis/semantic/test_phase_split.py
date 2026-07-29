@@ -28,6 +28,7 @@ from dataraum.analysis.semantic.models import (
     TimeColumn,
 )
 from dataraum.analysis.semantic.processor import (
+    GroundingOutcome,
     persist_column_annotations,
     synthesize_and_store_tables,
 )
@@ -1218,3 +1219,29 @@ class TestTableSynthesisHelpers:
 
     def test_format_persisted_annotations_empty(self) -> None:
         assert "No prior column annotations" in SemanticAgent._format_persisted_annotations([])
+
+
+class TestGroundingOutcomeWarningClasses:
+    """Retries and dropped entries are DIFFERENT events (DAT-890).
+
+    They were briefly merged into one list that the phase summary rendered as
+    "runaway retries", so a run with zero retries that dropped one phantom
+    column reported "1 runaway retries" — an operator would chase a
+    cost/latency problem and never learn an annotation was lost.
+    """
+
+    def test_classes_stay_separate_and_flatten_for_the_channels(self) -> None:
+        outcome = GroundingOutcome(
+            annotations=91,
+            retries=["runaway on 8-table batch"],
+            disclosures=["named 1 column(s) that do not exist: general_ledger.unused"],
+        )
+        assert outcome.retries != outcome.disclosures
+        # PhaseResult.warnings and the activity log take the flat list.
+        assert outcome.warnings == [*outcome.retries, *outcome.disclosures]
+
+    def test_a_dropped_column_is_never_reported_as_a_retry(self) -> None:
+        """The pinned regression: zero retries, one drop."""
+        outcome = GroundingOutcome(annotations=91, disclosures=["dropped x.ghost"])
+        assert outcome.retries == []
+        assert len(outcome.warnings) == 1

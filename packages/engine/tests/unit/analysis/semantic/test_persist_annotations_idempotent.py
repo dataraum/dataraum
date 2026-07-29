@@ -217,3 +217,46 @@ def test_second_run_id_coexists(session_factory: Any) -> None:
         total = session.scalar(select(func.count()).select_from(SemanticAnnotation))
     assert total == 2
     assert {r.run_id for r in rows} == {"run-A", "run-B"}
+
+
+def test_duplicate_failure_still_reports_earlier_phantoms(session_factory: Any) -> None:
+    """A failure must not swallow disclosures the same response already earned.
+
+    The duplicate returns immediately, so phantoms collected BEFORE it would
+    otherwise exist only in the structured log — and the operator reads the
+    error. Mirrors ``column_agent._fail_with_retries``, which carries spent
+    retries into its own failure message for the same reason.
+    """
+    _seed_table_and_column(session_factory)
+    good = _output("measure").tables[0].columns[0]
+    mixed = ColumnAnnotationOutput(
+        tables=[
+            TableColumnAnnotation(
+                table_name="orders",
+                columns=[
+                    ColumnSemanticOutput(
+                        column_name="ghost_col",  # phantom, seen FIRST
+                        semantic_role="attribute",
+                        entity_type="x",
+                        business_term="X",
+                        description="d",
+                        confidence=0.1,
+                        temporal_behavior_claim="unsure",
+                        temporal_behavior_claim_confidence=0.1,
+                    ),
+                    good,
+                    good,  # duplicate, fails the call
+                ],
+            )
+        ]
+    )
+
+    with session_factory() as session:
+        result = persist_column_annotations(
+            session, mixed, ["tbl-1"], annotated_by="m", run_id="run-A"
+        )
+
+    assert not result.success
+    assert result.error is not None
+    assert "more than once" in result.error  # the failure itself
+    assert "orders.ghost_col" in result.error  # AND the disclosure it would have lost

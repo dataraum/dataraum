@@ -1,60 +1,60 @@
+// Unit coverage for the concept graph's PURE half — the model's folds and the
+// `<business_concepts>` render (DAT-737/739, extended with the verdict/DAG
+// lines in DAT-671 R3).
+//
+// The graph is now READ, not rebuilt: what used to be `buildConceptGraph`'s
+// assembly (active-row filtering, edge-endpoint resolution, the
+// grounding↔concept join, the `part_of` closure) is served by the engine's own
+// element views, so its behaviour is pinned against the REAL Postgres 19
+// property graph in `concept-graph-load.integration.test.ts` instead of against
+// an in-memory fixture. What remains here is what stays pure: the
+// reconciliation fold, and every wording the block commits to.
+
 import { describe, expect, it } from "vitest";
 
 import {
-	buildConceptGraph,
-	type ConceptEdgeRow,
+	type ConceptAdditivity,
 	type ConceptGraph,
-	type ConceptGraphInput,
+	type ConceptGraphNode,
 	type ConceptReconciliation,
-	type ConceptRow,
+	type DerivedMetric,
+	foldReconciliations,
+	formatAdditivity,
 	formatConceptContext,
-	type GroundingRow,
 	isReusableGrounding,
 	parseWherePredicates,
 	pyG,
 	type ReconciliationRow,
+	reconciliationFor,
 } from "./concept-graph";
 
-function concept(
-	overrides: Partial<ConceptRow> & { name: string },
-): ConceptRow {
+/** One node with every list empty — the render cases below each fill in only
+ *  the field they are about, so a wording assertion can never accidentally
+ *  depend on a neighbouring section. */
+function node(
+	overrides: Partial<ConceptGraphNode> & { name: string },
+): ConceptGraphNode {
 	return {
-		conceptId: `id:${overrides.name}`,
+		conceptId: `cpt_${overrides.name}`,
 		kind: null,
 		description: null,
-		indicators: null,
-		excludePatterns: null,
-		supersededAt: null,
+		indicators: [],
+		excludePatterns: [],
+		partOfParents: [],
+		partOfChildren: [],
+		partOfAncestry: [],
+		disjointWith: [],
+		reconcilesWith: [],
+		groundings: [],
+		additivity: [],
+		derivedMetrics: [],
 		...overrides,
 	};
 }
 
-function edge(
-	overrides: Partial<ConceptEdgeRow> & {
-		predicate: string;
-		fromConcept: string;
-		toConcept: string;
-	},
-): ConceptEdgeRow {
-	return {
-		edgeId: `${overrides.fromConcept}->${overrides.toConcept}:${overrides.predicate}`,
-		tolerance: null,
-		supersededAt: null,
-		...overrides,
-	};
-}
+const graphOf = (...nodes: ConceptGraphNode[]): ConceptGraph => ({ nodes });
 
-/** `buildConceptGraph` with the DAT-739 reconciliation rows defaulted empty —
- *  most cases here predate the evaluated state and assert structure, not the
- *  tie-out fold (which has its own suite below). */
-function build(
-	input: Omit<ConceptGraphInput, "reconciliations"> &
-		Partial<Pick<ConceptGraphInput, "reconciliations">>,
-): ConceptGraph {
-	return buildConceptGraph({ reconciliations: [], ...input });
-}
-
-/** A never-evaluated assertion, as the builder emits it when no promoted run
+/** A never-evaluated assertion, as the loader emits it when no promoted run
  *  carries a row for the pair. */
 function unevaluated(
 	partner: string,
@@ -91,384 +91,30 @@ function recRow(
 	};
 }
 
-function grounding(
-	overrides: Partial<GroundingRow> & { concept: string },
-): GroundingRow {
+/** One class-level verdict with the engine's own defaults. */
+function verdict(
+	overrides: Partial<ConceptAdditivity> & { axisKind: string },
+): ConceptAdditivity {
 	return {
-		snippetId: `snippet:${overrides.concept}:${Math.random()}`,
-		statement: null,
-		relation: null,
-		selectExpr: null,
-		wherePredicates: null,
-		failed: false,
-		provenance: null,
+		axisKey: "*",
+		status: "classified",
+		verdict: "additive",
+		reason: null,
+		abstainReason: null,
+		bucketGrain: null,
 		...overrides,
 	};
 }
 
-/** A part_of CHAIN of `length` edges: names[0] part_of names[1] part_of … —
- *  used by the ancestry-depth tests below. */
-function chainOf(names: string[]): ConceptEdgeRow[] {
-	const edges: ConceptEdgeRow[] = [];
-	for (let i = 0; i < names.length - 1; i++) {
-		edges.push(
-			edge({
-				predicate: "part_of",
-				fromConcept: names[i],
-				toConcept: names[i + 1],
-			}),
-		);
-	}
-	return edges;
+function metric(overrides: Partial<DerivedMetric> & { graphId: string }) {
+	return {
+		name: overrides.graphId,
+		category: null,
+		unit: null,
+		outputType: null,
+		...overrides,
+	};
 }
-
-describe("buildConceptGraph", () => {
-	it("every active concept is a node, even with zero edges/groundings (no ungrounded-node regressions)", () => {
-		const graph = build({
-			concepts: [concept({ name: "revenue" })],
-			edges: [],
-			groundings: [],
-		});
-		expect(graph.nodes).toHaveLength(1);
-		expect(graph.nodes[0]).toMatchObject({
-			id: "concept:revenue",
-			name: "revenue",
-			groundings: [],
-			partOfParents: [],
-			disjointWith: [],
-			reconcilesWith: [],
-		});
-	});
-
-	it("drops a superseded concept entirely (not run-versioned — superseded_at is the identity gate)", () => {
-		const graph = build({
-			concepts: [
-				concept({ name: "old_revenue", supersededAt: new Date() }),
-				concept({ name: "revenue" }),
-			],
-			edges: [],
-			groundings: [],
-		});
-		expect(graph.nodes.map((n) => n.name)).toEqual(["revenue"]);
-	});
-
-	it("sorts nodes by name — the ONE place this order is decided (no consumer re-sorts)", () => {
-		const graph = build({
-			concepts: [
-				concept({ name: "revenue" }),
-				concept({ name: "assets" }),
-				concept({ name: "cogs" }),
-			],
-			edges: [],
-			groundings: [],
-		});
-		expect(graph.nodes.map((n) => n.name)).toEqual([
-			"assets",
-			"cogs",
-			"revenue",
-		]);
-	});
-
-	it("resolves part_of into parents (1-hop) and children (1-hop), directed and sorted", () => {
-		const graph = build({
-			concepts: [
-				concept({ name: "cash" }),
-				concept({ name: "current_assets" }),
-				concept({ name: "other_assets" }),
-			],
-			edges: [
-				edge({
-					predicate: "part_of",
-					fromConcept: "cash",
-					toConcept: "other_assets",
-				}),
-				edge({
-					predicate: "part_of",
-					fromConcept: "cash",
-					toConcept: "current_assets",
-				}),
-			],
-			groundings: [],
-		});
-		const cash = graph.nodes.find((n) => n.name === "cash");
-		const currentAssets = graph.nodes.find((n) => n.name === "current_assets");
-		// Two parents inserted "other_assets" then "current_assets" — sorted output.
-		expect(cash?.partOfParents).toEqual(["current_assets", "other_assets"]);
-		expect(cash?.partOfChildren).toEqual([]);
-		expect(currentAssets?.partOfChildren).toEqual(["cash"]);
-		expect(currentAssets?.partOfParents).toEqual([]);
-	});
-
-	it("walks bounded transitive part_of ancestry beyond the 1-hop parent, nearest-first", () => {
-		const graph = build({
-			concepts: [
-				concept({ name: "cash" }),
-				concept({ name: "current_assets" }),
-				concept({ name: "assets" }),
-				concept({ name: "balance_sheet" }),
-			],
-			edges: chainOf(["cash", "current_assets", "assets", "balance_sheet"]),
-			groundings: [],
-		});
-		const cash = graph.nodes.find((n) => n.name === "cash");
-		expect(cash?.partOfParents).toEqual(["current_assets"]);
-		expect(cash?.partOfAncestry).toEqual(["assets", "balance_sheet"]);
-	});
-
-	// CRITICAL: pins the boundary between PART_OF_ANCESTRY_DEPTH (=3, the
-	// number of hops WALKED beyond the 1-hop parent) and the engine's
-	// _PART_OF_MAX_DEPTH (=4, the TOTAL depth from the origin concept) — the
-	// two constants read like an off-by-one but agree on this exact boundary.
-	// A 5-deep chain: a→b→c→d→e→f (b=depth1 .. f=depth5). For "a": parents=[b],
-	// ancestry must include c,d,e (depths 2-4) and EXCLUDE f (depth 5).
-	it("pins the ancestry depth boundary — the 5th ancestor is excluded, matching the engine's _PART_OF_MAX_DEPTH=4", () => {
-		const names = ["a", "b", "c", "d", "e", "f"];
-		const graph = build({
-			concepts: names.map((n) => concept({ name: n })),
-			edges: chainOf(names),
-			groundings: [],
-		});
-		const a = graph.nodes.find((n) => n.name === "a");
-		expect(a?.partOfParents).toEqual(["b"]);
-		expect(a?.partOfAncestry).toEqual(["c", "d", "e"]);
-		expect(a?.partOfAncestry).not.toContain("f");
-	});
-
-	it("never hangs on a part_of cycle — the ancestry walk is bounded and cycle-safe", () => {
-		const graph = build({
-			concepts: [concept({ name: "a" }), concept({ name: "b" })],
-			edges: [
-				edge({ predicate: "part_of", fromConcept: "a", toConcept: "b" }),
-				edge({ predicate: "part_of", fromConcept: "b", toConcept: "a" }),
-			],
-			groundings: [],
-		});
-		const a = graph.nodes.find((n) => n.name === "a");
-		// b is the 1-hop parent; the cycle back to "a" must never appear (self-exclusion).
-		expect(a?.partOfParents).toEqual(["b"]);
-		expect(a?.partOfAncestry).toEqual([]);
-	});
-
-	it("reads disjoint_with directionally and sorted — no client-side symmetrization (the engine stores both directions itself)", () => {
-		const graph = build({
-			concepts: [
-				concept({ name: "asset" }),
-				concept({ name: "liability" }),
-				concept({ name: "equity" }),
-			],
-			edges: [
-				edge({
-					predicate: "disjoint_with",
-					fromConcept: "asset",
-					toConcept: "equity",
-				}),
-				edge({
-					predicate: "disjoint_with",
-					fromConcept: "asset",
-					toConcept: "liability",
-				}),
-			],
-			groundings: [],
-		});
-		const asset = graph.nodes.find((n) => n.name === "asset");
-		const liability = graph.nodes.find((n) => n.name === "liability");
-		expect(asset?.disjointWith).toEqual(["equity", "liability"]);
-		// Only one direction was written in this fixture — the builder must not invent the reverse.
-		expect(liability?.disjointWith).toEqual([]);
-	});
-
-	it("carries reconciles_with self-loops (multi-grounding tie-out) and cross-concept assertions, sorted by partner", () => {
-		const graph = build({
-			concepts: [
-				concept({ name: "account_balance" }),
-				concept({ name: "gl_balance" }),
-			],
-			edges: [
-				edge({
-					predicate: "reconciles_with",
-					fromConcept: "account_balance",
-					toConcept: "gl_balance",
-					tolerance: 0.01,
-				}),
-				edge({
-					predicate: "reconciles_with",
-					fromConcept: "account_balance",
-					toConcept: "account_balance",
-				}),
-			],
-			groundings: [],
-		});
-		const node = graph.nodes.find((n) => n.name === "account_balance");
-		expect(node?.reconcilesWith).toEqual([
-			unevaluated("account_balance"),
-			unevaluated("gl_balance", 0.01),
-		]);
-	});
-
-	it("drops an edge with a superseded or missing endpoint, never throws (dangling-reference safety)", () => {
-		const graph = build({
-			concepts: [concept({ name: "cash" })],
-			edges: [
-				edge({
-					predicate: "part_of",
-					fromConcept: "cash",
-					toConcept: "current_assets",
-				}),
-				edge({
-					predicate: "part_of",
-					fromConcept: "cash",
-					toConcept: "retired_concept",
-					supersededAt: new Date(),
-				}),
-			],
-			groundings: [],
-		});
-		expect(graph.nodes.find((n) => n.name === "cash")?.partOfParents).toEqual(
-			[],
-		);
-	});
-
-	it("drops an edge with an unrecognized predicate rather than miscategorizing it", () => {
-		const graph = build({
-			concepts: [concept({ name: "a" }), concept({ name: "b" })],
-			edges: [edge({ predicate: "same_as", fromConcept: "a", toConcept: "b" })],
-			groundings: [],
-		});
-		const a = graph.nodes.find((n) => n.name === "a");
-		expect(a?.partOfParents).toEqual([]);
-		expect(a?.disjointWith).toEqual([]);
-		expect(a?.reconcilesWith).toEqual([]);
-	});
-
-	it("carries multiple groundings for one concept (multi-groundings), matched by name, sorted (failed, relation, snippetId)", () => {
-		const graph = build({
-			concepts: [concept({ name: "account_balance" })],
-			edges: [],
-			groundings: [
-				grounding({
-					concept: "account_balance",
-					relation: "trial_balance",
-					snippetId: "s2",
-				}),
-				grounding({
-					concept: "account_balance",
-					relation: "balance_sheet",
-					snippetId: "s1",
-				}),
-				grounding({ concept: "other_concept", relation: "irrelevant" }),
-			],
-		});
-		const node = graph.nodes.find((n) => n.name === "account_balance");
-		expect(node?.groundings.map((g) => g.relation)).toEqual([
-			"balance_sheet",
-			"trial_balance",
-		]);
-	});
-
-	it("sorts groundings healthy-before-failed, then by relation, then snippetId", () => {
-		const graph = build({
-			concepts: [concept({ name: "account_balance" })],
-			edges: [],
-			groundings: [
-				grounding({
-					concept: "account_balance",
-					relation: "trial_balance",
-					failed: true,
-					snippetId: "s-failed",
-				}),
-				grounding({
-					concept: "account_balance",
-					relation: "balance_sheet",
-					failed: false,
-					snippetId: "s-healthy",
-				}),
-			],
-		});
-		const node = graph.nodes.find((n) => n.name === "account_balance");
-		expect(node?.groundings.map((g) => g.snippetId)).toEqual([
-			"s-healthy",
-			"s-failed",
-		]);
-	});
-
-	it("drops a grounding naming a concept that doesn't exist (or is superseded) — never fabricates a node for it", () => {
-		const graph = build({
-			concepts: [],
-			edges: [],
-			groundings: [grounding({ concept: "ghost_concept" })],
-		});
-		expect(graph.nodes).toHaveLength(0);
-	});
-
-	it("parses a failed grounding's provenance into failureMode/failureReason (rule 11 — defensive narrowing)", () => {
-		const graph = build({
-			concepts: [concept({ name: "account_balance" })],
-			edges: [],
-			groundings: [
-				grounding({
-					concept: "account_balance",
-					failed: true,
-					provenance: {
-						failure_mode: "no_support",
-						failure_reason: "0 rows matched",
-					},
-				}),
-				grounding({
-					concept: "account_balance",
-					failed: true,
-					snippetId: "no-provenance",
-					provenance: null,
-				}),
-				grounding({
-					concept: "account_balance",
-					failed: true,
-					snippetId: "malformed-provenance",
-					provenance: "not an object",
-				}),
-			],
-		});
-		const node = graph.nodes.find((n) => n.name === "account_balance");
-		const withDetail = node?.groundings.find(
-			(g) => g.failureMode === "no_support",
-		);
-		expect(withDetail?.failureReason).toBe("0 rows matched");
-		const noProvenance = node?.groundings.find(
-			(g) => g.snippetId === "no-provenance",
-		);
-		expect(noProvenance).toMatchObject({
-			failureMode: null,
-			failureReason: null,
-		});
-		const malformed = node?.groundings.find(
-			(g) => g.snippetId === "malformed-provenance",
-		);
-		expect(malformed).toMatchObject({ failureMode: null, failureReason: null });
-	});
-
-	it("narrows indicators/exclude_patterns json columns defensively (rule 11) — non-array or absent yields []", () => {
-		const graph = build({
-			concepts: [
-				concept({
-					name: "revenue",
-					indicators: ["income", "sales"],
-					excludePatterns: null,
-				}),
-				concept({
-					name: "cost",
-					indicators: "not-an-array",
-					excludePatterns: undefined,
-				}),
-			],
-			edges: [],
-			groundings: [],
-		});
-		expect(graph.nodes.find((n) => n.name === "revenue")?.indicators).toEqual([
-			"income",
-			"sales",
-		]);
-		expect(graph.nodes.find((n) => n.name === "cost")?.indicators).toEqual([]);
-	});
-});
 
 describe("isReusableGrounding", () => {
 	it("is false for a healthy grounding with no relation (a pre-parts row the engine also skips)", () => {
@@ -524,42 +170,17 @@ describe("formatConceptContext", () => {
 		expect(formatConceptContext({ nodes: [] })).toBe("");
 	});
 
-	it("renders name/kind/description in the given (builder-sorted) node order", () => {
-		const graph: ConceptGraph = {
-			nodes: [
-				{
-					id: "concept:assets",
-					conceptId: "id:assets",
-					name: "assets",
-					kind: null,
-					description: null,
-					indicators: [],
-					excludePatterns: [],
-					partOfParents: [],
-					partOfChildren: [],
-					partOfAncestry: [],
-					disjointWith: [],
-					reconcilesWith: [],
-					groundings: [],
-				},
-				{
-					id: "concept:revenue",
-					conceptId: "id:revenue",
+	it("renders name/kind/description in the given (loader-sorted) node order", () => {
+		const text = formatConceptContext(
+			graphOf(
+				node({ name: "assets" }),
+				node({
 					name: "revenue",
 					kind: "measure",
 					description: "Recognized income",
-					indicators: [],
-					excludePatterns: [],
-					partOfParents: [],
-					partOfChildren: [],
-					partOfAncestry: [],
-					disjointWith: [],
-					reconcilesWith: [],
-					groundings: [],
-				},
-			],
-		};
-		const text = formatConceptContext(graph);
+				}),
+			),
+		);
 		expect(text).toContain("<business_concepts>");
 		expect(text.indexOf("- assets")).toBeLessThan(
 			text.indexOf("- revenue (measure)"),
@@ -568,26 +189,18 @@ describe("formatConceptContext", () => {
 	});
 
 	it("renders part_of with the ancestry arrow, subconcepts, disjoint_with, and both reconciliation wordings", () => {
-		const graph: ConceptGraph = {
-			nodes: [
-				{
-					id: "concept:cash",
-					conceptId: "id:cash",
+		const text = formatConceptContext(
+			graphOf(
+				node({
 					name: "cash",
-					kind: null,
-					description: null,
-					indicators: [],
-					excludePatterns: [],
 					partOfParents: ["current_assets"],
 					partOfChildren: ["petty_cash"],
 					partOfAncestry: ["assets", "balance_sheet"],
 					disjointWith: ["liability"],
 					reconcilesWith: [unevaluated("cash"), unevaluated("gl_cash", 0.01)],
-					groundings: [],
-				},
-			],
-		};
-		const text = formatConceptContext(graph);
+				}),
+			),
+		);
 		expect(text).toContain(
 			"part of: current_assets (→ assets → balance_sheet)",
 		);
@@ -600,21 +213,10 @@ describe("formatConceptContext", () => {
 	});
 
 	it("renders reusable healthy groundings under 'grounded by:' and each failed grounding discriminated by mode/reason", () => {
-		const graph: ConceptGraph = {
-			nodes: [
-				{
-					id: "concept:account_balance",
-					conceptId: "id:account_balance",
+		const text = formatConceptContext(
+			graphOf(
+				node({
 					name: "account_balance",
-					kind: null,
-					description: null,
-					indicators: [],
-					excludePatterns: [],
-					partOfParents: [],
-					partOfChildren: [],
-					partOfAncestry: [],
-					disjointWith: [],
-					reconcilesWith: [],
 					groundings: [
 						{
 							snippetId: "s1",
@@ -637,10 +239,9 @@ describe("formatConceptContext", () => {
 							failureReason: "0 rows matched the filter",
 						},
 					],
-				},
-			],
-		};
-		const text = formatConceptContext(graph);
+				}),
+			),
+		);
 		expect(text).toContain(
 			"grounded by:\n    - ending balance @ trial_balance: SUM(ending_balance) WHERE account_type = 'asset'",
 		);
@@ -651,21 +252,10 @@ describe("formatConceptContext", () => {
 	});
 
 	it("skips a healthy-but-relation-less grounding from 'grounded by:' and discloses the skip (matching the engine's own skip)", () => {
-		const graph: ConceptGraph = {
-			nodes: [
-				{
-					id: "concept:account_balance",
-					conceptId: "id:account_balance",
+		const text = formatConceptContext(
+			graphOf(
+				node({
 					name: "account_balance",
-					kind: null,
-					description: null,
-					indicators: [],
-					excludePatterns: [],
-					partOfParents: [],
-					partOfChildren: [],
-					partOfAncestry: [],
-					disjointWith: [],
-					reconcilesWith: [],
 					groundings: [
 						{
 							snippetId: "s-no-relation",
@@ -678,10 +268,9 @@ describe("formatConceptContext", () => {
 							failureReason: null,
 						},
 					],
-				},
-			],
-		};
-		const text = formatConceptContext(graph);
+				}),
+			),
+		);
 		expect(text).not.toContain("grounded by:");
 		expect(text).toContain(
 			"1 grounding(s) recorded with no relation — not reusable, omitted",
@@ -689,21 +278,10 @@ describe("formatConceptContext", () => {
 	});
 
 	it("renders a failure with no recorded detail using the honest fallback wording", () => {
-		const graph: ConceptGraph = {
-			nodes: [
-				{
-					id: "concept:x",
-					conceptId: "id:x",
+		const text = formatConceptContext(
+			graphOf(
+				node({
 					name: "x",
-					kind: null,
-					description: null,
-					indicators: [],
-					excludePatterns: [],
-					partOfParents: [],
-					partOfChildren: [],
-					partOfAncestry: [],
-					disjointWith: [],
-					reconcilesWith: [],
 					groundings: [
 						{
 							snippetId: "s1",
@@ -716,11 +294,120 @@ describe("formatConceptContext", () => {
 							failureReason: null,
 						},
 					],
-				},
-			],
-		};
-		const text = formatConceptContext(graph);
+				}),
+			),
+		);
 		expect(text).toContain("failed attempt [failed]: (no reason recorded)");
+	});
+});
+
+// --- DAT-671 R3: the verdict + metric-DAG lines ------------------------------
+// The answer agent used to compose SQL blind to the additivity verdict the
+// drill would then gate it by. These are the lines that close that gap, so the
+// wording has to survive: an ABSENT verdict must read as "no verdict", never as
+// permission, and an ABSTAINED one must never read as a "no".
+
+describe("formatAdditivity (DAT-671 R3)", () => {
+	it("names the axis CLASS for a '*' row and the COLUMN for a concrete one", () => {
+		expect(formatAdditivity(verdict({ axisKind: "time" }))).toContain(
+			"any time axis",
+		);
+		expect(
+			formatAdditivity(verdict({ axisKind: "categorical", axisKey: "region" })),
+		).toContain('categorical axis "region"');
+	});
+
+	it("carries the doctrine reason and the bucket cadence for a non-additive verdict", () => {
+		expect(
+			formatAdditivity(
+				verdict({
+					axisKind: "time",
+					verdict: "semi_additive",
+					reason: "stock",
+					bucketGrain: "month",
+				}),
+			),
+		).toBe(
+			"any time axis — semi_additive (stock), bucketable no finer than month",
+		);
+	});
+
+	it("says an abstention was NOT JUDGED, never that the answer is no", () => {
+		const text = formatAdditivity(
+			verdict({
+				axisKind: "categorical",
+				status: "abstained",
+				verdict: null,
+				abstainReason: "unknown_aggregate",
+			}),
+		);
+		expect(text).toContain("NOT CLASSIFIED (unknown_aggregate)");
+		expect(text).toContain("not the same as a no");
+	});
+
+	it("names the abstention honestly when the engine recorded no reason", () => {
+		expect(
+			formatAdditivity(
+				verdict({ axisKind: "time", status: "abstained", verdict: null }),
+			),
+		).toContain("NOT CLASSIFIED (no reason recorded)");
+	});
+});
+
+describe("verdict + derives_from in the block (DAT-671 R3)", () => {
+	it("renders one additivity line per verdict and tells the model what it means", () => {
+		const text = formatConceptContext(
+			graphOf(
+				node({
+					name: "revenue",
+					additivity: [
+						verdict({ axisKind: "categorical" }),
+						verdict({ axisKind: "time", bucketGrain: "month" }),
+					],
+				}),
+			),
+		);
+		expect(text).toContain("- additivity: any categorical axis — additive");
+		expect(text).toContain(
+			"- additivity: any time axis — additive, bucketable no finer than month",
+		);
+		// The preamble has to state the CONSEQUENCE, not just the vocabulary:
+		// this block is what the drill enforces against.
+		expect(text).toContain("it is what the drill ENFORCES on a result");
+		expect(text).toContain("never SUM across periods");
+	});
+
+	it("says NOTHING for a concept the engine classified nothing for — absence is not a verdict", () => {
+		const text = formatConceptContext(graphOf(node({ name: "revenue" })));
+		expect(text).not.toContain("- additivity:");
+		// …but the preamble still tells the model how to read that silence.
+		expect(text).toContain("carries no verdict at all");
+	});
+
+	it("names each metric this concept feeds, id first, with its category/output/unit", () => {
+		const text = formatConceptContext(
+			graphOf(
+				node({
+					name: "revenue",
+					derivedMetrics: [
+						metric({
+							graphId: "gross_margin",
+							name: "Gross Margin",
+							category: "profitability",
+							unit: "percent",
+							outputType: "ratio",
+						}),
+						metric({ graphId: "burn_rate" }),
+					],
+				}),
+			),
+		);
+		expect(text).toContain(
+			"- feeds metric: gross_margin (profitability, ratio in percent)",
+		);
+		// A metric with no category/unit/output renders bare rather than with an
+		// empty parenthetical.
+		expect(text).toContain("- feeds metric: burn_rate\n");
 	});
 });
 
@@ -731,108 +418,87 @@ describe("formatConceptContext", () => {
 // assertion) — dropping the TS mirror-key line must fail here.
 
 describe("reconciliation fold", () => {
-	const selfLoop = (name: string) =>
-		edge({ predicate: "reconciles_with", fromConcept: name, toConcept: name });
-	const pair = (frm: string, to: string) =>
-		edge({ predicate: "reconciles_with", fromConcept: frm, toConcept: to });
-
 	it("serves ONE evaluation to BOTH endpoints of a partner assertion (mirror key)", () => {
-		const graph = build({
-			concepts: [concept({ name: "ap" }), concept({ name: "purchases" })],
-			// Both directions stored (concept_edges contract) — one evaluation.
-			edges: [pair("ap", "purchases"), pair("purchases", "ap")],
-			groundings: [],
-			reconciliations: [
-				recRow({
-					fromConcept: "ap",
-					toConcept: "purchases",
-					delta: "500",
-					relativeDelta: "0.05",
-				}),
-			],
-		});
-		const [ap, purchases] = graph.nodes;
-		expect(ap.reconcilesWith[0].status).toBe("evaluated");
-		expect(purchases.reconcilesWith[0].status).toBe("evaluated");
-		expect(purchases.reconcilesWith[0].observedDelta).toBe(500);
-		expect(purchases.reconcilesWith[0].relativeDelta).toBe(0.05);
+		// Only ONE direction is evaluated and stored, but concept_edges holds both
+		// — so the loader must find the observation from either side.
+		const folds = foldReconciliations([
+			recRow({
+				fromConcept: "ap",
+				toConcept: "purchases",
+				delta: "500",
+				relativeDelta: "0.05",
+			}),
+		]);
+		const forward = reconciliationFor(folds, "ap", "purchases");
+		const mirrored = reconciliationFor(folds, "purchases", "ap");
+		expect(forward?.status).toBe("evaluated");
+		expect(mirrored?.status).toBe("evaluated");
+		expect(mirrored?.observedDelta).toBe(500);
+		expect(mirrored?.relativeDelta).toBe(0.05);
 	});
 
 	it("reports the WIDEST relative divergence across a multi-pair assertion", () => {
-		const graph = build({
-			concepts: [concept({ name: "cash" })],
-			edges: [selfLoop("cash")],
-			groundings: [],
-			reconciliations: [
-				// Widest deliberately neither first nor last by pair_key.
-				recRow({
-					fromConcept: "cash",
-					toConcept: "cash",
-					pairKey: "a|b",
-					delta: "10",
-					relativeDelta: "0.1",
-				}),
-				recRow({
-					fromConcept: "cash",
-					toConcept: "cash",
-					pairKey: "a|c",
-					delta: "50",
-					relativeDelta: "0.5",
-				}),
-				recRow({
-					fromConcept: "cash",
-					toConcept: "cash",
-					pairKey: "b|c",
-					delta: "20",
-					relativeDelta: "0.2",
-				}),
-			],
-		});
-		const rec = graph.nodes[0].reconcilesWith[0];
-		expect(rec.relativeDelta).toBe(0.5);
-		expect(rec.observedDelta).toBe(50);
-		expect(rec.pairs).toBe(3);
-		expect(rec.evaluatedPairs).toBe(3);
+		const folds = foldReconciliations([
+			// Widest deliberately neither first nor last by pair_key.
+			recRow({
+				fromConcept: "cash",
+				toConcept: "cash",
+				pairKey: "a|b",
+				delta: "10",
+				relativeDelta: "0.1",
+			}),
+			recRow({
+				fromConcept: "cash",
+				toConcept: "cash",
+				pairKey: "a|c",
+				delta: "50",
+				relativeDelta: "0.5",
+			}),
+			recRow({
+				fromConcept: "cash",
+				toConcept: "cash",
+				pairKey: "b|c",
+				delta: "20",
+				relativeDelta: "0.2",
+			}),
+		]);
+		const rec = reconciliationFor(folds, "cash", "cash");
+		expect(rec?.relativeDelta).toBe(0.5);
+		expect(rec?.observedDelta).toBe(50);
+		expect(rec?.pairs).toBe(3);
+		expect(rec?.evaluatedPairs).toBe(3);
 	});
 
 	it("folds a mixed evaluated/abstained assertion to evaluated, counting both", () => {
-		const graph = build({
-			concepts: [concept({ name: "cash" })],
-			edges: [selfLoop("cash")],
-			groundings: [],
-			reconciliations: [
-				recRow({
-					fromConcept: "cash",
-					toConcept: "cash",
-					pairKey: "a|b",
-					delta: "0",
-					relativeDelta: "0",
-				}),
-				recRow({
-					fromConcept: "cash",
-					toConcept: "cash",
-					pairKey: "a|c",
-					status: "abstained",
-					verdict: null,
-					abstainReason: "different_reporting_instants",
-					delta: null,
-					relativeDelta: null,
-				}),
-			],
-		});
-		const rec = graph.nodes[0].reconcilesWith[0];
-		expect(rec.status).toBe("evaluated");
-		expect(rec.pairs).toBe(2);
-		expect(rec.evaluatedPairs).toBe(1);
-		expect(rec.abstainReason).toBeNull();
+		const folds = foldReconciliations([
+			recRow({
+				fromConcept: "cash",
+				toConcept: "cash",
+				pairKey: "a|b",
+				delta: "0",
+				relativeDelta: "0",
+			}),
+			recRow({
+				fromConcept: "cash",
+				toConcept: "cash",
+				pairKey: "a|c",
+				status: "abstained",
+				verdict: null,
+				abstainReason: "different_reporting_instants",
+				delta: null,
+				relativeDelta: null,
+			}),
+		]);
+		const rec = reconciliationFor(folds, "cash", "cash");
+		expect(rec?.status).toBe("evaluated");
+		expect(rec?.pairs).toBe(2);
+		expect(rec?.evaluatedPairs).toBe(1);
+		expect(rec?.abstainReason).toBeNull();
 	});
 
 	it("carries the abstain reason only when every pair agreed on it", () => {
-		const allAgree = build({
-			concepts: [concept({ name: "cash" })],
-			edges: [selfLoop("cash")],
-			groundings: [],
-			reconciliations: [
+		const agreed = reconciliationFor(
+			foldReconciliations([
 				recRow({
 					fromConcept: "cash",
 					toConcept: "cash",
@@ -843,18 +509,15 @@ describe("reconciliation fold", () => {
 					delta: null,
 					relativeDelta: null,
 				}),
-			],
-		});
-		expect(allAgree.nodes[0].reconcilesWith[0].status).toBe("abstained");
-		expect(allAgree.nodes[0].reconcilesWith[0].abstainReason).toBe(
-			"different_reporting_instants",
+			]),
+			"cash",
+			"cash",
 		);
+		expect(agreed?.status).toBe("abstained");
+		expect(agreed?.abstainReason).toBe("different_reporting_instants");
 
-		const disagree = build({
-			concepts: [concept({ name: "cash" })],
-			edges: [selfLoop("cash")],
-			groundings: [],
-			reconciliations: [
+		const disagreed = reconciliationFor(
+			foldReconciliations([
 				recRow({
 					fromConcept: "cash",
 					toConcept: "cash",
@@ -875,33 +538,29 @@ describe("reconciliation fold", () => {
 					delta: null,
 					relativeDelta: null,
 				}),
-			],
-		});
-		expect(disagree.nodes[0].reconcilesWith[0].status).toBe("abstained");
-		expect(disagree.nodes[0].reconcilesWith[0].abstainReason).toBeNull();
+			]),
+			"cash",
+			"cash",
+		);
+		expect(disagreed?.status).toBe("abstained");
+		expect(disagreed?.abstainReason).toBeNull();
+	});
+
+	it("keys on the pair, so a concept name containing the separator cannot collide", () => {
+		// The fold key joins the endpoints with NUL — the one byte Postgres text
+		// cannot hold — so no name can forge another pair's key.
+		const folds = foldReconciliations([
+			recRow({ fromConcept: "a b", toConcept: "c", relativeDelta: "0.1" }),
+			recRow({ fromConcept: "a", toConcept: "b c", relativeDelta: "0.2" }),
+		]);
+		expect(reconciliationFor(folds, "a b", "c")?.relativeDelta).toBe(0.1);
+		expect(reconciliationFor(folds, "a", "b c")?.relativeDelta).toBe(0.2);
 	});
 });
 
 describe("reconciliation state render", () => {
-	const nodeWith = (rec: ConceptReconciliation): ConceptGraph => ({
-		nodes: [
-			{
-				id: "concept:cash",
-				conceptId: "id:cash",
-				name: "cash",
-				kind: null,
-				description: null,
-				indicators: [],
-				excludePatterns: [],
-				partOfParents: [],
-				partOfChildren: [],
-				partOfAncestry: [],
-				disjointWith: [],
-				reconcilesWith: [rec],
-				groundings: [],
-			},
-		],
-	});
+	const nodeWith = (rec: ConceptReconciliation): ConceptGraph =>
+		graphOf(node({ name: "cash", reconcilesWith: [rec] }));
 
 	it("states the preamble's promise: entries carry the last run's observation", () => {
 		const text = formatConceptContext(nodeWith(unevaluated("cash")));

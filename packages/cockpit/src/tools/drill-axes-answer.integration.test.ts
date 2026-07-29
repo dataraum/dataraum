@@ -138,10 +138,13 @@ describe.skipIf(!fx.available)(
 		});
 
 		it("withholds the time grain rather than guessing at an ad-hoc concept", async () => {
-			// An answer's concept has no persisted additivity verdict, so the gate
-			// never offers a time bucket. (No date dimension is catalogued here, so
-			// there is nothing to strip and no gate REASON is set — the assertion
-			// that matters is that no axis carries a temporal kind.)
+			// These sources carry no snippetId, so `resolveAnswerTarget` resolves NO
+			// identity and the gate never reaches a verdict to offer a bucket from.
+			// (The fixture DOES persist verdicts for `revenue`/`cost` since DAT-671
+			// R3 — reaching them requires the identity spine, which is exactly the
+			// point.) No date dimension is catalogued here either, so there is
+			// nothing to strip and no gate REASON is set — the assertion that
+			// matters is that no axis carries a temporal kind.
 			const atSource = await resolveAnswerDrillAxes([
 				{ relation: ENRICHED_VIEW, selectExpr: GUARDED_SUM },
 			]);

@@ -402,12 +402,12 @@ class ValidationAgent(LLMFeature):
         schema_text = format_multi_table_schema_for_prompt(schema)
 
         # Build context for template. ``guidance`` is the advisory binding hint
-        # (the former sql_hints); it fills the ``sql_hints`` prompt slot. A DAT-447
-        # ``expected_formula`` declaration (DAT-880: typed, no longer folded into
-        # ``guidance`` at load for a FRESH row — the legacy fold above still
-        # populates ``guidance`` for a frame-induced canonical-type row) renders as
-        # its own explicit sentence alongside any guidance prose — the binder needs
-        # the column-identity claim spelled out, not buried in free text.
+        # (the former sql_hints); it fills the ``sql_hints`` prompt slot — the
+        # PROMPT variable keeps that name, the spec field does not. A DAT-447
+        # ``expected_formula`` declaration (DAT-880: typed, never folded into
+        # ``guidance`` at load) renders as its own explicit sentence alongside any
+        # guidance prose — the binder needs the column-identity claim spelled out,
+        # not buried in free text.
         # ``parameters`` carries ONLY the typed tolerance. Both ``ef.table.column``
         # and ``ef.formula`` are quoted identically — neither is more "the value"
         # than the other; both are the user's literal words. This is the SECOND

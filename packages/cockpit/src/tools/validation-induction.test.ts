@@ -1,16 +1,14 @@
-// The validation induction -> overlay payload conversion (DAT-807).
+// The validation induction -> overlay payload conversion (DAT-807; retyped by
+// DAT-880's close-out).
 //
-// The shape difference is `parameters`: a typed LIST in the LLM-facing
-// schema (an open map is inexpressible under constrained decoding), the
-// `dict[str, Any]` the engine's LEGACY normalizer reads in the payload.
-// Everything else passes through untouched.
-//
-// KNOWN GAP (DAT-725, see validation-induction.ts header): `parameters`/
-// `sql_hints` are the PRE-DAT-735 wire shape — `ValidationSpecSchema` itself
-// migrated to typed `tolerance`/`guidance`, but this induction schema did not
-// (a deliberate, flagged deferral — migrating it is a prompt-content change
-// needing a live probe, not a mechanical rename). The last test below documents
-// the consequence honestly rather than asserting a false "it round-trips".
+// Both sides now carry the engine's typed check definition, so the conversion
+// is a pass-through EXCEPT for the two sentinels constrained decoding forces on
+// fields the engine types as nullable: `tolerance: -1` and `guidance: ""` mean
+// "not declared" and must reach the payload as ABSENT properties. That decode
+// is the whole surface worth testing, and the round-trip below is now a real
+// one — before the migration the induced tolerance was silently lost at this
+// parse boundary, which is what made deleting the engine's legacy fold look
+// safe when it was not.
 
 import { describe, expect, it } from "vitest";
 
@@ -35,108 +33,78 @@ function trialBalance(
 		category: "financial",
 		severity: "critical",
 		check_type: "balance",
-		parameters: [],
-		sql_hints: "Join the trial balance to the chart of accounts.",
+		tolerance: 0.01,
+		guidance: "Join the trial balance to the chart of accounts.",
 		expected_outcome: "The equation holds within tolerance.",
 		tags: ["accounting"],
 		relevant_cycles: [],
 		...over,
-	} as InducedValidation;
+	};
 }
 
-describe("toProposedValidation — array parameters -> the engine's dict", () => {
-	it("folds a numeric parameter to a bare number under its name", () => {
-		// `tolerance` is the one parameter the engine reads STRUCTURALLY
-		// (analysis/validation/evaluate.py does `float(parameters["tolerance"])`),
-		// so it must land as a number, not a wrapper object.
-		const v = toProposedValidation(
-			trialBalance({
-				parameters: [{ kind: "number", name: "tolerance", value: 0.01 }],
-			}),
-		) as { parameters?: Record<string, unknown> };
+describe("toProposedValidation — sentinel decode at the conversion boundary", () => {
+	it("carries a declared tolerance through as a number", () => {
+		// The value the engine reads STRUCTURALLY (evaluate.py judges every check
+		// by `deviation <= tolerance`), so it must land typed, not as prose.
+		const v = toProposedValidation(trialBalance({ tolerance: 0.05 }));
 
-		expect(v.parameters).toEqual({ tolerance: 0.01 });
-		expect(typeof v.parameters?.tolerance).toBe("number");
+		expect(v.tolerance).toBe(0.05);
+		expect(typeof v.tolerance).toBe("number");
 	});
 
-	it("folds a string-list parameter to a bare array under its name", () => {
-		const v = toProposedValidation(
-			trialBalance({
-				parameters: [
-					{
-						kind: "string_list",
-						name: "asset_types",
-						values: ["asset", "assets"],
-					},
-				],
-			}),
-		) as { parameters?: Record<string, unknown> };
+	it("carries a tolerance of 0 through — it is a claim, not a sentinel", () => {
+		// EXACT agreement / zero violating rows. Dropping this would silently
+		// relax the strictest checks the model can declare to DEFAULT_TOLERANCE.
+		const v = toProposedValidation(trialBalance({ tolerance: 0 }));
 
-		expect(v.parameters).toEqual({ asset_types: ["asset", "assets"] });
+		expect(v.tolerance).toBe(0);
 	});
 
-	it("merges mixed parameters into ONE map, mirroring the shipped specs", () => {
-		// trial_balance.yaml carries exactly this mix: a numeric tolerance plus
-		// five account-type vocabularies.
-		const v = toProposedValidation(
-			trialBalance({
-				parameters: [
-					{ kind: "number", name: "tolerance", value: 0.01 },
-					{ kind: "string_list", name: "asset_types", values: ["asset"] },
-					{
-						kind: "string_list",
-						name: "revenue_types",
-						values: ["revenue", "sales"],
-					},
-				],
-			}),
-		) as { parameters?: Record<string, unknown> };
+	it("omits `tolerance` when the model emits the -1 sentinel", () => {
+		// Absent ⇒ the engine's DEFAULT_TOLERANCE. A literal -1 would fail every
+		// check, since a deviation is never negative.
+		const v = toProposedValidation(trialBalance({ tolerance: -1 }));
 
-		expect(v.parameters).toEqual({
-			tolerance: 0.01,
-			asset_types: ["asset"],
-			revenue_types: ["revenue", "sales"],
-		});
+		expect(v).not.toHaveProperty("tolerance");
 	});
 
-	it("omits `parameters` entirely when the check needs none", () => {
-		// sign_conventions.yaml ships with no parameters block at all; an empty
-		// map would be a meaningless key in the JSONB row.
-		const v = toProposedValidation(trialBalance());
+	it("omits `guidance` when the model emits the empty sentinel", () => {
+		const v = toProposedValidation(trialBalance({ guidance: "" }));
 
-		expect(v).not.toHaveProperty("parameters");
+		expect(v).not.toHaveProperty("guidance");
+	});
+
+	it("passes guidance prose through verbatim", () => {
+		// Classification vocabularies ride here now that `parameters` is gone —
+		// the binding agent reads this string, so it must not be reshaped.
+		const guidance =
+			"Classify account_type in ('asset','assets') as assets before summing.";
+		const v = toProposedValidation(trialBalance({ guidance }));
+
+		expect(v.guidance).toBe(guidance);
 	});
 
 	it("passes every other field through unchanged", () => {
-		const induced = trialBalance({
-			parameters: [{ kind: "number", name: "tolerance", value: 0 }],
-		});
+		const induced = trialBalance();
 		const v = toProposedValidation(induced);
 
-		const { parameters: _p, ...rest } = induced;
-		expect(v).toMatchObject(rest);
-		// The `kind` discriminator is an artefact of the LLM-facing schema and must
-		// not leak into the payload.
-		expect(JSON.stringify(v)).not.toContain('"kind"');
+		expect(v).toEqual(induced);
 	});
 
-	it("re-parses as the persisted validation shape WITHOUT throwing — but this does NOT prove tolerance survives typed (DAT-725 known gap)", () => {
-		// `ProposedValidation` (== `ValidationSpecSchema.omit({vertical:true})`) is a
-		// non-strict z.object since DAT-735/DAT-725: it silently DROPS the unrecognized
-		// legacy `parameters`/`sql_hints` keys rather than throwing, so "doesn't throw"
-		// is a weak assertion — the induced tolerance is LOST at this parse boundary
-		// (parses to `tolerance: undefined`), not carried through as the typed field.
-		// The primary write path (frame.ts's `induceValidations`) never actually calls
-		// this parse (see the module header) — this only matters on the separate
-		// "user-edited" declare path (`frameFamily`'s `opts.edited`), an unverified
-		// UI-layer risk flagged for the owner, not fixed here (see validation-induction.ts
-		// header: migrating this induction schema is a semantically-graded prompt
-		// change needing a live probe, out of this mechanical lane's scope).
-		const induced = trialBalance({
-			parameters: [{ kind: "number", name: "tolerance", value: 0.05 }],
-		});
-		const parsed = ProposedValidation.parse(toProposedValidation(induced));
-		expect(parsed.tolerance).toBeUndefined();
+	it("round-trips as the persisted validation shape with the check definition INTACT", () => {
+		// `ProposedValidation` (== `ValidationSpecSchema.omit({vertical:true})`) is
+		// the typed target. Parsing used to drop the induced tolerance on the floor
+		// (it arrived under legacy keys this schema does not declare); it now
+		// survives as the typed field, which is what let the engine's fold go.
+		const parsed = ProposedValidation.parse(
+			toProposedValidation(trialBalance({ tolerance: 0.05 })),
+		);
+
+		expect(parsed.tolerance).toBe(0.05);
+		expect(parsed.guidance).toBe(
+			"Join the trial balance to the chart of accounts.",
+		);
 		expect((parsed as Record<string, unknown>).parameters).toBeUndefined();
+		expect((parsed as Record<string, unknown>).sql_hints).toBeUndefined();
 	});
 });

@@ -211,18 +211,17 @@ def _apply_validation(base: dict[str, Any], rows: list[OverlayRow]) -> dict[str,
 
     Payload shape mirrors :class:`ValidationSpec`: ``{vertical, validation_id,
     name, description, category, severity, check_type, tolerance?, guidance?,
-    expected_outcome?, expected_formula?, tags?, relevant_cycles?, version?}`` —
-    PLUS the legacy ``parameters?``/``sql_hints?`` shape :class:`ValidationSpec`'s
-    ``mode="before"`` fold still accepts and is LIVE, not historical: the
-    cockpit's frame induction path (``validation-induction.ts``'s
-    ``InducedValidation``) writes exactly this shape for the four canonical check
-    types, straight to ``config_overlay``, without validating against the typed
-    ``ValidationSpecSchema`` first (DAT-880 review correction — see the fold's
-    docstring on the model for the full producer chain). This applier is
-    payload-agnostic (a raw dict merge), so it accepts either shape unchanged;
-    the fold runs downstream, when the merged row is re-parsed into
+    expected_outcome?, expected_formula?, tags?, relevant_cycles?, version?}``.
+    Both cockpit writers produce it — the hand-authored ``teach_validation`` and
+    frame induction, whose ``InducedValidation`` schema was retyped onto these
+    fields by DAT-880's close-out (the pre-DAT-735
+    ``parameters``/``sql_hints`` shape it used to write, and the
+    ``mode="before"`` fold that translated it, are both gone). This applier is
+    payload-agnostic (a raw dict merge), so it never inspects the shape; typing
+    happens downstream, when the merged row is parsed into
     :class:`ValidationSpec` (``analysis.validation.config.
-    load_all_validation_specs``). ``vertical`` is matched by the caller (this
+    load_all_validation_specs``) — where ``extra="forbid"`` now rejects a
+    legacy-shaped payload loudly. ``vertical`` is matched by the caller (this
     applier only sees rows already filtered to the loading vertical).
 
     Merge semantics mirror ``concept``: one row = one whole spec. Same
@@ -247,8 +246,7 @@ def _apply_validation(base: dict[str, Any], rows: list[OverlayRow]) -> dict[str,
     never admitted this fifth value; frame induction's own ``InducedValidation``
     enum is equally closed to the four canonical values). This one declaration
     shape is a designed, typed contract this applier stays ready to merge, not a
-    currently-exercised one — unlike the legacy ``parameters``/``sql_hints`` shape
-    above, which frame induction exercises on every induced validation today.
+    currently-exercised one.
     """
     out = dict(base)
     specs = [dict(s) for s in (out.get("validations") or [])]

@@ -23,15 +23,14 @@
 // columns are `tolerance: double precision` (the declared pass threshold) and
 // `guidance: text` (free-form SQL-grounding guidance) — a straight 1:1 typed
 // mirror, not a free-form bag, for a hand-authored `teach_validation` spec.
-// This does NOT mean the legacy shape is gone workspace-wide: `frame.ts`'s
-// INDUCE path (`validation-induction.ts`'s `InducedValidation`, a SEPARATE
-// schema from this one) still emits `parameters`/`sql_hints` for every
-// frame-induced validation, unmigrated (see that module's header for why), and
-// the engine's `mode="before"` fold on `ValidationSpec` reads it live —
-// DAT-880 confirmed this reading it after a review caught a lane's attempt to
-// delete that fold as dead. Migrating `InducedValidation` alongside this
-// module is the planned follow-on (lead-gated on a live constrained-decoding
-// compile probe), not something already done.
+// The legacy shape is now gone workspace-wide. `frame.ts`'s INDUCE path
+// (`validation-induction.ts`'s `InducedValidation`, a SEPARATE schema from this
+// one) emitted `parameters`/`sql_hints` for every frame-induced validation
+// until DAT-880's close-out migrated it to the same typed fields — so the
+// engine's `mode="before"` fold on `ValidationSpec`, which used to translate
+// them, is deleted, and `extra="forbid"` now rejects those keys at
+// construction. Both cockpit writers of a validation spec — this hand-authored
+// one and induction — produce one shape.
 //
 // DAT-725 band 3: finance's shipped `validations/*.yaml` are retired entirely
 // (no vertical ships one today), and `frame.ts`'s `induceValidations` no longer

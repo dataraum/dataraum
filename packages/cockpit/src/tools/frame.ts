@@ -368,14 +368,13 @@ export async function induceConcepts(
 
 /**
  * Induce a validation set for a source via one NATIVE structured-output call
- * (DAT-807). The model fills the ARRAY-shaped `InducedValidations`
- * (validation-induction.ts) — `parameters` as a typed list rather than the open
- * map the payload uses — and `toProposedValidation` folds it back to the engine's
- * `dict[str, Any]` here, at the single conversion boundary. Induced OVER the
- * framed concept vocabulary — the concepts are part of the context, so the
- * proposed checks anchor to them rather than to guessed column names. Returns
- * the proposed validations; does NOT write anything. `signal` bridges the
- * tool-context abort.
+ * (DAT-807). The model fills `InducedValidations` (validation-induction.ts),
+ * which carries the engine's typed check definition (`tolerance`/`guidance`)
+ * with the sentinels constrained decoding needs; `toProposedValidation` decodes
+ * those at the single conversion boundary here. Induced OVER the framed concept
+ * vocabulary — the concepts are part of the context, so the proposed checks
+ * anchor to them rather than to guessed column names. Returns the proposed
+ * validations; does NOT write anything. `signal` bridges the tool-context abort.
  *
  * NO shipped-vertical few-shot (DAT-725 band 3, lead-ruled): a finance few-shot
  * example IS finance vocabulary, and seeding a newly-onboarded vertical's

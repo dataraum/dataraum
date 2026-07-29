@@ -20,8 +20,7 @@ function node(
 	overrides: Partial<ConceptGraphNode> & { name: string },
 ): ConceptGraphNode {
 	return {
-		id: `concept:${overrides.name}`,
-		conceptId: `id:${overrides.name}`,
+		conceptId: `cpt_${overrides.name}`,
 		kind: null,
 		description: null,
 		indicators: [],
@@ -32,6 +31,12 @@ function node(
 		disjointWith: [],
 		reconcilesWith: [],
 		groundings: [],
+		// Served but not rendered here: the verdict/DAG edges DAT-671 R3 added
+		// reach the ANSWER AGENT's block, not this panel — the concept view's
+		// job is the vocabulary a practitioner browses, and adding a verdict
+		// badge is a design decision, not a side effect of the read moving.
+		additivity: [],
+		derivedMetrics: [],
 		...overrides,
 	};
 }

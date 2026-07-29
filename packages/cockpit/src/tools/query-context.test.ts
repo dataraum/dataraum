@@ -115,6 +115,19 @@ describe("formatSchema", () => {
 		expect(block).toContain("Table lake.typed.chart_of_accounts:");
 	});
 
+	it("discloses the prefer-enriched omission IN <schema> itself (DAT-671 R3, census S2)", () => {
+		// `preferEnriched` is all-or-nothing: when enriched views exist, the typed
+		// fact and its dimension tables are absent from this block entirely. That
+		// was stated only in <relationships> and <entities> — blocks about
+		// something else — leaving <schema> looking like a complete inventory. The
+		// sentence must sit where the omission is, and must say the hidden tables
+		// are still REACHABLE rather than implying they do not exist.
+		const block = formatSchema(tables, columnRows, concepts);
+		expect(block).toContain("pre-joined superset of a typed fact table");
+		expect(block).toContain("NOT listed separately here");
+		expect(block).toContain("<relationships> block gives the join paths");
+	});
+
 	it("addresses an enriched view in the typed schema (lake.typed.<view>)", () => {
 		// enriched views live in the typed DuckDB schema (schema_for_layer), so the
 		// address is lake.typed.<view> — NOT lake.enriched.<view>.
@@ -262,23 +275,25 @@ describe("formatCatalog (DAT-538 dimension catalog block)", () => {
 				columnId: "col-acct",
 				columnName: "account_type",
 				valueCount: 3,
-				distinctValues: ["Sales Revenue", "COGS", "SG&A"],
 			},
 		];
 		const block = formatCatalog(valued, [], addr);
 		// The sub-agent has look_values → the block carries the count + the [id:] to drill,
 		// never the values themselves (a sample would bias grounding toward the shown subset).
+		// Since DAT-671 R3 `CatalogAxisRow` no longer even carries the stored value
+		// list, so this is now a shape guarantee and not just a render one — the
+		// values are not reachable from here to leak.
 		expect(block).toContain(
 			'dimensions: "account_type" (3 values) [id: col-acct]',
 		);
-		expect(block).not.toContain("Sales Revenue");
 	});
 
-	it("counts from the MEASURED value_count, not the stored value list (DAT-879)", () => {
-		// The stored `distinct_values` is a bounded echo — the cataloguing agent
-		// listed 3 of a 500-value axis. Rendering its LENGTH announced "(3 values)"
-		// for a dimension with 500, which is the DAT-622 class of silent lie: the
-		// number looked measured and was not.
+	it("counts from the MEASURED value_count (DAT-879)", () => {
+		// The stored `distinct_values` was a bounded echo — the cataloguing agent
+		// might list 3 of a 500-value axis, and rendering its LENGTH announced
+		// "(3 values)" for a dimension with 500: the DAT-622 class of silent lie,
+		// a number that looked measured and was not. The echo is no longer read at
+		// all (DAT-671 R3), so the only count available is the measured one.
 		const block = formatCatalog(
 			[
 				{
@@ -286,18 +301,15 @@ describe("formatCatalog (DAT-538 dimension catalog block)", () => {
 					columnId: "col-acct",
 					columnName: "account_code",
 					valueCount: 500,
-					distinctValues: ["1000", "1200", "1400"],
 				},
 			],
 			[],
 			addr,
 		);
 		expect(block).toContain('"account_code" (500 values)');
-		expect(block).not.toContain("(3 values)");
 	});
 
 	it("serves count + id only — never the value-set, regardless of size (DAT-621)", () => {
-		const many = Array.from({ length: 45 }, (_, i) => `v${i}`);
 		const block = formatCatalog(
 			[
 				{
@@ -305,16 +317,15 @@ describe("formatCatalog (DAT-538 dimension catalog block)", () => {
 					columnId: "col-code",
 					columnName: "code",
 					valueCount: 45,
-					distinctValues: many,
 				},
 			],
 			[],
 			addr,
 		);
 		// Honest count (the engine's measured COUNT(DISTINCT)); the values themselves
-		// are drilled via look_values(col-code), never inlined here.
+		// are drilled via look_values(col-code), never inlined here. No truncation
+		// marker either — a 45-value axis is reported as 45, not as a capped list.
 		expect(block).toContain("(45 values) [id: col-code]");
-		expect(block).not.toContain("v44");
 		expect(block).not.toContain("more");
 	});
 

@@ -1,12 +1,14 @@
-# Column Annotation Prompt (Tier 1 - Fast Model)
+# Column Annotation Prompt (semantic_per_column)
 #
-# Annotates columns with semantic roles, entity types, business terms,
-# and ontology concept mappings. Runs on a fast/cheap model before the
-# capable semantic analysis model handles relationships and table classification.
+# Annotates columns with their OBJECT-grain semantics: structural role, entity
+# label, business term, description, and the stock/flow claim. Since DAT-362
+# this is the authoritative per-column phase on the capable model, not a fast
+# pre-pass. Output is constrained to the ColumnSemanticOutput schema — every
+# instruction here must name a field that schema actually has (DAT-890).
 
 name: column_annotation
-version: "1.1.0"
-description: Fast column-level semantic annotation
+version: "2.0.0"
+description: Per-column object-grain semantic annotation
 
 # Temperature (0.0 = deterministic)
 temperature: 0.0
@@ -97,36 +99,6 @@ system_prompt: |
   stale directive the SQL agents follow even after that reconciliation flips it.
   </temporal_behavior_classification>
 
-  <derived_formula_hypothesis>
-  Some measure columns are COMPUTED from two other columns in the same table
-  (e.g. total = subtotal + tax, line_amount = quantity * unit_price). For each
-  such column, set derived_formula_hypothesis to the arithmetic expression the
-  column SHOULD obey given the business meaning of the names: exactly two
-  column names from the SAME table joined by one of + - * /, using EXACT
-  column names from the schema (e.g. "subtotal + tax_amount"). No constants,
-  functions, or cross-table references.
-
-  This is an INDEPENDENT expectation, not a verification: state what the
-  name says the column should be even if you cannot check it against the
-  sample values — a downstream check grades your hypothesis against the data,
-  and a grounded disagreement is exactly the signal it needs. Set null when
-  the column does not read as derived (keys, dimensions, raw measures) or
-  when no two plausible source columns exist. Set derived_formula_confidence
-  to how clearly the names communicate the formula (high for explicit naming
-  like total/net/tax; low when guessing among several plausible formulas;
-  0.0 with a null hypothesis).
-  </derived_formula_hypothesis>
-
-  <unit_detection>
-  For measure columns, determine the column that defines their unit and set
-  unit_source_column. You can see every column in the table, so reason across
-  columns: e.g. a 'currency_code' or 'unit' dimension defines the unit for its
-  sibling measure columns. Use just the column name for same-table
-  references. For measures that are inherently dimensionless (ratios, rates,
-  indices, percentages, scores), set unit_source_column to 'dimensionless'.
-  Only set it when there is a concrete dimension column — never guess a unit.
-  </unit_detection>
-
   Emit your analysis in the required output structure; emitting it ends the turn.
 
 # User prompt - provides data and context
@@ -171,4 +143,5 @@ inputs:
     description: Standard-field concepts required by active metric graphs
     required: false
 
-# Output is defined by the ColumnAnnotationOutput Pydantic tool schema
+# Output is constrained to the ColumnSemanticOutput schema via structured
+# outputs (output_config.format) — not a forced tool call (DAT-807).

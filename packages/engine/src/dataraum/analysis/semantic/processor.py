@@ -8,6 +8,7 @@ from __future__ import annotations
 from typing import TYPE_CHECKING, Any
 
 import duckdb
+from pydantic import BaseModel, Field
 from sqlalchemy import and_, delete, or_, select
 from sqlalchemy.orm import Session
 
@@ -236,6 +237,32 @@ def _apply_judge_verdicts(
             row.judge_verdict = None
 
 
+class GroundingOutcome(BaseModel):
+    """What one ``ground_columns`` call produced, with its two warning classes SPLIT.
+
+    They are different events and an operator must not read one as the other:
+
+    - ``retries`` — the agent re-called the LLM on a reduced batch after a
+      runaway (``stop_reason=max_tokens``, DAT-889). Cost and latency.
+    - ``disclosures`` — the response named a column that does not exist, so an
+      entry was dropped (DAT-890). No retry happened; something was LOST.
+
+    Kept apart because they were briefly merged into one list and the phase
+    summary rendered every entry as "runaway retries" — a run with zero retries
+    that dropped one phantom column reported "1 runaway retries", which is the
+    opposite of disclosure.
+    """
+
+    annotations: int
+    retries: list[str] = Field(default_factory=list)
+    disclosures: list[str] = Field(default_factory=list)
+
+    @property
+    def warnings(self) -> list[str]:
+        """Both classes, for the channels that carry a flat list."""
+        return [*self.retries, *self.disclosures]
+
+
 def persist_column_annotations(
     session: Session,
     column_output: ColumnAnnotationOutput,
@@ -243,7 +270,7 @@ def persist_column_annotations(
     *,
     annotated_by: str,
     run_id: str | None = None,
-) -> int:
+) -> Result[int]:
     """Persist the OBJECT-grain per-column annotations as ``SemanticAnnotation`` rows.
 
     The per-column phase's authoritative output — single-table-knowable fields
@@ -252,23 +279,81 @@ def persist_column_annotations(
     formula) are NOT written here: the table agent authors them onto
     ``ColumnConcept`` under the catalogue head (DAT-637).
 
+    Two response pathologies are handled HERE, both observed on the same eval
+    pass (DAT-890) and both previously invisible:
+
+    - An entry naming a column that does not exist (a phantom, or a real name
+      misspelt) used to ``continue`` silently. A 97-column ``clean-flat`` call
+      emitted a 98th entry for ``general_ledger.unused`` and nothing recorded
+      it. The entry is still dropped; what changes is that the drop is now
+      RECORDED. Exactly two places, and no further: the structured log line
+      ``column_annotation_unresolved_column`` (per entry), and the phase
+      summary string that reaches Temporal history via
+      ``PhaseResult.summary``. It does NOT reach the cockpit — ``PhaseRun`` /
+      ``PhaseOutcome`` carry no warnings field, and widening that contract is
+      a cross-package change parked outside this lane. Do not read this as UI
+      visibility.
+    - A DUPLICATE ``(column_id, run_id)`` within one response is a TYPED
+      contract failure. Postgres rejects an ``ON CONFLICT`` batch that touches
+      one row twice, so a 92-entry response carrying ``journal_lines.net_amount``
+      twice killed ``addSourceWorkflow`` with a ``CardinalityViolation`` raised
+      from the DB driver. The duplicate is not folded or merged: two entries for
+      one column mean the response is malformed, and the phase says so in its
+      own vocabulary rather than leaking a psycopg exception.
+
     Args:
         session: Database session.
         column_output: Per-column structured output (tables -> columns).
         table_ids: Tables the annotations belong to (for column-id resolution).
         annotated_by: Model identifier that produced the annotations.
+        run_id: The run this annotation set belongs to.
 
     Returns:
-        Number of annotation rows persisted.
+        ``Result.ok(count)`` with the number of rows persisted, carrying one
+        warning per unresolvable entry; ``Result.fail`` on a duplicate.
     """
     column_map = load_column_mappings(session, table_ids)
 
     rows: list[dict[str, Any]] = []
+    unresolved: list[str] = []
+    seen: dict[str, str] = {}
     for table in column_output.tables:
         for col in table.columns:
             column_id = column_map.get((table.table_name, col.column_name))
             if not column_id:
+                # Recorded, not silent (see the docstring for exactly where it
+                # lands): the model named a column this table does not have.
+                # Either a phantom entry or a real column whose name it got
+                # slightly wrong — the second silently LOSES an annotation, so
+                # both must surface.
+                unresolved.append(f"{table.table_name}.{col.column_name}")
+                logger.warning(
+                    "column_annotation_unresolved_column",
+                    table=table.table_name,
+                    column=col.column_name,
+                    semantic_role=col.semantic_role,
+                )
                 continue
+            if column_id in seen:
+                message = (
+                    "column_annotation contract violation: the response annotates "
+                    f"{table.table_name}.{col.column_name} more than once "
+                    f"(also as {seen[column_id]}). One column, one annotation — "
+                    "a duplicate makes the response ambiguous about which "
+                    "annotation is authoritative."
+                )
+                # Carry the phantoms found BEFORE this duplicate (the
+                # ``_fail_with_retries`` pattern in ``column_agent``). A
+                # failure must not swallow disclosures the same response
+                # already earned — the only record of them would otherwise be
+                # the structured log, and the operator reads the error.
+                if unresolved:
+                    message += (
+                        f" Also dropped {len(unresolved)} unresolvable "
+                        f"entry(ies) before this one: {', '.join(sorted(unresolved))}."
+                    )
+                return Result.fail(message)
+            seen[column_id] = f"{table.table_name}.{col.column_name}"
             # PK omitted so the model's Python-side default applies. OBJECT-grain
             # only (DAT-637): meaning, ontology temporal_behavior,
             # unit_source_column, and the derived_formula hypothesis are
@@ -294,8 +379,18 @@ def persist_column_annotations(
     # Upsert on ``(column_id, run_id)`` so a Temporal at-least-once retry
     # (same run_id) updates the annotation in place instead of duplicating it —
     # which would make the head-resolved loaders' scalar_one_or_none() raise.
+    # Duplicates WITHIN this batch were rejected above, so the batch is
+    # single-valued on the conflict target by construction.
     upsert(session, AnnotationModel, rows, index_elements=["column_id", "run_id"])
-    return len(rows)
+    warnings = (
+        [
+            f"column_annotation named {len(unresolved)} column(s) that do not "
+            f"exist and were dropped: {', '.join(sorted(unresolved))}"
+        ]
+        if unresolved
+        else []
+    )
+    return Result.ok(len(rows), warnings=warnings)
 
 
 def ground_columns(
@@ -307,7 +402,7 @@ def ground_columns(
     table_ids: list[str],
     ontology: str,
     run_id: str | None = None,
-) -> Result[int]:
+) -> Result[GroundingOutcome]:
     """Annotate columns against ``ontology`` and persist ``SemanticAnnotation`` rows.
 
     DAT-376: extracted verbatim from the grounding tail of
@@ -326,7 +421,8 @@ def ground_columns(
         ontology: Vertical name the columns map their concepts into.
 
     Returns:
-        ``Result.ok(count)`` with the number of annotation rows persisted, or
+        ``Result.ok(GroundingOutcome)`` — the row count plus the run's two
+        warning classes kept SEPARATE (agent retries vs dropped entries), or
         ``Result.fail`` with the same messages the phase surfaced before.
     """
     from dataraum.analysis.semantic.column_agent import ColumnAnnotationAgent
@@ -369,19 +465,27 @@ def ground_columns(
 
     model_name = provider.get_model_for_tier(col_config.model_tier)
 
-    count = persist_column_annotations(
+    persist_result = persist_column_annotations(
         session,
         annotation_result.value,
         table_ids,
         annotated_by=model_name,
         run_id=run_id,
     )
-    # Retry disclosure (DAT-889): non-empty only when a runaway (max_tokens)
-    # or a content-omission was recovered by retrying a reduced batch.
-    # Threaded through to PhaseResult.warnings by the calling phase, which
-    # feeds the phase summary's retry-count suffix and the
-    # activity.phase_done log line's warnings field — not just a debug log.
-    return Result.ok(count, warnings=annotation_result.warnings)
+    if not persist_result.success:
+        return Result.fail(persist_result.error or "Persisting column annotations failed")
+
+    # Two DISTINCT warning classes, deliberately not merged (see
+    # ``GroundingOutcome``): agent-side retries cost time, persist-side
+    # disclosures mean an annotation was lost. The phase renders each in its
+    # own words.
+    return Result.ok(
+        GroundingOutcome(
+            annotations=persist_result.unwrap(),
+            retries=list(annotation_result.warnings),
+            disclosures=list(persist_result.warnings),
+        )
+    )
 
 
 def _lake_path(table_name: str) -> str:

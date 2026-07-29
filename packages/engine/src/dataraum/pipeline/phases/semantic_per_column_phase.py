@@ -222,21 +222,36 @@ class SemanticPerColumnPhase(BasePhase):
         if not grounding.success:
             return PhaseResult.failed(grounding.error or "Column annotation failed")
 
-        count = grounding.unwrap()
-        # Retry disclosure (DAT-889): grounding.warnings is non-empty only
-        # when a runaway (max_tokens) or a content-omission was recovered by
-        # retrying a reduced batch. It rides three channels, not a debug log
-        # a human has to go looking for: PhaseResult.warnings below, this
-        # summary's suffix (Temporal history), and the activity.phase_done /
+        outcome = grounding.unwrap()
+        count = outcome.annotations
+        # TWO warning classes, named separately (DAT-890). They were briefly
+        # merged into one list rendered as "runaway retries", so a run with
+        # zero retries that dropped one phantom column reported
+        # "1 runaway retries" — an operator reading that would look for a
+        # cost/latency problem and never learn an annotation was lost.
+        #
+        #   retries     — a runaway (max_tokens) or content-omission was
+        #                 recovered by re-calling on a reduced batch (DAT-889).
+        #   dropped     — the response named a column that does not exist, so
+        #                 the entry was discarded (DAT-890).
+        #
+        # Both ride: PhaseResult.warnings below, this summary's suffix
+        # (Temporal history), and the activity.phase_done /
         # activity.session_phase_done log line's warnings field
-        # (worker/activity.py).
+        # (worker/activity.py). Neither reaches the cockpit — PhaseRun /
+        # PhaseOutcome carry no warnings field.
+        notes = []
+        if outcome.retries:
+            notes.append(f"{len(outcome.retries)} runaway retries")
+        if outcome.disclosures:
+            notes.append(f"{len(outcome.disclosures)} dropped")
         summary = f"{count} column annotations"
-        if grounding.warnings:
-            summary += f" ({len(grounding.warnings)} runaway retries)"
+        if notes:
+            summary += f" ({', '.join(notes)})"
         return PhaseResult.success(
             outputs={"annotations": count, "tables_analyzed": len(table_ids)},
             records_processed=count,
             records_created=count,
-            warnings=grounding.warnings,
+            warnings=outcome.warnings,
             summary=summary,
         )

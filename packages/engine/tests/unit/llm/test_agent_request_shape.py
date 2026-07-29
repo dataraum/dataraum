@@ -161,8 +161,8 @@ def test_column_annotation(config: LLMConfig, monkeypatch: pytest.MonkeyPatch) -
     agent._ontology_loader = MagicMock()  # type: ignore[method-assign]
     agent._build_tables_json = MagicMock(return_value=[])  # type: ignore[method-assign]
     monkeypatch.setattr(
-        "dataraum.analysis.semantic.column_agent.DataSampler",
-        MagicMock(return_value=MagicMock(prepare_samples=MagicMock(return_value={}))),
+        "dataraum.analysis.semantic.column_agent.prompt_samples",
+        MagicMock(return_value={}),
     )
 
     agent.annotate(MagicMock(), ["t1"], profiles=[MagicMock()])

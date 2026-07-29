@@ -13,6 +13,8 @@ from sqlalchemy import select
 from sqlalchemy.orm import Session
 
 from dataraum.analysis.semantic.db_models import SemanticAnnotation, TableEntity
+from dataraum.analysis.semantic.processor import GroundingOutcome
+from dataraum.core.models.base import Result
 from dataraum.investigation.queries import link_run_tables
 from dataraum.pipeline.base import PhaseContext, PhaseStatus
 from dataraum.pipeline.phases.semantic_per_column_phase import SemanticPerColumnPhase
@@ -315,3 +317,90 @@ class TestPerTableShouldSkip:
     # per-table phase scopes purely by ``ctx.table_ids`` and ``should_skip``
     # never filters by session, so a "different session's classification" is not
     # a representable state.
+
+
+class TestPerColumnSummaryNamesEachWarningClass:
+    """The phase summary must not call a dropped column a "runaway retry" (DAT-890).
+
+    ``ground_columns`` returns two warning classes and the summary renders each
+    in its own words. They were briefly merged into one list rendered as
+    "(N runaway retries)", so a run with zero retries that dropped one phantom
+    column reported "1 runaway retries" — pointing an operator at cost/latency
+    while the actual event was a LOST annotation.
+    """
+
+    def _ctx(self, session: Session, duckdb_conn: duckdb.DuckDBPyConnection) -> PhaseContext:
+        return PhaseContext(
+            session=session,
+            duckdb_conn=duckdb_conn,
+            config={"vertical": "finance"},
+            run_id=baseline_run_id(),
+        )
+
+    def _run_with(
+        self,
+        outcome: GroundingOutcome,
+        session: Session,
+        duckdb_conn: duckdb.DuckDBPyConnection,
+    ) -> str:
+        src = _source(session)
+        _typed_table(session, src.source_id, "t1", ["a"])
+        with (
+            patch("dataraum.pipeline.phases.semantic_per_column_phase.PromptRenderer"),
+            patch("dataraum.pipeline.phases.semantic_per_column_phase.create_provider"),
+            patch(
+                "dataraum.pipeline.phases.semantic_per_column_phase.load_llm_config"
+            ) as load_config,
+            patch(
+                "dataraum.pipeline.phases.semantic_per_column_phase.load_workspace_concepts"
+            ) as concepts,
+            patch("dataraum.pipeline.phases.semantic_per_column_phase.ground_columns") as ground,
+        ):
+            config = MagicMock()
+            config.active_provider = "anthropic"
+            config.providers = {"anthropic": MagicMock()}
+            load_config.return_value = config
+            concepts.return_value = MagicMock(concepts=[MagicMock()])
+            ground.return_value = Result.ok(outcome)
+            result = SemanticPerColumnPhase()._run(self._ctx(session, duckdb_conn))
+        assert result.status != PhaseStatus.FAILED
+        return result.summary or ""
+
+    def test_a_dropped_column_is_not_called_a_retry(
+        self, session: Session, duckdb_conn: duckdb.DuckDBPyConnection
+    ) -> None:
+        summary = self._run_with(
+            GroundingOutcome(annotations=91, disclosures=["dropped general_ledger.unused"]),
+            session,
+            duckdb_conn,
+        )
+        assert "1 dropped" in summary
+        assert "retries" not in summary  # the regression
+
+    def test_retries_are_still_named_retries(
+        self, session: Session, duckdb_conn: duckdb.DuckDBPyConnection
+    ) -> None:
+        summary = self._run_with(
+            GroundingOutcome(annotations=91, retries=["runaway on an 8-table batch"]),
+            session,
+            duckdb_conn,
+        )
+        assert "1 runaway retries" in summary
+        assert "dropped" not in summary
+
+    def test_both_classes_are_counted_separately(
+        self, session: Session, duckdb_conn: duckdb.DuckDBPyConnection
+    ) -> None:
+        summary = self._run_with(
+            GroundingOutcome(annotations=91, retries=["r1", "r2"], disclosures=["d1"]),
+            session,
+            duckdb_conn,
+        )
+        assert "2 runaway retries" in summary
+        assert "1 dropped" in summary
+
+    def test_a_clean_run_carries_no_suffix(
+        self, session: Session, duckdb_conn: duckdb.DuckDBPyConnection
+    ) -> None:
+        summary = self._run_with(GroundingOutcome(annotations=91), session, duckdb_conn)
+        assert summary == "91 column annotations"

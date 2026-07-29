@@ -107,7 +107,11 @@ class TestGroundColumns:
         session.flush()
 
         assert result.success
-        assert result.value == 2
+        outcome = result.unwrap()
+        assert outcome.annotations == 2
+        # A clean run reports neither class (they are rendered separately).
+        assert outcome.retries == []
+        assert outcome.disclosures == []
         rows = session.execute(select(AnnotationDB)).scalars().all()
         assert len(rows) == 2
         assert {r.semantic_role for r in rows} == {"key", "measure"}

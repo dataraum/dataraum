@@ -28,6 +28,7 @@ from dataraum.analysis.semantic.models import (
     TimeColumn,
 )
 from dataraum.analysis.semantic.processor import (
+    GroundingOutcome,
     persist_column_annotations,
     synthesize_and_store_tables,
 )
@@ -103,7 +104,7 @@ class TestPersistColumnAnnotations:
             ]
         )
 
-        count = persist_column_annotations(
+        result = persist_column_annotations(
             session,
             output,
             [table.table_id],
@@ -113,7 +114,8 @@ class TestPersistColumnAnnotations:
         session.flush()
 
         rows = session.execute(select(AnnotationDB)).scalars().all()
-        assert count == 2
+        assert result.unwrap() == 2
+        assert result.warnings == []
         assert len(rows) == 2
         by_role = {r.semantic_role: r for r in rows}
         # Object-grain fields only — catalogue-grain (meaning, unit
@@ -122,7 +124,16 @@ class TestPersistColumnAnnotations:
         assert by_role["measure"].entity_type == "revenue_entity"
         assert all(r.annotation_source == "llm" and r.annotated_by == "test-model" for r in rows)
 
-    def test_skips_columns_not_in_the_table(self, session) -> None:
+    def test_unresolvable_column_is_dropped_WITH_disclosure(self, session) -> None:
+        """A response entry naming a column the table does not have (DAT-890).
+
+        Observed live: a 97-column ``clean-flat`` call emitted a 98th entry for
+        ``general_ledger.unused``. It used to vanish on a bare ``continue`` —
+        indistinguishable from a clean run, and the same silence would swallow a
+        REAL column whose name the model merely misspelt (losing its
+        annotation). The row is still dropped; what changes is that the drop is
+        now said out loud, on the phase's warning channel.
+        """
         table = _table_with_columns(session, "orders", ["order_id"])
         output = ColumnAnnotationOutput(
             tables=[
@@ -133,14 +144,16 @@ class TestPersistColumnAnnotations:
             ]
         )
 
-        count = persist_column_annotations(
+        result = persist_column_annotations(
             session,
             output,
             [table.table_id],
             annotated_by="m",
             run_id=baseline_run_id(),
         )
-        assert count == 1
+        assert result.unwrap() == 1
+        assert len(result.warnings) == 1
+        assert "orders.ghost_col" in result.warnings[0]
 
 
 class TestNearConstantFeed:
@@ -1206,3 +1219,29 @@ class TestTableSynthesisHelpers:
 
     def test_format_persisted_annotations_empty(self) -> None:
         assert "No prior column annotations" in SemanticAgent._format_persisted_annotations([])
+
+
+class TestGroundingOutcomeWarningClasses:
+    """Retries and dropped entries are DIFFERENT events (DAT-890).
+
+    They were briefly merged into one list that the phase summary rendered as
+    "runaway retries", so a run with zero retries that dropped one phantom
+    column reported "1 runaway retries" — an operator would chase a
+    cost/latency problem and never learn an annotation was lost.
+    """
+
+    def test_classes_stay_separate_and_flatten_for_the_channels(self) -> None:
+        outcome = GroundingOutcome(
+            annotations=91,
+            retries=["runaway on 8-table batch"],
+            disclosures=["named 1 column(s) that do not exist: general_ledger.unused"],
+        )
+        assert outcome.retries != outcome.disclosures
+        # PhaseResult.warnings and the activity log take the flat list.
+        assert outcome.warnings == [*outcome.retries, *outcome.disclosures]
+
+    def test_a_dropped_column_is_never_reported_as_a_retry(self) -> None:
+        """The pinned regression: zero retries, one drop."""
+        outcome = GroundingOutcome(annotations=91, disclosures=["dropped x.ghost"])
+        assert outcome.retries == []
+        assert len(outcome.warnings) == 1

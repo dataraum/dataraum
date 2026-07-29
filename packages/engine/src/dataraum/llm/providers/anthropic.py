@@ -525,13 +525,17 @@ class AnthropicProvider(LLMProvider):
             # best-effort. This is the only way to see what an extractor really
             # produced: a schema-valid but EMPTY payload is invisible in the
             # token log (it reads the same as a rich one), and the eval reads
-            # these dumps keyed by (label, prompt_hash).
+            # these dumps keyed by (label, dump_key, prompt_hash).
             _label = request.label or "unlabeled"
+            # A same-input retry renders the same prompt, so the hash alone does
+            # NOT separate attempts and the truncate-write loses the earlier one
+            # (DAT-890). ``dump_key`` is how a retrying caller keeps both.
+            _key = request.dump_key or _label
             _user = "\n\n".join(m.content for m in request.messages if isinstance(m.content, str))
             _phash = hashlib.sha256(_user.encode("utf-8")).hexdigest()[:16]
             dump_prompt(
                 label=_label,
-                key=_label,
+                key=_key,
                 prompt_hash=_phash,
                 system=request.system,
                 user=_user,
@@ -543,7 +547,7 @@ class AnthropicProvider(LLMProvider):
             )
             dump_response(
                 label=_label,
-                key=_label,
+                key=_key,
                 prompt_hash=_phash,
                 body=f"stop_reason={response.stop_reason}\n{_resp_body}",
             )

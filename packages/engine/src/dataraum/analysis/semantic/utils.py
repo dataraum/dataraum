@@ -7,8 +7,35 @@ from sqlalchemy.orm import Session
 
 from dataraum.analysis.relationships.surrogate import is_surrogate_column
 from dataraum.analysis.semantic.db_models import ColumnConcept, SemanticAnnotation
+from dataraum.analysis.statistics.models import ColumnProfile
 from dataraum.analysis.typing.db_models import TypeCandidate
 from dataraum.storage import Column, Table
+
+
+def prompt_samples(
+    profiles: list[ColumnProfile], *, limit: int
+) -> dict[tuple[str, str], list[Any]]:
+    """Per-column value samples for a prompt, capped at ``limit`` (DAT-890).
+
+    The profiler stores ``top_k_values`` (200) per column for downstream
+    analysis; ``limit`` is what may reach a PROMPT
+    (``llm/config.yaml: privacy.max_sample_values``, 10). The two are different
+    budgets and the gap is not decoration: serving the profiler's full 200 put
+    8,722 raw values into one ``column_annotation`` prompt — 88% of its bytes
+    and 45% digits — against the ~700 the cap allows. Every other prompt
+    builder applies this cap (``analysis/catalogue/context.py`` renders
+    ``top_values[:limit]``); the deleted ``llm/privacy.py`` sampler skipped it,
+    which is how the two semantic agents alone shipped 20x their budget.
+
+    Returns ``{(table_name, column_name): values}``. A column with no stored
+    top values yields an empty list — absence stays visible as absence.
+    """
+    return {
+        (p.column_ref.table_name, p.column_ref.column_name): [
+            vc.value for vc in (p.top_values or [])[:limit]
+        ]
+        for p in profiles
+    }
 
 
 def load_column_concepts(

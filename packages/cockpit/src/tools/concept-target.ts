@@ -32,9 +32,18 @@ import { type SQL, sql } from "drizzle-orm";
 
 import { queryOperatingModelGraph } from "#/db/metadata/property-graph";
 
+/** What one grounding says about itself: the concept it grounds (=
+ *  `standard_field`, the measure verdict's `target_key`) and the VALUE
+ *  EXPRESSION the engine classified — see `resolveAnswerTarget`, which spends
+ *  the concept only while the expression still matches. */
+export interface GroundedConcept {
+	concept: string;
+	selectExpr: string;
+}
+
 /**
  * Resolve grounding snippet ids to the concepts they ground: `snippet_id →
- * concept` (= `standard_field`, the measure verdict's `target_key`).
+ * {concept, selectExpr}`.
  *
  * A snippet with no entry in the returned map is UNRESOLVED, which is a
  * first-class answer and must stay one: the id was hallucinated, the snippet
@@ -54,7 +63,7 @@ import { queryOperatingModelGraph } from "#/db/metadata/property-graph";
  */
 export async function resolveGroundedConcepts(
 	snippetIds: readonly string[],
-): Promise<Map<string, string>> {
+): Promise<Map<string, GroundedConcept>> {
 	const ids = [...new Set(snippetIds.filter((id) => id !== ""))];
 	if (ids.length === 0) return new Map();
 
@@ -65,20 +74,27 @@ export async function resolveGroundedConcepts(
 	const rows = await queryOperatingModelGraph<{
 		snippet_id: string | null;
 		concept: string | null;
+		select_expr: string | null;
 	}>(
 		sql`MATCH (c IS concept_node)-[e IS grounded_by]->(g IS grounding_node
 		      WHERE (${idFilter}) AND g.failed = false)
-		    COLUMNS (g.snippet_id AS snippet_id, c.name AS concept)`,
+		    COLUMNS (g.snippet_id AS snippet_id, c.name AS concept,
+		             g.select_expr AS select_expr)`,
 	);
 
-	const byId = new Map<string, string>();
+	const byId = new Map<string, GroundedConcept>();
 	for (const row of rows) {
-		if (!row.snippet_id || !row.concept) continue;
+		if (!row.snippet_id || !row.concept || !row.select_expr) continue;
 		// First edge wins, deterministically: `uq_concept_active` makes
 		// (vertical, name) unique among live concepts and the read view is
 		// vertical-scoped, so one grounding cannot resolve to two concepts —
 		// this guard is the belt over that brace, never a pick.
-		if (!byId.has(row.snippet_id)) byId.set(row.snippet_id, row.concept);
+		if (!byId.has(row.snippet_id)) {
+			byId.set(row.snippet_id, {
+				concept: row.concept,
+				selectExpr: row.select_expr,
+			});
+		}
 	}
 	return byId;
 }

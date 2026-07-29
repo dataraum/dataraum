@@ -41,6 +41,7 @@ import type { DrillAxis, DrillNodeRef } from "#/duckdb/drill";
 import { type TemporalKind, temporalKindOfType } from "#/duckdb/grain";
 import { bareRelationName, narrowSnippetParts } from "#/duckdb/parts";
 import { aggregatedColumns, existingIdentifierColumns } from "#/duckdb/sql-ast";
+import { sqlEquivalent } from "#/lib/sql-canonical";
 
 import { resolveGroundedConcepts } from "./concept-target";
 import { parseMetricDag } from "./operating-model-graph";
@@ -1448,38 +1449,67 @@ const UNCLASSIFIED_ANSWER_WITHHOLD =
 /**
  * The answer's verdict TARGET, resolved from identity (DAT-671 R2).
  *
- * `null` — no target, so the grain is withheld — unless EVERY source resolves
- * to a concept. That is deliberately all-or-nothing: a declaration mixing one
- * reused concept with one fresh ad-hoc step has an unjudged input, and a
- * bucketed value composed over it would be exactly the silent corruption
- * `decideTimeAxis` refuses for an unjudged carrier. All-or-nothing here says so
- * once, in the answer's own words, instead of naming a carrier the practitioner
- * never saw.
+ * `null` — no target, so the grain is withheld — unless EVERY source resolves.
+ * That is deliberately all-or-nothing: a declaration mixing one reused concept
+ * with one fresh ad-hoc step has an unjudged input, and a bucketed value
+ * composed over it would be exactly the silent corruption `decideTimeAxis`
+ * refuses for an unjudged carrier. Saying it once, in the answer's own words,
+ * beats naming a carrier the practitioner never saw.
  *
- * One concept is the measure ITSELF (its persisted verdict governs directly).
- * Several are carriers of a `composed` target — the answer's own arithmetic
- * over classified concepts.
+ * A source resolves when its snippet grounds a live concept AND the value
+ * expression it declares is still the one the engine CLASSIFIED. The second
+ * half is what makes the identity a verifiable claim rather than a trusted one:
+ * the model may cite a snippet and ADAPT it (`classifyComponents` keeps the id
+ * for exactly that case), and adaptation is sanctioned — a tighter filter, a
+ * narrower period — but all of that lives in `where`, which narrows the
+ * population without touching what is being measured. Changing the ARITHMETIC
+ * (a `SUM` adapted into an `AVG`, say) makes the answer a different measure
+ * than the one whose additivity was judged, and the verdict would then license
+ * a bucketing nobody ruled on. Compared through the same AST canonicalization
+ * the reuse classifier uses, so spelling/quoting differences don't cost a
+ * legitimate reuse.
+ *
+ * ONE source is the measure ITSELF — its persisted verdict governs directly.
+ * SEVERAL are carriers of a `composed` target, whatever they resolve to: the
+ * branch is on how many operands the ANSWER combined, never on how many
+ * distinct concepts they turned out to be. A period-over-period change of one
+ * measure (`(revenue_this - revenue_prior) / revenue_prior`) resolves to a
+ * single concept and is emphatically NOT that concept — treating it as one
+ * would hand the composition revenue's own `additive` verdict and print a
+ * percentage as though the monthly rows summed to it.
  */
 export async function resolveAnswerTarget(
-	// Identity only — the parts are irrelevant to WHICH concept this is, and
-	// typing it this way lets both drill routes ask with their own source shape.
-	sources: readonly { snippetId?: string | null }[],
+	// Identity + the value expression it must still match. Typed structurally so
+	// both drill routes can ask with their own source shape.
+	sources: readonly { snippetId?: string | null; selectExpr: string }[],
 ): Promise<DrillTarget | null> {
 	if (sources.length === 0) return null;
 	const ids = sources.map((s) => s.snippetId ?? "");
 	if (ids.some((id) => id === "")) return null;
 	const byId = await resolveGroundedConcepts(ids);
-	// EVERY id must resolve — one unresolvable grounding (hallucinated, retired,
-	// retained-failed) is an input nothing can vouch for, same as a fresh step.
-	if (ids.some((id) => !byId.has(id))) return null;
-	// Then: source order, deduped by CONCEPT. Two sources may ground to the same
-	// concept (one snippet reused twice, or two groundings of it filtered two
-	// ways) and one concept is one carrier — its verdict is read once and would
-	// otherwise be gated twice against itself.
-	const concepts = [...new Set(ids.map((id) => byId.get(id) as string))];
-	return concepts.length === 1
-		? { kind: "measure", key: concepts[0] }
-		: { kind: "composed", carriers: concepts };
+	const concepts: string[] = [];
+	for (const source of sources) {
+		// An unresolvable grounding — hallucinated, retired, retained-failed — is
+		// an input nothing can vouch for, exactly like a fresh step.
+		const grounded = byId.get(source.snippetId as string);
+		if (grounded === undefined) return null;
+		if (
+			!(await sqlEquivalent(
+				`SELECT ${source.selectExpr}`,
+				`SELECT ${grounded.selectExpr}`,
+			))
+		) {
+			return null;
+		}
+		concepts.push(grounded.concept);
+	}
+	// Carriers dedupe by concept — one concept's verdict is read once and would
+	// otherwise be gated twice against itself — but the TARGET KIND does not:
+	// see the branch rule above.
+	const carriers = [...new Set(concepts)];
+	return sources.length === 1
+		? { kind: "measure", key: carriers[0] }
+		: { kind: "composed", carriers };
 }
 
 /**

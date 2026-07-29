@@ -159,6 +159,8 @@ export function graphSnippetSeedSql(
 			id: "snip_formula",
 			type: "formula",
 			field: "gross_margin",
+			// A formula step is not a grounding — no clause parts to carry.
+			expr: null,
 			sql: `SELECT (SUM(amount) - SUM(cost)) / NULLIF(SUM(amount), 0) FROM ${ENRICHED_VIEW}`,
 			failures: 0,
 		},
@@ -167,6 +169,7 @@ export function graphSnippetSeedSql(
 			id: "snip_revenue",
 			type: "extract",
 			field: "revenue",
+			expr: "SUM(amount)",
 			sql: `SELECT SUM(amount) FROM ${ENRICHED_VIEW}`,
 			failures: 0,
 		},
@@ -175,6 +178,7 @@ export function graphSnippetSeedSql(
 			id: "snip_cost",
 			type: "extract",
 			field: "cost",
+			expr: "SUM(cost)",
 			sql: `SELECT SUM(cost) FROM lake.typed.${ENRICHED_VIEW}`,
 			failures: 0,
 		},
@@ -188,17 +192,34 @@ export function graphSnippetSeedSql(
 			id: "snip_shrinkage",
 			type: "extract",
 			field: "shrinkage",
+			expr: "SUM(shrinkage)",
 			sql: `SELECT SUM(shrinkage) FROM ${ENRICHED_VIEW}`,
 			failures: 3,
 		},
 	];
+
+	// The persisted PARTS (DAT-838 shape) ride along on every extract, because
+	// that is what a graph-authored extract carries in production — `from` BARE
+	// by contract (validate_grounding_basis), the value expression unaliased
+	// under the mandatory `value` alias. A parts-less extract is not a tidier
+	// fixture, it is a DIFFERENT row: `og_grounding.select_expr` reads straight
+	// out of this JSON, and the drill's identity check compares the value
+	// expression an answer declares against it (DAT-671 R2).
+	const partsJson = (expr: string | null): string =>
+		expr === null
+			? "NULL"
+			: `'${JSON.stringify({
+					select: [{ expr, alias: "value" }],
+					from: [ENRICHED_VIEW],
+					where: [],
+				}).replaceAll("'", "''")}'::json`;
 
 	const values = rows
 		.map(
 			(r) =>
 				`('${r.id}', '${workspaceId}', '${r.type}', '${r.field}', '${workspaceId}', ` +
 				`'${r.sql.replaceAll("'", "''")}', 'fixture snippet', 'graph:${graphId}', ` +
-				`0, ${r.failures}, ${ts}, ${ts})`,
+				`${partsJson(r.expr ?? null)}, 0, ${r.failures}, ${ts}, ${ts})`,
 		)
 		.join(",\n  ");
 
@@ -207,7 +228,8 @@ SET search_path TO engine;
 
 INSERT INTO sql_snippets (
   snippet_id, workspace_id, snippet_type, standard_field, schema_mapping_id,
-  sql, description, source, execution_count, failure_count, created_at, updated_at)
+  sql, description, source, parts, execution_count, failure_count,
+  created_at, updated_at)
 VALUES
   ${values};
 `;

@@ -412,13 +412,13 @@ export function DrillableGrid({
 	// dead menu item explaining nothing. Sending the steps makes "still worth
 	// offering?" one server-side answer WITH its reason. It also re-keys the
 	// query per drill, which is the point: the menu is drill-dependent.
-	const resolvedAxesRequest = useMemo(
-		() =>
-			"partsSources" in axesRequest && steps.length > 0
-				? { ...axesRequest, steps }
-				: axesRequest,
-		[axesRequest, steps],
-	);
+	// Derived during render, not memoized: `queryKey` is hashed BY VALUE, so
+	// object identity buys nothing here (React idiom rule 1 + rule 6 — a
+	// `useMemo` has to earn its line).
+	const resolvedAxesRequest =
+		"partsSources" in axesRequest && steps.length > 0
+			? { ...axesRequest, steps }
+			: axesRequest;
 	const axesQuery = useQuery({
 		queryKey: ["drill-axes", resolvedAxesRequest],
 		queryFn: () =>

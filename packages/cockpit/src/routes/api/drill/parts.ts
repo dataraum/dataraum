@@ -126,7 +126,12 @@ export const Route = createFileRoute("/api/drill/parts")({
 					// route reads (DAT-671 R2). Nothing classified → {false,false} → the
 					// carrier spine, which is correct for any shape.
 					const reconciles = await resolveReconciliation(
-						await resolveAnswerTarget(source.sources),
+						await resolveAnswerTarget(
+							source.sources.map((s) => ({
+								snippetId: s.snippetId,
+								selectExpr: s.parts.selectExpr,
+							})),
+						),
 					);
 					const composed = composeAnswerSource(
 						source,

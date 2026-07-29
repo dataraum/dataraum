@@ -18,11 +18,14 @@ describe.skipIf(!fx.available)(
 			({ resolveGroundedConcepts } = await import("./concept-target"));
 		});
 
-		it("resolves each grounding snippet to its concept", async () => {
+		it("resolves each grounding snippet to its concept AND the expression the engine classified", async () => {
 			const byId = await resolveGroundedConcepts(["snip_revenue", "snip_cost"]);
+			// The value expression comes back with the concept because the caller
+			// spends the concept only while the answer still computes THAT
+			// expression — see `resolveAnswerTarget`.
 			expect(Object.fromEntries(byId)).toEqual({
-				snip_revenue: "revenue",
-				snip_cost: "cost",
+				snip_revenue: { concept: "revenue", selectExpr: "SUM(amount)" },
+				snip_cost: { concept: "cost", selectExpr: "SUM(cost)" },
 			});
 		});
 

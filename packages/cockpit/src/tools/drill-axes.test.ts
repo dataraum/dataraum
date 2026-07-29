@@ -5,7 +5,7 @@
 // table → curated ∪ substrate) is where a silent shape mismatch would produce
 // zero axes, so it gets pinned with fake rows.
 
-import { describe, expect, it, vi } from "vitest";
+import { beforeEach, describe, expect, it, vi } from "vitest";
 
 vi.mock("#/config", () => ({
 	config: { dataraumWorkspaceId: "ws-test" },
@@ -73,6 +73,26 @@ vi.mock("#/db/metadata/client", () => ({
 	},
 }));
 
+// The IDENTITY read is a GRAPH_TABLE MATCH (integration-tested in
+// concept-target.integration.test.ts); here it is a controllable double so the
+// TARGET-SHAPE logic — measure vs composed, and what withholds — can be pinned
+// as a unit. `sqlEquivalent` stays REAL (it parses through the shared in-memory
+// DuckDB), because comparing the declared expression to the classified one IS
+// the behaviour under test.
+const groundedConcepts = new Map<
+	string,
+	{ concept: string; selectExpr: string }
+>();
+vi.mock("./concept-target", () => ({
+	resolveGroundedConcepts: async (ids: readonly string[]) =>
+		new Map(
+			ids.flatMap((id) => {
+				const hit = groundedConcepts.get(id);
+				return hit ? [[id, hit] as const] : [];
+			}),
+		),
+}));
+
 // The AST read (real DuckDB) is integration-tested in sql-ast.integration.test;
 // here a thin regex stub extracts the aggregated column so the GATE logic is
 // tested in this pure-metadata unit.
@@ -120,6 +140,7 @@ import {
 	markAlreadyInResult,
 	measureFieldsFromDag,
 	orderAxesByDrivers,
+	resolveAnswerTarget,
 	resolveAxisVerdict,
 	resolveDrillAxes,
 	temporalKindsFromColumns,
@@ -1633,5 +1654,97 @@ describe("the COMPOSED answer target (DAT-671 R2)", () => {
 			expect(got.offer).toBe(false);
 			if (got.offer === false) expect(got.reason).toContain("closing_balance");
 		});
+	});
+});
+
+describe("resolveAnswerTarget (DAT-671 R2 — the identity spine)", () => {
+	const REVENUE = "CASE WHEN COUNT(*) = 0 THEN NULL ELSE SUM(credit) END";
+	const source = (snippetId: string | null, selectExpr = REVENUE) => ({
+		snippetId,
+		selectExpr,
+	});
+
+	beforeEach(() => {
+		groundedConcepts.clear();
+		groundedConcepts.set("snip_rev", {
+			concept: "revenue",
+			selectExpr: REVENUE,
+		});
+		groundedConcepts.set("snip_rev_alt", {
+			concept: "revenue",
+			selectExpr: REVENUE,
+		});
+		groundedConcepts.set("snip_cogs", {
+			concept: "cogs",
+			selectExpr: "SUM(debit)",
+		});
+	});
+
+	it("ONE source IS the measure — its own persisted verdict governs", async () => {
+		expect(await resolveAnswerTarget([source("snip_rev")])).toEqual({
+			kind: "measure",
+			key: "revenue",
+		});
+	});
+
+	it("several concepts are carriers of a COMPOSED target", async () => {
+		expect(
+			await resolveAnswerTarget([
+				source("snip_rev"),
+				source("snip_cogs", "SUM(debit)"),
+			]),
+		).toEqual({ kind: "composed", carriers: ["revenue", "cogs"] });
+	});
+
+	// The branch is on how many operands the ANSWER combined, never on how many
+	// distinct concepts they resolved to. A period-over-period change of ONE
+	// measure — (revenue_this - revenue_prior) / revenue_prior — resolves to a
+	// single concept and is emphatically not that concept: as a `measure` target
+	// it would inherit revenue's own `additive` verdict and print a percentage
+	// as though the monthly rows summed to it.
+	it("TWO sources of the SAME concept still compose — never collapse to the measure", async () => {
+		expect(
+			await resolveAnswerTarget([source("snip_rev"), source("snip_rev_alt")]),
+		).toEqual({ kind: "composed", carriers: ["revenue"] });
+	});
+
+	it("withholds when any source names no grounding", async () => {
+		expect(await resolveAnswerTarget([source(null)])).toBeNull();
+		// All-or-nothing: one unjudged operand poisons a composed bucket, and
+		// saying so once beats naming a carrier the practitioner never saw.
+		expect(
+			await resolveAnswerTarget([source("snip_rev"), source(null)]),
+		).toBeNull();
+	});
+
+	it("withholds when a grounding does not resolve", async () => {
+		// Hallucinated, retired, or retained-FAILED (the graph read drops those).
+		expect(await resolveAnswerTarget([source("snip_ghost")])).toBeNull();
+	});
+
+	// The identity is a claim the answer makes, and this is what verifies it.
+	it("withholds when the declared expression is no longer the classified one", async () => {
+		// The sanctioned ADAPT (a tighter filter, a narrower period) lives in
+		// `where` and leaves this untouched. Adapting the ARITHMETIC makes the
+		// answer a different measure than the one whose additivity was judged —
+		// the verdict would then license a bucketing nobody ruled on.
+		expect(
+			await resolveAnswerTarget([source("snip_rev", "AVG(credit)")]),
+		).toBeNull();
+		expect(
+			await resolveAnswerTarget([source("snip_rev", "SUM(credit) * 2")]),
+		).toBeNull();
+	});
+
+	it("accepts a differently-SPELLED but identical expression", async () => {
+		// Canonicalized through the same AST comparison the reuse classifier
+		// uses, so quoting and whitespace never cost a legitimate reuse.
+		groundedConcepts.set("snip_plain", {
+			concept: "revenue",
+			selectExpr: "SUM(credit)",
+		});
+		expect(
+			await resolveAnswerTarget([source("snip_plain", 'SUM( "credit" )')]),
+		).toEqual({ kind: "measure", key: "revenue" });
 	});
 });

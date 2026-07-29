@@ -580,6 +580,7 @@ def test_render_additivity_serves_verdicts_at_head(session) -> None:
         [
             MetricAxisAdditivity(
                 run_id="om-run-1",
+                vertical="financial_reporting",
                 target_kind="metric",
                 target_key="current_liabilities",
                 axis_kind="categorical",
@@ -589,6 +590,7 @@ def test_render_additivity_serves_verdicts_at_head(session) -> None:
             ),
             MetricAxisAdditivity(
                 run_id="om-run-1",
+                vertical="financial_reporting",
                 target_kind="metric",
                 target_key="current_liabilities",
                 axis_kind="time",
@@ -618,6 +620,7 @@ def test_render_additivity_names_an_abstention_as_unjudged(session) -> None:
     session.add(
         MetricAxisAdditivity(
             run_id="om-run-2",
+            vertical="financial_reporting",
             target_kind="measure",
             target_key="unclassified_measure",
             axis_kind="time",
@@ -641,6 +644,7 @@ def test_render_additivity_reads_only_the_class_rows(session) -> None:
         [
             MetricAxisAdditivity(
                 run_id="om-run-3",
+                vertical="financial_reporting",
                 target_kind="measure",
                 target_key="revenue",
                 axis_kind="time",
@@ -650,6 +654,7 @@ def test_render_additivity_reads_only_the_class_rows(session) -> None:
             ),
             MetricAxisAdditivity(
                 run_id="om-run-3",
+                vertical="financial_reporting",
                 target_kind="measure",
                 target_key="revenue",
                 axis_kind="time",

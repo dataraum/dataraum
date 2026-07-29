@@ -281,26 +281,14 @@ class EnrichmentAgent(LLMFeature):
                 )
 
                 # Create recommendation
-                enrichment_columns = [
-                    f"{col.column_name}:{col.enrichment_value}"
-                    for col in enrichment.enrichment_columns
-                ]
-
                 recommendation = EnrichmentRecommendation(
                     fact_table_id=fact_table_id,
                     fact_table_name=fact_table_name,
                     dimension_joins=[dimension_join],
-                    relationship_role=enrichment.relationship_role,
-                    confidence=enrichment.confidence,
-                    reasoning=enrichment.reasoning,
-                    enrichment_columns=enrichment_columns,
                 )
                 recommendations.append(recommendation)
 
-        result = EnrichmentAnalysisResult(
-            recommendations=recommendations,
-            model_name=model_name,
-        )
+        result = EnrichmentAnalysisResult(recommendations=recommendations)
 
         logger.info(
             "enrichment_analysis_complete",

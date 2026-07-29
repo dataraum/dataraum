@@ -139,6 +139,11 @@ class PhaseRun:
     ``None`` otherwise). It is the ONE output field that survives the collapse to
     :class:`PhaseOutcome` — the gate signal ``OperatingModelWorkflow`` reads to
     refuse an empty promote (DAT-845).
+
+    There is deliberately no ``warnings`` field: ``PhaseResult.warnings`` is a
+    LOG channel whose sink is the ``activity.phase_done`` line below, not
+    something the workflow or the cockpit consumes. See ``PhaseResult.warnings``
+    in ``pipeline/base.py`` for the decision and what widening it would cost.
     """
 
     status: str
@@ -228,11 +233,20 @@ def run_phase(
 
         result = phase.run(ctx)
 
-        # A FAILED phase persists nothing: roll back its partial writes so
+        # A FAILED phase persists no METADATA: roll back its partial writes so
         # session_scope's commit-on-clean-exit is a no-op. This is what makes a
         # transient-failure activity retry safe — the retry (same run_id) starts
         # from a clean slate instead of clashing with attempt 1's committed rows
         # (a within-run UNIQUE) or relying on every writer to delete-by-run_id.
+        #
+        # Scoped to the Postgres session on purpose. DuckDB DDL a phase already
+        # executed this attempt (enriched-view CREATEs, materializations) has no
+        # transaction around it and is NOT undone — a phase that fails partway
+        # leaves those objects behind. That converges rather than corrupting: the
+        # DDL is CREATE OR REPLACE (idempotent on retry), and DAT-506's
+        # publish-by-CHECKPOINT means anything uncheckpointed is invisible to the
+        # cockpit's READ_ONLY attach until a run completes. A phase that mixes
+        # mid-run DuckDB DDL with a later FAILED return must keep both true.
         if result.status == PhaseStatus.FAILED:
             session.rollback()
 
@@ -241,10 +255,11 @@ def run_phase(
         phase=phase_name,
         status=result.status.value,
         duration=result.duration_seconds,
-        # A phase's non-fatal disclosures (e.g. the DAT-889 column_annotation
-        # runaway/omission retry guard) ride PhaseResult.warnings — surfaced
-        # here so they reach a log reader for EVERY phase, not just the ones
-        # a caller thinks to check PhaseRun.summary for.
+        # THE terminal sink for PhaseResult.warnings (DAT-671 R6 wire-or-delete):
+        # a phase's non-fatal disclosures reach a log reader here, for EVERY
+        # phase, and go no further — PhaseRun/PhaseOutcome carry no warnings and
+        # the cockpit never sees them. Decision + cost of widening: the
+        # PhaseResult.warnings docstring in pipeline/base.py.
         warnings=result.warnings,
     )
     return PhaseRun(
@@ -448,11 +463,20 @@ def run_session_phase(
 
         result = phase.run(ctx)
 
-        # A FAILED phase persists nothing: roll back its partial writes so
+        # A FAILED phase persists no METADATA: roll back its partial writes so
         # session_scope's commit-on-clean-exit is a no-op. This is what makes a
         # transient-failure activity retry safe — the retry (same run_id) starts
         # from a clean slate instead of clashing with attempt 1's committed rows
         # (a within-run UNIQUE) or relying on every writer to delete-by-run_id.
+        #
+        # Scoped to the Postgres session on purpose. DuckDB DDL a phase already
+        # executed this attempt (enriched-view CREATEs, materializations) has no
+        # transaction around it and is NOT undone — a phase that fails partway
+        # leaves those objects behind. That converges rather than corrupting: the
+        # DDL is CREATE OR REPLACE (idempotent on retry), and DAT-506's
+        # publish-by-CHECKPOINT means anything uncheckpointed is invisible to the
+        # cockpit's READ_ONLY attach until a run completes. A phase that mixes
+        # mid-run DuckDB DDL with a later FAILED return must keep both true.
         if result.status == PhaseStatus.FAILED:
             session.rollback()
 
@@ -461,8 +485,8 @@ def run_session_phase(
         phase=phase_name,
         status=result.status.value,
         duration=result.duration_seconds,
-        # See the sibling run_phase's identical addition (DAT-889): a phase's
-        # non-fatal disclosures ride PhaseResult.warnings.
+        # The session-phase half of the same terminal sink — see run_phase above
+        # and the PhaseResult.warnings docstring in pipeline/base.py.
         warnings=result.warnings,
     )
     return PhaseRun(

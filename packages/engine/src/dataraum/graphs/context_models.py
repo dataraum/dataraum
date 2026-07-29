@@ -68,17 +68,13 @@ class ColumnContext:
     numeric_min: float | None = None
     numeric_max: float | None = None
 
-    # Temporal metrics
+    # Staleness feeds the `stale_data` quality flag below. The observed WINDOW
+    # (granularity / min / max / span / worst gap) is NOT here: it is a property
+    # of a declared time AXIS, served whole on TimeAxisContext off the graph's
+    # temporal_coverage edge (DAT-671 R6). It lived on both for a while, read
+    # from this copy by the renderer that now reads the axis — two homes for one
+    # measurement, one of them write-only.
     is_stale: bool | None = None
-    detected_granularity: str | None = None
-
-    # Temporal bounds (from TemporalColumnProfile)
-    min_timestamp: str | None = None
-    max_timestamp: str | None = None
-    # Coverage window + worst discontinuity — promoted from the temporal profile
-    # (DAT-783) so the agent knows a time axis's span and whether it's gappy.
-    span_days: float | None = None
-    largest_gap_days: float | None = None
 
     # Derived column info from correlation analysis
     is_derived: bool = False
@@ -89,6 +85,30 @@ class ColumnContext:
 
     # Entropy scores (from entropy layer)
     entropy_scores: dict[str, Any] | None = None  # Layer scores and composite
+
+
+@dataclass
+class TimeAxisContext:
+    """One DECLARED time axis of a relation, served from ``temporal_coverage``.
+
+    ONE home for "what are this relation's time axes and how good are they": the
+    element view already resolves the authored role JSON
+    (``table_entities.time_columns``) against the persisted temporal profile,
+    including the DAT-866 layered name resolution that finds an anchor existing
+    only on the enriched view. Everything here is observed or authored — an
+    unmeasurable window stays ``None``, never fabricated.
+    """
+
+    column_name: str
+    role: str | None = None  # 'event' (a trend lens) | 'attribute' (a plain date)
+    aspect: str | None = None  # the authored label, e.g. 'ship' / 'booking'
+    note: str | None = None  # the author's one-line meaning of the axis
+    is_anchor: bool = False  # the DECLARED anchor (not the resolved anchor axis)
+    detected_granularity: str | None = None
+    min_timestamp: str | None = None
+    max_timestamp: str | None = None
+    span_days: float | None = None
+    largest_gap_days: float | None = None
 
 
 @dataclass
@@ -108,8 +128,12 @@ class TableContext:
     # From TableEntity
     table_description: str | None = None
     grain_columns: list[str] = field(default_factory=list)
-    # DAT-565: all event-time axes — [{"column", "aspect", "note"}, ...].
-    time_columns: list[dict[str, Any]] = field(default_factory=list)
+    # DAT-565: all declared time axes, served from the graph's temporal_coverage
+    # edge (never the raw TableEntity JSON — that loses the enriched-layer anchors
+    # and carries no observed window). Like every other graph-served section, an
+    # UNREACHABLE graph serves none: empty here, and the document renders no time
+    # axis rather than a windowless one.
+    time_axes: list[TimeAxisContext] = field(default_factory=list)
     # DAT-565: recurring identities (would-be FKs) — [{"column", "note"}, ...].
     identity_columns: list[dict[str, Any]] = field(default_factory=list)
 
@@ -552,5 +576,6 @@ __all__ = [
     "RelationshipContext",
     "SliceContext",
     "TableContext",
+    "TimeAxisContext",
     "ValidationContext",
 ]

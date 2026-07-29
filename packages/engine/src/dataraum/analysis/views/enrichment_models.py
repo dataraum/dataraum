@@ -117,22 +117,27 @@ class EnrichmentAnalysisOutput(BaseModel):
 
 
 class EnrichmentRecommendation(BaseModel):
-    """A processed enrichment recommendation ready for view creation."""
+    """A processed enrichment recommendation ready for view creation.
+
+    The join SHAPE only. The judge's ``relationship_role`` / ``reasoning`` /
+    per-column enrichment ratings and the model name rode here too, purely to be
+    copied into ``enriched_views.evidence`` — a column nothing ever read, deleted
+    in DAT-671 R6. They are dropped with it rather than left as a second dead
+    surface (ADR-0024 d3). The LLM is still ASKED for them: they are load-bearing
+    inside :mod:`~dataraum.analysis.views.enrichment_agent` (the per-column
+    high/medium rating is exactly what selects ``include_columns``), so the
+    output schema and the prompt are unchanged — only this post-LLM carrier is.
+    """
 
     fact_table_id: str
     fact_table_name: str
     dimension_joins: list[DimensionJoin]
-    relationship_role: str
-    confidence: float
-    reasoning: str
-    enrichment_columns: list[str]  # Column names with enrichment values
 
 
 class EnrichmentAnalysisResult(BaseModel):
     """Result of enrichment analysis operation."""
 
     recommendations: list[EnrichmentRecommendation] = Field(default_factory=list)
-    model_name: str = ""
 
 
 __all__ = [

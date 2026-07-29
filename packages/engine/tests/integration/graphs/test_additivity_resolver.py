@@ -543,6 +543,7 @@ def test_persist_is_fault_isolated(
     session.add(
         MetricAxisAdditivity(
             run_id=RUN,
+            vertical="financial_reporting",
             target_kind="metric",
             target_key="prior",
             axis_kind="time",
@@ -569,6 +570,7 @@ def test_persist_is_fault_isolated(
             graphs={"good": _graph("good", "good_measure"), "bad": _graph("bad", "bad_measure")},
             declared_keys={"good", "bad"},
             workspace_id=WS,
+            vertical="financial_reporting",
             run_id=RUN,
             catalogue_run_id=RUN,
         )
@@ -625,6 +627,7 @@ def test_persist_isolates_rollup_failure(
     session.add(
         MetricAxisAdditivity(
             run_id=RUN,
+            vertical="financial_reporting",
             target_kind="metric",
             target_key="prior",
             axis_kind="time",
@@ -649,6 +652,7 @@ def test_persist_isolates_rollup_failure(
             graphs={"good": _graph("good", "gf"), "bad": _graph("bad", "bf")},
             declared_keys={"good", "bad"},
             workspace_id=WS,
+            vertical="financial_reporting",
             run_id=RUN,
             catalogue_run_id=RUN,
         )
@@ -709,6 +713,7 @@ def test_persist_upserts_idempotently(
             graphs={"m": graph},
             declared_keys={"m"},
             workspace_id=WS,
+            vertical="financial_reporting",
             run_id=RUN,
             catalogue_run_id=RUN,
         )
@@ -745,6 +750,7 @@ def test_persist_writes_measure_verdicts(
         graphs={"m": graph},
         declared_keys={"m"},
         workspace_id=WS,
+        vertical="financial_reporting",
         run_id=RUN,
         catalogue_run_id=RUN,
     )
@@ -793,6 +799,7 @@ def test_persist_writes_abstentions_when_there_is_no_catalogue_run(
         graphs={"m": graph},
         declared_keys={"m"},
         workspace_id=WS,
+        vertical="financial_reporting",
         run_id="run-no-catalogue",
         catalogue_run_id=None,
     )
@@ -825,6 +832,7 @@ def test_persist_covers_a_declared_metric_whose_dag_would_not_parse(
         graphs={},
         declared_keys={"unparseable_metric"},
         workspace_id=WS,
+        vertical="financial_reporting",
         run_id="run-parse-fail",
         catalogue_run_id=RUN,
     )
@@ -874,6 +882,7 @@ def test_persist_keeps_a_healthy_sibling_when_one_extract_is_unresolvable(
         graphs={"m": graph},
         declared_keys={"m"},
         workspace_id=WS,
+        vertical="financial_reporting",
         run_id="run-mixed",
         catalogue_run_id=RUN,
     )

@@ -265,13 +265,8 @@ class TestEnrichedViewsPhaseDuckLake:
                             relationship_id="rel-1",
                         )
                     ],
-                    relationship_role="reference/lookup",
-                    confidence=0.9,
-                    reasoning="customers names/regions enrich orders",
-                    enrichment_columns=["name", "country"],
                 )
             ],
-            model_name="stub-model",
         )
         return fact.table_id, dim.table_id, canned
 
@@ -569,13 +564,8 @@ class TestEnrichedViewsPhaseDuckLake:
                             relationship_id="rel-1",
                         )
                     ],
-                    relationship_role="reference/lookup",
-                    confidence=0.9,
-                    reasoning="contradictory re-judgment",
-                    enrichment_columns=["name"],
                 )
             ],
-            model_name="stub-model",
         )
         run("run-3")
         views = enriched_views()
@@ -1226,13 +1216,8 @@ class TestEnrichedViewsPhaseDuckLake:
                             relationship_id="rel-regions",
                         )
                     ],
-                    relationship_role="reference/lookup",
-                    confidence=0.9,
-                    reasoning="regions enrich orders",
-                    enrichment_columns=["region_name"],
                 )
             ],
-            model_name="stub-model",
         )
         run("run-2", with_regions=True)
         assert len(seen_pairs) == 2, "the new pair IS re-judged (one more LLM call)"
@@ -1358,13 +1343,8 @@ class TestEnrichedViewsPhaseDuckLake:
                             relationship_id="rel-fanout",
                         ),
                     ],
-                    relationship_role="reference/lookup",
-                    confidence=0.9,
-                    reasoning="customers + tags both proposed",
-                    enrichment_columns=["name", "country", "tag"],
                 )
             ],
-            model_name="stub-model",
         )
         return fact.table_id, good.table_id, fanout.table_id, canned
 

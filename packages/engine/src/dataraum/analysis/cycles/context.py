@@ -37,6 +37,7 @@ from dataraum.analysis.relationships.graph_topology import (
 from dataraum.analysis.relationships.utils import load_defined_relationships
 from dataraum.analysis.semantic.db_models import SemanticAnnotation, TableEntity, TableRole
 from dataraum.analysis.semantic.utils import load_column_concepts
+from dataraum.analysis.served_columns import served_columns
 from dataraum.analysis.slicing.curation import curated_slices
 from dataraum.analysis.slicing.db_models import SliceDefinition
 from dataraum.analysis.statistics.db_models import StatisticalProfile
@@ -204,8 +205,12 @@ def build_cycle_detection_context(
     # entity a flow involves, so the judging LLM must see them instead of
     # inheriting a name-starved annotation's hedge. Structural gate only —
     # derived from served metadata, never from name patterns or value shapes.
+    # This map is also the allow-list `_served_identity_columns` checks LLM-named
+    # identity columns against, so the surrogate exclusion (DAT-878) has to apply
+    # here too: an identity column is a business column, and a `_sk__*` that
+    # passed the physically-exists gate would be served back with value samples.
     columns_by_table: dict[str, set[str]] = {
-        t.table_name: {c.column_name for c in t.columns} for t in tables
+        t.table_name: {c.column_name for c in served_columns(t.columns)} for t in tables
     }
     served_identity: dict[str, list[dict[str, Any]]] = {
         ent_table_name: _served_identity_columns(
@@ -320,7 +325,7 @@ def build_cycle_detection_context(
     table_info = []
     for t in tables:
         columns = []
-        for c in t.columns:
+        for c in served_columns(t.columns):
             col_info: dict[str, Any] = {
                 "name": c.column_name,
                 "type": c.resolved_type or c.raw_type,

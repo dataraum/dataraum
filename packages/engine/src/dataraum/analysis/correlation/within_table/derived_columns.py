@@ -20,8 +20,8 @@ from dataraum.analysis.correlation.db_models import (
     DerivedColumn as DBDerivedColumn,
 )
 from dataraum.analysis.correlation.models import DerivedColumn
-from dataraum.analysis.statistics.db_models import StatisticalProfile
 from dataraum.analysis.served_columns import enriched_dimension_columns
+from dataraum.analysis.statistics.db_models import StatisticalProfile
 from dataraum.core.duckdb_types import is_numeric
 from dataraum.core.logging import get_logger
 from dataraum.core.models.base import Result

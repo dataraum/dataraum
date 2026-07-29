@@ -38,6 +38,7 @@ from dataraum.analysis.relationships.utils import (
     load_suppressed_relationship_pairs,
 )
 from dataraum.analysis.semantic.db_models import SemanticAnnotation, TableEntity, TableRole
+from dataraum.analysis.served_columns import served_columns
 from dataraum.analysis.statistics.db_models import StatisticalProfile
 from dataraum.analysis.statistics.profiler import _profile_column_stats_parallel
 from dataraum.analysis.typing.db_models import MaterializationRecipe
@@ -960,13 +961,22 @@ class EnrichedViewsPhase(BasePhase):
         fact_table_ids = {e.table_id for e in fact_entities}
         tables_data = []
         for table in typed_tables:
+            # The PROJECTION filters surrogates, never `columns_by_table` itself —
+            # the same map resolves each DimensionJoin's endpoint names below, where
+            # a cured composite's legs ARE the surrogate pair (DAT-878).
+            #
+            # This filter is load-bearing beyond the prompt: a surrogate the agent
+            # picks into `include_columns` becomes a real served column named
+            # "{fact_fk}__{_sk__…}", which no longer matches the prefix predicate and
+            # so cannot be detected anywhere downstream. Prevention here is the only
+            # place that class can be closed.
             columns_list = [
                 {
                     "column_id": col.column_id,
                     "column_name": col.column_name,
                     "resolved_type": col.resolved_type,
                 }
-                for col in columns_by_table.get(table.table_id, [])
+                for col in served_columns(columns_by_table.get(table.table_id, []))
             ]
             tables_data.append(
                 {

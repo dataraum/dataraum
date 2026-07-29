@@ -27,6 +27,7 @@ from typing import TYPE_CHECKING, Any
 
 from sqlalchemy import select
 
+from dataraum.analysis.served_columns import enriched_dimension_columns, served_columns
 from dataraum.analysis.slicing.agent import SlicingAgent
 from dataraum.analysis.slicing.db_models import SliceDefinition
 from dataraum.analysis.slicing.models import (
@@ -35,7 +36,6 @@ from dataraum.analysis.slicing.models import (
     SlicingAnalysisResult,
 )
 from dataraum.analysis.slicing.relevance import score_axis
-from dataraum.analysis.served_columns import enriched_dimension_columns
 from dataraum.core.logging import get_logger
 from dataraum.llm import PromptRenderer, create_provider, load_llm_config
 from dataraum.pipeline.base import PhaseContext, PhaseResult
@@ -830,9 +830,16 @@ class SlicingPhase(BasePhase):
                         dim_role_by_attr[(ann_table_id, ann_col_name)] = ann.semantic_role
 
         for table in tables:
-            # Get columns for this table
+            # Get columns for this table, minus the mint-owned surrogate join keys
+            # (DAT-878). Filtering at the load matters more here than at a pure
+            # prompt site: what survives is BOTH the ranker's candidate list and the
+            # persisted SliceDefinition inventory, and neither downstream gate stops
+            # a surrogate — `_pre_filter_columns` drops near-unique columns, but a
+            # FACT-side FK surrogate carries the dimension's cardinality and passes,
+            # and `_exclude_non_dimension_roles` is deliberately fail-open for
+            # unannotated columns, which every surrogate is.
             col_stmt = select(Column).where(Column.table_id == table.table_id)
-            columns = list((ctx.session.execute(col_stmt)).scalars().all())
+            columns = served_columns((ctx.session.execute(col_stmt)).scalars().all())
             column_count += len(columns)
 
             col_ids = [c.column_id for c in columns]

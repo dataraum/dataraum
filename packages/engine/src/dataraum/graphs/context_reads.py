@@ -97,8 +97,8 @@ def build_execution_context(
     # Lazy imports to avoid circular dependencies
     from dataraum.analysis.correlation.db_models import DerivedColumn
     from dataraum.analysis.cycles.db_models import DetectedBusinessCycle
-    from dataraum.analysis.relationships.surrogate import is_surrogate_column
     from dataraum.analysis.semantic.db_models import SemanticAnnotation, TableEntity
+    from dataraum.analysis.served_columns import served_columns
     from dataraum.analysis.slicing.curation import curated_slices
     from dataraum.analysis.slicing.db_models import SliceDefinition
     from dataraum.analysis.statistics.db_models import (
@@ -135,11 +135,7 @@ def build_execution_context(
     # / ``og_columns``), a separate read from this one — a surrogate pair still
     # surfaces there as the join evidence it legitimately is.
     columns_stmt = select(Column).where(Column.table_id.in_(table_ids))
-    columns = [
-        c
-        for c in session.execute(columns_stmt).scalars().all()
-        if not is_surrogate_column(c.column_name)
-    ]
+    columns = served_columns(session.execute(columns_stmt).scalars().all())
     columns_by_table: dict[str, list[Column]] = {}
     for col in columns:
         if col.table_id not in columns_by_table:

@@ -294,6 +294,23 @@ def get_multi_table_schema_for_llm(
                 "columns": view_columns,
             }
         )
+        for view_col in view_columns:
+            slice_membership.pop((ev.fact_table_id, view_col["column_name"]), None)
+
+    # An axis that matched neither a served fact column nor any view's dimension
+    # columns reaches the model with no value-set at all. Reachable because
+    # ``EnrichedView`` is latest-only and reconciled in place while the slice
+    # rows are run-versioned: a later run can rewrite ``dimension_columns`` and
+    # then fail before promoting, leaving the promoted head's axis names with no
+    # view that still lists them. Surfaced loudly rather than silently dropped —
+    # the same DAT-439 discipline as the missing-table and row-count warnings
+    # above; a quietly value-less axis is precisely the failure this lane exists
+    # to end.
+    if slice_membership:
+        logger.warning(
+            "validation_schema_slice_axis_unplaceable",
+            axes=sorted(name for _, name in slice_membership),
+        )
 
     return {
         "tables": table_schemas,
@@ -522,6 +539,10 @@ def _membership_attrs(col: dict[str, Any]) -> str:
     if not values:
         return ""
     attrs = f' distinct_values="{_attr(", ".join(values))}"'
+    # The marker rides on ``distinct_count``, which the profiler writes in the
+    # same pass as ``top_values`` — so a stored list without a count does not
+    # occur in practice. If that coupling ever breaks, this silence would assert
+    # completeness we cannot back, which is the whole defect being fixed here.
     total = col.get("distinct_total")
     if total is not None and total > len(values):
         attrs += (

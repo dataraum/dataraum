@@ -21,6 +21,12 @@ synthetic edge cases.
 Membership-only: a value is rejected ONLY when the cited column has a served
 value-set the value is absent from — when no value-set was served we cannot prove
 improvisation, so we don't reject (no false-loud).
+
+The served value-sets are MEASURED (DAT-671): they come from the statistical
+profile of the column each axis names. They were previously the slicing agent's
+echo of a value list, which made this floor validate one LLM's claim against
+another's — an invented completion value could already be sitting in the served
+set by the time a cycle cited it.
 """
 
 from __future__ import annotations
@@ -126,6 +132,19 @@ def verify_cycles(
     cols_by_table: dict[str, set[str]] = {
         t["table_name"]: {c["name"] for c in t["columns"]} for t in context.get("tables", [])
     }
+    # A fact's JOINED dimension columns count as served on that fact (DAT-671).
+    # The served slice axes label an enriched ``{fk}__{attr}`` column with its
+    # fact's table name — "receipts.ar_invoice_id__status" — because that is the
+    # fact the axis belongs to; the physical column lives on the enriched view,
+    # which is not itself in this run's table scope. Without this the floor would
+    # reject on the COLUMN check every cycle grounded on a joined attribute, i.e.
+    # exactly the invoice-status / customer-segment axes the context advertises.
+    # (It read as passing only while those axes were mislabelled with the FK
+    # column's name, which resolved for the wrong reason.)
+    for ev in context.get("enriched_views", []):
+        fact = ev.get("fact_table")
+        if fact:
+            cols_by_table.setdefault(fact, set()).update(ev.get("dimension_columns") or [])
     slice_values: dict[tuple[str, str], set[str]] = {}
     for sd in context.get("slice_definitions", []):
         key = (sd["table_name"], sd["column_name"])

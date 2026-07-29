@@ -1587,3 +1587,54 @@ def test_enriched_value_counts_survive_a_run_they_were_not_written_under(
 
     (sd,) = ctx["slice_definitions"]
     assert {vc["value"] for vc in sd["value_counts"]} == {"paid", "open"}
+
+
+def test_an_enriched_axis_the_context_advertises_is_actually_citeable(
+    session, enriched_status_axis
+) -> None:
+    """End-to-end: what the prompt offers, the membership floor must accept.
+
+    Driven through the REAL builder rather than a hand-written context dict —
+    the two tests above pin the values, but only the builder's own output proves
+    the floor and the prompt agree on the shape. They did not: naming the axis
+    honestly (``receipts.ar_invoice_id__status``) put a column into the served
+    slice section that ``cols_by_table`` — built from the typed fact's columns —
+    had never heard of, so every cycle grounded on a joined attribute was
+    rejected on the COLUMN check before its values were ever consulted. That
+    read as working only while the axis wore the FK column's name.
+    """
+    from dataraum.analysis.cycles.models import DetectedCycle
+    from dataraum.analysis.cycles.verify import verify_cycles
+
+    table_id = enriched_status_axis
+    ctx = _build(
+        session,
+        [table_id],
+        base_runs=BaseRunMap(relationship_run_id="cat", semantic_runs={table_id: "gen"}),
+    )
+    # The axis is advertised to the model under the fact's name.
+    assert "receipts.ar_invoice_id__status" in format_context_for_prompt(ctx)
+
+    def _cycle(completion_value: str) -> DetectedCycle:
+        return DetectedCycle(
+            cycle_id="c1",
+            cycle_name="Receipt settlement",
+            cycle_type="journal_entry_cycle",
+            description="",
+            status_table="receipts",
+            status_column="ar_invoice_id__status",
+            completion_value=completion_value,
+        )
+
+    kept, rejections = verify_cycles([_cycle("paid")], ctx)
+    assert len(kept) == 1, rejections
+
+    # The floor still bites: a value the profile never measured is improvised.
+    kept, rejections = verify_cycles([_cycle("settled")], ctx)
+    assert kept == []
+    assert "settled" in rejections[0]
+
+    # And the FK's own values are not members of the status axis.
+    kept, rejections = verify_cycles([_cycle("INV-1")], ctx)
+    assert kept == []
+    assert "INV-1" in rejections[0]

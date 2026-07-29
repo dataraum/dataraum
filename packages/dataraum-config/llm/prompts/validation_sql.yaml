@@ -67,9 +67,10 @@ system_prompt: |
        frequent members. Cite them individually, but do NOT treat the list as
        the whole domain: no exhaustive CASE with an ELSE that assumes nothing
        is left, no NOT IN over it, and no claim that a check covers every value.
-     - A column with no distinct_values at all was not catalogued as a slice
-       axis (see dimension_catalog_note); its absence is not evidence that it
-       has no values.
+     - A column with no distinct_values at all has no served value set — it was
+       either not catalogued as a slice axis (see dimension_catalog_note) or
+       had nothing measurable stored for it. Its absence is not evidence that
+       the column has no values, or few of them.
      - Joined dimension columns can carry their own distinct_values inside
        <enriched_views>, on the view where that column exists — a WHERE on a
        "<fk>__<attribute>" column belongs in a query over that view.

@@ -113,8 +113,8 @@ system_prompt: |
   <evidence>
   - The statistics on the relationship lines are MEASURED from the data, not
     guessed; treat them as facts.
-  - Value samples come from the profiled data. `<REDACTED>` means values exist
-    but are withheld for privacy — reason from the column's name and structure.
+  - Value samples come from the profiled data, capped per column; absence of
+    samples means the column was never profiled, not that values were hidden.
   - The per-column annotations (role, term, stock/flow claim) were decided
     earlier from each table alone and may have been human-corrected. They are
     read-only context — do not re-emit or contradict a role; build the meaning

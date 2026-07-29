@@ -21,13 +21,13 @@ from dataraum.analysis.semantic.models import (
     TableColumnAnnotation,
 )
 from dataraum.analysis.semantic.ontology import OntologyLoader
+from dataraum.analysis.semantic.utils import prompt_samples
 from dataraum.analysis.statistics.models import ColumnProfile
 from dataraum.core.logging import get_logger
 from dataraum.core.models.base import (
     Result,
 )
 from dataraum.llm.features._base import LLMFeature
-from dataraum.llm.privacy import DataSampler
 from dataraum.llm.providers.base import (
     ConversationRequest,
     Message,
@@ -167,9 +167,11 @@ class ColumnAnnotationAgent(LLMFeature):
             profiles = profiles_result.value
 
         # Prepare samples once — keyed by (table_name, column_name), so it is
-        # reused unchanged across every batch attempt below.
-        sampler = DataSampler(self.config.privacy)
-        samples = sampler.prepare_samples(profiles)
+        # reused unchanged across every batch attempt below. Capped at the
+        # configured prompt budget (DAT-890): this prompt is the pipeline's
+        # most sample-dense, and serving the profiler's full top-k made it 88%
+        # raw corpus bytes.
+        samples = prompt_samples(profiles, limit=self.config.privacy.max_sample_values)
 
         # Concepts from the typed vocabulary table (DAT-728, config→DB); the
         # loader below is retained only as the prompt formatter.
@@ -243,23 +245,22 @@ class ColumnAnnotationAgent(LLMFeature):
             # arguments.
             #
             # `label` stays the literal "column_annotation" on every attempt —
-            # NOT e.g. f"column_annotation@{calls_made}" — even though that
-            # means a same-table retry's offline prompt dump
-            # (``llm/prompt_log.py``, keyed by (label, prompt_hash) in
-            # ``providers/anthropic.py``) collides with and overwrites the
-            # earlier attempt's dump, destroying exactly the runaway payload
-            # the eval would want to inspect (DAT-889 fold-in review — PARKED,
-            # not fixed here). `label` is asserted verbatim by
+            # it is the telemetry tag, asserted verbatim by
             # ``tests/unit/llm/test_agent_request_shape.py::test_column_annotation``
-            # via the ``_assert_shape`` helper that ~9 other feature-agent
-            # tests in that file share; varying it would mean loosening a
-            # shared assertion those other agents' tests also rely on — out
-            # of this lane's fence (other phases/agents' tests).
+            # through a helper ~9 other feature-agent tests share.
+            #
+            # `dump_key` carries the attempt instead (DAT-890). A runaway retry
+            # re-sends the SAME batch, so the prompt hash is identical and the
+            # offline dump (``llm/prompt_log.py``, truncate-written) used to
+            # overwrite the earlier attempt — destroying the very runaway
+            # payload the guard exists to expose. This is why no DAT-889
+            # response survives in the eval artifacts.
             request = ConversationRequest(
                 messages=[Message(role="user", content=user_prompt)],
                 system=system_prompt,
                 output_schema=ColumnAnnotationOutput.model_json_schema(),
                 label="column_annotation",
+                dump_key=f"column_annotation.a{calls_made + 1:02d}",
                 effort=feature_config.effort,
                 max_tokens=self.config.limits.max_output_tokens_per_request,
                 temperature=temperature,

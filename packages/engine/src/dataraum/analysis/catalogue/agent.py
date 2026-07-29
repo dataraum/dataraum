@@ -20,7 +20,6 @@ from dataraum.analysis.semantic.ontology import OntologyLoader
 from dataraum.core.logging import get_logger
 from dataraum.core.models.base import Result
 from dataraum.llm.features._base import LLMFeature
-from dataraum.llm.privacy import DataSampler
 from dataraum.llm.providers.base import ConversationRequest, Message
 from dataraum.llm.structured_output import parse_structured_output
 
@@ -101,14 +100,13 @@ class CatalogueSemanticsAgent(LLMFeature):
         if not ontology_def.concepts:
             return Result.fail(f"Vertical '{ontology}' has no concepts.")
 
-        sampler = DataSampler(self.config.privacy)
         inputs = build_catalogue_inputs(
             session,
             duckdb_conn,
             table_ids=table_ids,
             session_table_ids=session_table_ids,
             run_id=run_id,
-            sampler=sampler,
+            sample_limit=self.config.privacy.max_sample_values,
         )
         required_fields = _required_standard_fields(ontology)
         context = {

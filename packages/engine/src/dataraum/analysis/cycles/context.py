@@ -45,7 +45,6 @@ from dataraum.analysis.temporal.db_models import TemporalColumnProfile
 from dataraum.analysis.views.db_models import EnrichedView
 from dataraum.core.logging import get_logger
 from dataraum.graphs.field_mapping import format_meanings_for_prompt, load_column_meanings
-from dataraum.llm.privacy import DataSampler
 from dataraum.storage import Column, Table
 
 logger = get_logger(__name__)
@@ -70,7 +69,6 @@ if TYPE_CHECKING:
     import duckdb
 
     from dataraum.lifecycle import BaseRunMap
-    from dataraum.llm.config import LLMPrivacy
 
 
 def build_cycle_detection_context(
@@ -80,7 +78,6 @@ def build_cycle_detection_context(
     *,
     vertical: str,
     base_runs: BaseRunMap,
-    privacy: LLMPrivacy | None = None,
 ) -> dict[str, Any]:
     """Build context for the business cycle detection agent.
 
@@ -101,9 +98,6 @@ def build_cycle_detection_context(
             each table's per-column annotations AND its typed-profile reads
             (slice value counts, entity-flow value samples). An absent pin
             reads EMPTY — fail-closed (DAT-429), never a cross-run read.
-        privacy: LLM privacy config; when provided, entity-flow value samples
-            respect its sensitive-name patterns (a sensitive column serves no
-            samples). ``None`` serves samples ungated (tests).
 
     Returns:
         Context dictionary with all pipeline metadata for cycle detection.
@@ -240,8 +234,6 @@ def build_cycle_detection_context(
             logger.warning("row_count_failed", table=t.table_name, duckdb_path=t.duckdb_path)
             row_counts[t.table_name] = None
 
-    sampler = DataSampler(privacy) if privacy is not None else None
-
     # Chain-conditioned evidence on the reference lines (DAT-853): for each
     # A.fk -> B.key, aggregated over ONLY the rows that ride the join —
     # (a) the from-side identity labels' top values, and (b) the from-side
@@ -264,8 +256,6 @@ def build_cycle_detection_context(
         for ic in served_identity.get(r["from_table"], []):
             label_name = ic["column"]
             if (r["from_table"], label_name) in endpoint_columns:
-                continue
-            if sampler is not None and sampler.is_sensitive(label_name):
                 continue
             top = _conditioned_top_values(
                 duckdb_conn,
@@ -298,8 +288,6 @@ def build_cycle_detection_context(
             if ann is None or ann.semantic_role != "measure":
                 continue
             if (r["from_table"], measure_col.column_name) in endpoint_columns:
-                continue
-            if sampler is not None and sampler.is_sensitive(measure_col.column_name):
                 continue
             value_range = _conditioned_measure_range(
                 duckdb_conn,
@@ -350,12 +338,8 @@ def build_cycle_detection_context(
                 col_info["temporal_behavior"] = concept.temporal_behavior
             # Value samples for entity-flow candidates (gate above) — read at the
             # table's pinned generation head, the same run-scoped profile read
-            # the slice value counts use (fail-closed on a missing pin). A
-            # privacy-sensitive name serves NOTHING: a redaction placeholder
-            # carries no entity evidence, so absence is the honest serving.
-            if (t.table_name, c.column_name) in entity_flow_columns and not (
-                sampler is not None and sampler.is_sensitive(c.column_name)
-            ):
+            # the slice value counts use (fail-closed on a missing pin).
+            if (t.table_name, c.column_name) in entity_flow_columns:
                 value_counts = _get_value_counts_for_column(
                     session, c.column_id, run_id=base_runs.semantic_runs.get(t.table_id)
                 )

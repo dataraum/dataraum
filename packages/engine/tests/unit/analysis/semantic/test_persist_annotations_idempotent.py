@@ -80,7 +80,6 @@ def _output(role: str) -> ColumnAnnotationOutput:
                         confidence=0.9,
                         temporal_behavior_claim="flow",
                         temporal_behavior_claim_confidence=0.9,
-                        derived_formula_confidence=0.0,
                     )
                 ],
             )
@@ -88,12 +87,76 @@ def _output(role: str) -> ColumnAnnotationOutput:
     )
 
 
+def test_duplicate_column_in_one_response_is_a_typed_contract_failure(
+    session_factory: Any,
+) -> None:
+    """The DAT-890 repro: one column annotated twice in a single response.
+
+    Live shape — a 92-entry ``column_annotation`` response carried
+    ``journal_lines.net_amount`` twice, the second a degenerate copy with
+    ``description: ""``. Both resolved to one ``column_id``, both landed in one
+    ``INSERT … ON CONFLICT`` statement, and Postgres refused it
+    (``CardinalityViolation``: "cannot affect row a second time") — killing the
+    phase on attempt 1 and taking ``addSourceWorkflow`` with it.
+
+    The duplicate is NOT folded or merged: two annotations for one column mean
+    the response is malformed, and which one is authoritative is unknowable.
+    What changes is WHO says so — the phase, in its own vocabulary, instead of
+    a psycopg exception surfacing from the DB driver.
+
+    This is deliberately asserted on SQLite, where the raw defect is INVISIBLE:
+    SQLite applies ON CONFLICT row-by-row, so the duplicate would silently
+    upsert twice and the pre-fix code passes here. The test therefore pins the
+    contract, not the dialect's reaction to it — which is exactly why the unit
+    suite never caught DAT-890 in the first place.
+    """
+    _seed_table_and_column(session_factory)
+    duplicated = ColumnAnnotationOutput(
+        tables=[
+            TableColumnAnnotation(
+                table_name="orders",
+                columns=[
+                    _output("measure").tables[0].columns[0],
+                    ColumnSemanticOutput(
+                        column_name="amount",
+                        semantic_role="measure",
+                        entity_type="transaction_amount",
+                        business_term="Transaction Amount",
+                        description="",  # the degenerate second copy, as observed
+                        confidence=0.9,
+                        temporal_behavior_claim="flow",
+                        temporal_behavior_claim_confidence=0.9,
+                    ),
+                ],
+            )
+        ]
+    )
+
+    with session_factory() as session:
+        result = persist_column_annotations(
+            session,
+            duplicated,
+            ["tbl-1"],
+            annotated_by="model-x",
+            run_id="run-A",
+        )
+
+    assert not result.success
+    assert result.error is not None
+    assert "more than once" in result.error
+    assert "orders.amount" in result.error
+
+    # Nothing was written: the phase fails before the batch statement.
+    with session_factory() as session:
+        assert session.execute(select(func.count()).select_from(SemanticAnnotation)).scalar() == 0
+
+
 def test_reinsert_same_run_does_not_duplicate(session_factory: Any) -> None:
     """Re-running the writer with the SAME run_id updates in place (the retry)."""
     _seed_table_and_column(session_factory)
 
     with session_factory() as session:
-        n = persist_column_annotations(
+        result = persist_column_annotations(
             session,
             _output("measure"),
             ["tbl-1"],
@@ -101,7 +164,7 @@ def test_reinsert_same_run_does_not_duplicate(session_factory: Any) -> None:
             run_id="run-A",
         )
         session.commit()
-    assert n == 1
+    assert result.unwrap() == 1
 
     # The at-least-once retry: same run_id, refreshed role.
     with session_factory() as session:

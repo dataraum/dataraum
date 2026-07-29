@@ -32,7 +32,7 @@ from dataraum.analysis.semantic.models import (
     TableSynthesisOutput,
 )
 from dataraum.analysis.semantic.ontology import OntologyLoader
-from dataraum.analysis.semantic.utils import load_persisted_annotations
+from dataraum.analysis.semantic.utils import load_persisted_annotations, prompt_samples
 from dataraum.analysis.statistics.db_models import (
     StatisticalProfile as ColumnProfileModel,
 )
@@ -49,7 +49,6 @@ from dataraum.core.models.base import (
     Result,
 )
 from dataraum.llm.features._base import LLMFeature
-from dataraum.llm.privacy import DataSampler
 from dataraum.llm.providers.base import (
     ConversationRequest,
     Message,
@@ -136,8 +135,9 @@ class SemanticAgent(LLMFeature):
             return Result.fail(profiles_result.error if profiles_result.error else "Unknown Error")
         profiles = profiles_result.value
 
-        sampler = DataSampler(self.config.privacy)
-        samples = sampler.prepare_samples(profiles)
+        # Capped at the configured prompt budget (DAT-890) — same cut as the
+        # per-column agent: this prompt was 72% raw sample bytes.
+        samples = prompt_samples(profiles, limit=self.config.privacy.max_sample_values)
         tables_json = self._build_tables_json(profiles, samples)
 
         ontology_def = load_workspace_concepts(session, ontology)

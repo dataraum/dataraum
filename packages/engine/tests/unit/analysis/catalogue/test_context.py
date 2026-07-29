@@ -19,17 +19,11 @@ from dataraum.analysis.semantic.db_models import SemanticAnnotation, TableEntity
 from dataraum.analysis.slicing.db_models import SliceDefinition
 from dataraum.analysis.statistics.db_models import StatisticalProfile
 from dataraum.analysis.views.db_models import EnrichedView
-from dataraum.llm.config import LLMPrivacy
-from dataraum.llm.privacy import DataSampler
 from dataraum.storage import Column, Source, Table
 from dataraum.storage.snapshot_head import GENERATION_STAGE, MetadataSnapshotHead
 from tests.conftest import baseline_run_id
 
 _GEN_RUN = "gen-run-1"
-
-
-def _sampler(patterns: list[str] | None = None) -> DataSampler:
-    return DataSampler(LLMPrivacy(sensitive_patterns=patterns or []))
 
 
 def _mk_table(session, name: str, columns: list[str], *, duckdb_path: str | None = None) -> Table:
@@ -152,7 +146,7 @@ def _build(session, tables: list[Table], **kw) -> dict[str, str]:
         table_ids=kw.get("scope", table_ids),
         session_table_ids=table_ids,
         run_id=kw.get("run_id", baseline_run_id()),
-        sampler=kw.get("sampler", _sampler()),
+        sample_limit=kw.get("sample_limit", 10),
     )
 
 
@@ -363,19 +357,6 @@ class TestRelationships:
             in out["relationship_catalogue"]
         )
 
-    def test_sensitive_endpoint_redacts_values(self, session) -> None:
-        orders = _mk_table(session, "orders", ["id", "customer_email"])
-        customers = _mk_table(session, "customers", ["customer_email"])
-        _promote(session, orders)
-        _promote(session, customers)
-        _relationship(session, orders, "customer_email", customers, "customer_email")
-        _profile(session, _col_id(session, orders, "customer_email"), top=[("a@b.com", 3, 3.0)])
-
-        out = _build(session, [orders, customers], sampler=_sampler([r".*email.*"]))
-        text = out["relationship_catalogue"]
-        assert "<REDACTED>" in text
-        assert "a@b.com" not in text
-
     def test_endpoint_identity_samples_not_duplicated_in_table_section(self, session) -> None:
         orders = _mk_table(session, "orders", ["id", "vendor_id"])
         vendors = _mk_table(session, "vendors", ["vendor_id"])
@@ -462,24 +443,6 @@ class TestChainConditionedSamples:
         # label (its IDs are the information-free evidence class).
         assert "payment_id (payment_id-joined rows)" not in text
 
-    def test_sensitive_label_renders_redacted_without_touching_data(self, session) -> None:
-        duck = duckdb.connect()
-        duck.execute("CREATE TABLE typed_payments (payment_id VARCHAR)")
-        duck.execute("INSERT INTO typed_payments VALUES ('P1')")
-        # The label column does NOT exist in duckdb: if the builder tried to
-        # aggregate it the query would fail loudly — redaction must short-circuit.
-        duck.execute("CREATE TABLE typed_bank_txns (payment_id VARCHAR)")
-        duck.execute("INSERT INTO typed_bank_txns VALUES ('P1')")
-        bank = _mk_table(
-            session, "bank_txns", ["payment_id", "owner_email"], duckdb_path="typed_bank_txns"
-        )
-        payments = _mk_table(session, "payments", ["payment_id"], duckdb_path="typed_payments")
-        _entity(session, bank, identity_columns=[{"column": "owner_email", "note": "contact"}])
-        _relationship(session, bank, "payment_id", payments, "payment_id")
-
-        out = _build(session, [bank, payments], duckdb_conn=duck, sampler=_sampler([r".*email.*"]))
-        assert "owner_email (payment_id-joined rows): <REDACTED>" in out["relationship_catalogue"]
-
     def test_conformed_dimension_serves_no_conditioned_lines(self, session) -> None:
         """No fk rides a shared-axis meeting — conditioning has no join to honor."""
         duck = duckdb.connect()
@@ -558,34 +521,6 @@ class TestChainConditionedSamples:
         assert "amount (payment_id-joined rows): min=-135000.0 max=-50.25 — all negative" in text
         assert "fee (payment_id-joined rows): min=-5.0 max=10.0 — mixed signs" in text
         assert text.index("amount (payment_id-joined") < text.index("fee (payment_id-joined")
-
-    def test_sensitive_measure_range_renders_redacted(self, session) -> None:
-        """The label convention holds for measure ranges: ``<REDACTED>``
-        without touching the data (the column does NOT exist in duckdb — an
-        aggregate would fail loudly, redaction must short-circuit)."""
-        duck = duckdb.connect()
-        duck.execute("CREATE TABLE typed_payments (payment_id VARCHAR)")
-        duck.execute("INSERT INTO typed_payments VALUES ('P1')")
-        duck.execute("CREATE TABLE typed_bank_txns (payment_id VARCHAR)")
-        duck.execute("INSERT INTO typed_bank_txns VALUES ('P1')")
-        bank = _mk_table(
-            session, "bank_txns", ["payment_id", "salary_amount"], duckdb_path="typed_bank_txns"
-        )
-        payments = _mk_table(session, "payments", ["payment_id"], duckdb_path="typed_payments")
-        _promote(session, bank)
-        _promote(session, payments)
-        session.add(
-            SemanticAnnotation(
-                column_id=_col_id(session, bank, "salary_amount"),
-                run_id=_GEN_RUN,
-                semantic_role="measure",
-            )
-        )
-        session.flush()
-        _relationship(session, bank, "payment_id", payments, "payment_id")
-
-        out = _build(session, [bank, payments], duckdb_conn=duck, sampler=_sampler([r".*salary.*"]))
-        assert "salary_amount (payment_id-joined rows): <REDACTED>" in out["relationship_catalogue"]
 
     def test_nan_tainted_measure_range_serves_nothing(self, session) -> None:
         """A NaN row poisons MIN/MAX (DuckDB sorts NaN greatest) and every

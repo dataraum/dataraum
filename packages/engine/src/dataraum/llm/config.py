@@ -7,7 +7,7 @@ to all LLM settings: providers, features, limits, privacy.
 from pathlib import Path
 
 import yaml
-from pydantic import BaseModel, ConfigDict, Field
+from pydantic import BaseModel, ConfigDict
 
 
 class ProviderConfig(BaseModel):
@@ -91,11 +91,15 @@ class LLMLimits(BaseModel):
 
 
 class LLMPrivacy(BaseModel):
-    """Privacy settings for data sent to LLM."""
+    """How much raw corpus data a prompt may carry.
+
+    ``max_sample_values`` is the PROMPT budget for per-column value samples,
+    distinct from the profiler's ``top_k_values`` (200) storage budget. Every
+    prompt builder applies it; the name-pattern redaction that used to sit
+    beside it was a data-egress no-op and was deleted with ``llm/privacy.py``.
+    """
 
     max_sample_values: int = 10
-    redacted_sample_count: int = 3
-    sensitive_patterns: list[str] = Field(default_factory=list)
 
 
 class LLMConfig(BaseModel):

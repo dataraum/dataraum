@@ -29,7 +29,6 @@ from dataraum.analysis.semantic.db_models import SemanticAnnotation, TableEntity
 from dataraum.analysis.slicing.db_models import SliceDefinition
 from dataraum.analysis.statistics.db_models import StatisticalProfile
 from dataraum.lifecycle import BaseRunMap
-from dataraum.llm.config import LLMPrivacy
 from dataraum.storage import Column, Source, Table
 
 
@@ -623,7 +622,7 @@ def identity_column_with_samples(session):
     ``zq_p4x`` (an unreadably named identity column) carries a low-confidence
     annotation + typed top_values under the generation run; ``amount`` is a
     plain measure whose profile must NOT be served as samples; ``contact_email``
-    is an identity column with a privacy-sensitive name. Returns
+    is a second identity column. Returns
     ``(table_id, catalogue_run, gen_run)``.
     """
     source = Source(name="flow_source", source_type="csv")
@@ -748,22 +747,6 @@ def test_identity_samples_fail_closed_without_generation_pin(
     cols = {c["name"]: c for c in ctx["tables"][0]["columns"]}
     assert "sample_values" not in cols["zq_p4x"]
     assert "annotation_confidence" not in cols["zq_p4x"]
-
-
-def test_sensitive_identity_column_serves_no_samples(session, identity_column_with_samples) -> None:
-    """A privacy-sensitive name serves NO samples (absence, not a placeholder) —
-    the same pattern gate the semantic agents' DataSampler enforces."""
-    table_id, cat, gen = identity_column_with_samples
-    ctx = _build(
-        session,
-        [table_id],
-        base_runs=BaseRunMap(relationship_run_id=cat, semantic_runs={table_id: gen}),
-        privacy=LLMPrivacy(sensitive_patterns=[".*email.*"]),
-    )
-    cols = {c["name"]: c for c in ctx["tables"][0]["columns"]}
-    assert "sample_values" not in cols["contact_email"]
-    # The non-sensitive identity column still serves its samples.
-    assert cols["zq_p4x"]["sample_values"] == ["E-0002", "E-0003"]
 
 
 def test_relationship_endpoint_columns_serve_samples(session, two_tables_two_runs) -> None:
@@ -979,25 +962,6 @@ def test_conditioned_labels_serve_the_discriminating_distribution(
     assert "bank_txns.payment_id (payment_id-joined rows only)" not in rendered
 
 
-def test_conditioned_labels_sensitive_name_serves_nothing(
-    session, payment_chain_with_labels
-) -> None:
-    """This builder's privacy convention: a sensitive label is ABSENT from the
-    conditioned serve (no placeholder), while non-sensitive labels still serve."""
-    duck, table_ids = payment_chain_with_labels
-    ctx = build_cycle_detection_context(
-        session,
-        duck,
-        table_ids,
-        vertical="finance",
-        base_runs=BaseRunMap(relationship_run_id="run-current"),
-        privacy=LLMPrivacy(sensitive_patterns=[".*counterparty.*"]),
-    )
-    (rel,) = ctx["relationships"]
-    assert "conditioned_label_samples" not in rel
-    assert "Vendor A" not in format_context_for_prompt(ctx)
-
-
 def test_conditioned_labels_fail_soft_on_missing_typed_table(session) -> None:
     """A dangling duckdb_path logs and serves no conditioned line — the
     context build survives (the row-count read has the same posture)."""
@@ -1183,29 +1147,6 @@ def test_conditioned_measure_ranges_serve_the_conditioned_sign(
     assert (
         "bank_txns.fee (payment_id-joined rows only): min=-5.0 max=10.0 — mixed signs" in rendered
     )
-
-
-def test_conditioned_measure_ranges_sensitive_name_serves_nothing(
-    session, payment_chain_with_measures
-) -> None:
-    """This builder's privacy convention: a sensitive measure is ABSENT from
-    the conditioned serve (no placeholder); non-sensitive measures still serve."""
-    duck, table_ids, bank_table_id = payment_chain_with_measures
-    ctx = build_cycle_detection_context(
-        session,
-        duck,
-        table_ids,
-        vertical="finance",
-        base_runs=BaseRunMap(
-            relationship_run_id="run-current", semantic_runs={bank_table_id: "gen-run"}
-        ),
-        privacy=LLMPrivacy(sensitive_patterns=[".*amount.*"]),
-    )
-    (rel,) = ctx["relationships"]
-    assert rel["conditioned_measure_ranges"] == [
-        {"column": "fee", "min": -5.0, "max": 10.0, "summary": "mixed signs"}
-    ]
-    assert "-135000.0" not in format_context_for_prompt(ctx)
 
 
 def test_conditioned_measure_ranges_nan_serves_nothing(session) -> None:

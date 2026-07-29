@@ -613,6 +613,41 @@ describe("formatRelationships (DAT-621 join-grounding block)", () => {
 		expect(block).toContain("No confirmed relationships");
 		expect(block).toContain("<relationships>");
 	});
+
+	// DAT-671 R5 — `buildRelationshipsBlock` drops any edge whose endpoint no
+	// longer resolves under the promoted head. Silently, until now: and this
+	// block is the one that tells the model "if the join you need isn't listed,
+	// do not invent one — abstain", so an unmentioned drop does not just go
+	// unsaid, it turns into a CONFIDENT ABSTENTION about data the workspace has.
+	it("states how many confirmed relationships it could not render", () => {
+		const block = formatRelationships([rel()], 3);
+		expect(block).toContain("3 confirmed relationships are NOT listed");
+		// The reason, not just the count — a bare number invites the model to
+		// assume the tail was junk (the engine's CuratedSlices.note rule).
+		expect(block).toContain("no longer under the promoted analysis head");
+		expect(block).toContain("not a claim that no path exists");
+		// The edges it CAN render are still rendered.
+		expect(block).toContain('lake.typed.journal_lines."account"');
+	});
+
+	// The sharpest case: every confirmed edge was dropped, so the block reads
+	// "(No confirmed relationships between tables.)" — which is false. There ARE
+	// confirmed relationships; none of them could be addressed.
+	it("says so even when the drops emptied the block entirely", () => {
+		const block = formatRelationships([], 2);
+		expect(block).toContain("2 confirmed relationships are NOT listed");
+	});
+
+	it("uses the singular for one omission", () => {
+		expect(formatRelationships([rel()], 1)).toContain(
+			"1 confirmed relationship is NOT listed",
+		);
+	});
+
+	it("stays silent when nothing was dropped", () => {
+		expect(formatRelationships([rel()])).not.toContain("NOT listed");
+		expect(formatRelationships([])).not.toContain("NOT listed");
+	});
 });
 
 // --- formatDrivers (DAT-548): the <drivers> block projection ---------------------

@@ -32,6 +32,11 @@ const BodySchema = z.object({
 		// schema rejected it with a raw zod message, and the two numbers had no
 		// way to stay in sync.
 		.max(MAX_GUIDANCE_AXES),
+	// How many candidate axes the menu actually had (DAT-671 R5) — a COUNT, not a
+	// second cap. The `.max()` above means an over-cap request never arrives, so
+	// this number is unrecoverable here; the client is the only place that knows
+	// it, and without it the model is handed a subset it cannot tell is one.
+	totalAxes: z.number().int().min(1).optional(),
 });
 
 function badRequest(message: string): Response {
@@ -61,6 +66,7 @@ export const Route = createFileRoute("/api/drill/axis-guidance")({
 					const suggestions = await suggestAxisGuidance(
 						parsed.data.measureLabel,
 						parsed.data.axes,
+						parsed.data.totalAxes,
 					);
 					return Response.json({ suggestions });
 				} catch (err) {

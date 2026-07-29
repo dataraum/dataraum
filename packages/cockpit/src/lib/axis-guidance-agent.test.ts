@@ -96,6 +96,45 @@ describe("suggestAxisGuidance (DAT-673)", () => {
 		expect(mentioned.length).toBe(MAX_GUIDANCE_AXES);
 	});
 
+	// DAT-671 R5 — the cap above is real and routine (a pure-substrate node
+	// commonly has more dimensions than MAX_GUIDANCE_AXES), and it is INVISIBLE
+	// from here: the route's `.max()` means an over-cap request never arrives, so
+	// only the client knows the true count and has to send it. Without the note a
+	// model shown eight of twenty-three writes as though it had seen all of them.
+	describe("subset disclosure", () => {
+		const eight = Array.from({ length: MAX_GUIDANCE_AXES }, (_, i) => ({
+			column: `col_${i}`,
+			sliceType: "categorical",
+		}));
+		const userMessage = () =>
+			h.chat.mock.calls[0]?.[0].messages[0].content as string;
+
+		it("tells the model when it is seeing a SUBSET of the menu", async () => {
+			h.chat.mockResolvedValue({ suggestions: [] });
+			await suggestAxisGuidance("revenue", eight, 23);
+			expect(userMessage()).toContain(
+				`these are ${MAX_GUIDANCE_AXES} of 23 candidate dimensions`,
+			);
+			// The count alone is not the disclosure — the model must also be told
+			// not to speak as though the list were exhaustive.
+			expect(userMessage()).toContain("complete set");
+		});
+
+		it("says nothing when the menu was sent whole", async () => {
+			h.chat.mockResolvedValue({ suggestions: [] });
+			await suggestAxisGuidance("revenue", eight, MAX_GUIDANCE_AXES);
+			expect(userMessage()).not.toContain("candidate dimensions");
+		});
+
+		it("says nothing when the caller does not know the total", async () => {
+			// An unstated total is not evidence of completeness — but claiming a
+			// cut we cannot size would be its own invention.
+			h.chat.mockResolvedValue({ suggestions: [] });
+			await suggestAxisGuidance("revenue", eight);
+			expect(userMessage()).not.toContain("candidate dimensions");
+		});
+	});
+
 	it("propagates an LLM failure — the caller keeps the prior menu state rather than showing an unverified result", async () => {
 		h.createAnthropicChat.mockImplementation(() => {
 			throw new Error("haiku down");

@@ -360,6 +360,88 @@ export function applyHierarchyDescent(
 	});
 }
 
+/**
+ * The ONE axis-composition pipeline (ADR-0024 decision 2), shared by every
+ * compose path: the catalog rows fold to axes, the grain-verified substrate
+ * joins below them, measured drivers reorder, and the catalog's column types +
+ * confirmed hierarchies stamp what the menu can disclose.
+ *
+ * What differs per path is the INPUT, never the composition. A path that cannot
+ * answer one of these questions passes an EMPTY map, and empty is a genuine
+ * no-op here rather than a special case: `orderAxesByDrivers` leaves the
+ * incoming order and stamps `driverGain: null`, `applyHierarchyDescent` stamps
+ * `hierarchyNext: null`. So tier A's fact-scoped blanks — it wraps an arbitrary
+ * result and cannot know which fact backs a given column — fall out of the SAME
+ * code the node path runs. That is the ADR's rule made structural: a capability
+ * difference between paths can only ever trace to the data each one has, never
+ * to a second implementation that looks less hard.
+ */
+export function composeAxes(input: {
+	sliceRows: SliceRowInput[];
+	substrateColumns: readonly string[];
+	temporalKinds: ReadonlyMap<string, TemporalKind>;
+	driverGains: ReadonlyMap<string, number>;
+	hierarchyNext: ReadonlyMap<string, string>;
+}): DrillAxis[] {
+	return applyHierarchyDescent(
+		applyTemporalKinds(
+			orderAxesByDrivers(
+				unionSubstrateAxes(
+					axesFromSliceRows(input.sliceRows),
+					input.substrateColumns,
+				),
+				input.driverGains,
+			),
+			input.temporalKinds,
+		),
+		input.hierarchyNext,
+	);
+}
+
+/** The drill stack an asking grid has ALREADY applied, as the resolvers read it.
+ *  Structurally typed rather than `DrillStep[]`: only the kind and the column
+ *  decide greying, and no resolver reads further into a step it does not
+ *  compose from. */
+export interface AppliedStep {
+	kind: string;
+	column: string;
+}
+
+/**
+ * The columns a result is ALREADY broken out by — one home for the greying
+ * question on every compose path (ADR-0024 decision 2). The union of two
+ * structural signals, either of which may be absent:
+ *
+ * * `baseSql` — the statement's own outer projection / GROUP BY, read
+ *   structurally (`existingIdentifierColumns`: schema and names only, never
+ *   executed).
+ * * `steps` — the drill stack the asking grid already applied. Only `slice`
+ *   steps count: a pin FILTERS to one value rather than grouping, so its
+ *   dimension is still worth offering.
+ *
+ * Both absent → the empty set, i.e. nothing greyed; never a guess.
+ *
+ * Every path calls this, which is what let the CLIENT-side grey-out die
+ * (DAT-671 R5). The grid used to disable an already-sliced menu item locally,
+ * out of its own `steps`, without setting `disabledReason` — so the item went
+ * grey with no inline reason and no tooltip, a dead entry explaining nothing.
+ * The same determination made server-side arrives WITH its words.
+ */
+export async function alreadyInResult(
+	baseSql?: string,
+	steps?: readonly AppliedStep[],
+): Promise<Set<string>> {
+	const existing = new Set<string>(
+		(steps ?? []).filter((s) => s.kind === "slice").map((s) => s.column),
+	);
+	if (baseSql !== undefined) {
+		for (const column of (await existingIdentifierColumns(baseSql)) ?? []) {
+			existing.add(column);
+		}
+	}
+	return existing;
+}
+
 /** DAT-671 grey-out reason: shown on a menu item whose column already breaks
  *  out the result — see `DrillAxis.disabledReason` and `markAlreadyInResult`. */
 export const ALREADY_AT_GRAIN_REASON =
@@ -917,11 +999,13 @@ export interface AxisSource {
 	selectExpr: string;
 }
 
-/** The ungated result of relation-grounded axis resolution, plus what the two
- *  gates need. Gating is left to the caller because the TIME gate's authority
- *  differs per path: a metric/measure has a persisted additivity verdict to
- *  read, an ad-hoc answer concept has none at all. */
-interface SourceAxes {
+/** Composed axes before the gates, plus what the two gates need. Gating is a
+ *  separate step because the TIME gate's authority differs per path: a
+ *  metric/measure has a persisted additivity verdict to read, an answer reaches
+ *  one through identity, and tier A has none at all. The unit gate's inputs are
+ *  EMPTY on any path that cannot name the fact behind a measure (tier A), which
+ *  makes `unitGate` a no-op there by data rather than by a skipped call. */
+export interface UngatedAxes {
 	axes: DrillAxis[];
 	reason?: string;
 	aggMeasures: AggMeasure[];
@@ -936,8 +1020,8 @@ interface SourceAxes {
  */
 async function resolveAxesForSources(
 	sources: AxisSource[],
-): Promise<SourceAxes> {
-	const empty = (reason: string): SourceAxes => ({
+): Promise<UngatedAxes> {
+	const empty = (reason: string): UngatedAxes => ({
 		axes: [],
 		reason,
 		aggMeasures: [],
@@ -1102,22 +1186,19 @@ async function resolveAxesForSources(
 	// above): a row from any OTHER table must not pose as a fact column in the
 	// temporal fallback pass.
 	const typeTableIdSet = new Set(typeTableIds);
-	const axes = applyHierarchyDescent(
-		applyTemporalKinds(
-			orderAxesByDrivers(
-				unionSubstrateAxes(axesFromSliceRows(sliceRows), substrateColumns),
-				driverGains(rankingRows),
+	const axes = composeAxes({
+		sliceRows,
+		substrateColumns,
+		temporalKinds: temporalKindsFromColumns(
+			columnRows.filter(
+				(r): r is typeof r & { tableId: string } =>
+					r.tableId !== null && typeTableIdSet.has(r.tableId),
 			),
-			temporalKindsFromColumns(
-				columnRows.filter(
-					(r): r is typeof r & { tableId: string } =>
-						r.tableId !== null && typeTableIdSet.has(r.tableId),
-				),
-				viewTableIds,
-			),
+			viewTableIds,
 		),
-		hierarchyDescentMap(hierarchyRows),
-	);
+		driverGains: driverGains(rankingRows),
+		hierarchyNext: hierarchyDescentMap(hierarchyRows),
+	});
 	if (axes.length === 0) {
 		return empty(
 			"No dimensions available for this computation's facts — neither the slicing catalog nor a grain-verified enriched view exposes anything to slice by.",
@@ -1280,15 +1361,23 @@ export function demoteWithheldDateAxes(axes: DrillAxis[]): DrillAxis[] {
 }
 
 /**
- * Apply the two gates to resolved axes. `verdict` is the TIME gate's authority:
- * a persisted engine verdict, or `null` for "none exists" — which is a WITHHOLD,
+ * Apply the two gates to composed axes — the ONE gate for every compose path
+ * (ADR-0024 decision 2). `verdicts.target` is the TIME gate's authority: a
+ * persisted engine verdict, or `null` for "none exists" — which is a WITHHOLD,
  * never a licence to guess (DAT-725). The result accrues both outcomes: a target
  * can fail the time gate and be cross-unit INDEPENDENTLY, so neither gate
  * early-returns — each stamps the same result and the (possibly grain-stripped)
  * axes fall through once.
+ *
+ * Tier A reaches this with `target: null` by construction — an orphan result has
+ * no identity to key a verdict on — so every temporal axis it composes leaves
+ * here grain-stripped and CARRYING ITS REASON. That is the whole reason the
+ * client's `grainable = source !== undefined` path gate could be deleted
+ * (DAT-671 R5): "can this axis be bucketed?" is now answered by the data on the
+ * axis (`temporal !== null`) on all three paths, not by which surface is asking.
  */
-function gateAxes(
-	resolved: SourceAxes,
+export function gateAxes(
+	resolved: UngatedAxes,
 	verdicts: {
 		target: TargetAdditivity | null;
 		carriers: Map<string, TargetAdditivity | null>;
@@ -1370,9 +1459,18 @@ function gateAxes(
  * The METRIC/MEASURE path: the node's promoted `graph:` extracts ground the
  * axes, and the engine's persisted additivity verdict for that exact target
  * decides the time grain.
+ *
+ * `steps` (optional) is the drill stack the asking grid has already applied, so
+ * an axis it is ALREADY broken out by comes back greyed WITH its reason
+ * (DAT-671 R5). This path has no base statement to read — a node recomposes
+ * from clause parts rather than wrapping a statement — so the applied stack is
+ * its only "already in the result" signal, and absent/empty means nothing is
+ * greyed. Before R5 the node path sent nothing here and the GRID disabled the
+ * item locally with no explanation at all.
  */
 export async function resolveDrillAxes(
 	req: DrillNodeRef,
+	steps?: readonly AppliedStep[],
 ): Promise<DrillAxesResult> {
 	const fields = await targetFields(req);
 	if (fields.length === 0) {
@@ -1422,7 +1520,7 @@ export async function resolveDrillAxes(
 
 	const resolved = await resolveAxesForSources(sources);
 	const { kind, key } = additivityTarget(req);
-	return gateAxes(
+	const result = gateAxes(
 		resolved,
 		resolved.axes.length > 0
 			? await resolveVerdicts(
@@ -1431,6 +1529,14 @@ export async function resolveDrillAxes(
 			: { target: null, carriers: new Map() },
 		"Time grain withheld: the engine has not classified this target's additivity, so bucketing it by period would be a guess.",
 	);
+	if (result.axes.length === 0) return result;
+	return {
+		...result,
+		axes: markAlreadyInResult(
+			result.axes,
+			await alreadyInResult(undefined, steps),
+		),
+	};
 }
 
 /** One source of an answer's proven declaration, as the axes resolver reads it:
@@ -1540,10 +1646,7 @@ export async function resolveAnswerTarget(
 export async function resolveAnswerDrillAxes(
 	sources: AnswerAxisSource[],
 	baseSql?: string,
-	// Structural, not `DrillStep[]`: only the kind and the column decide greying,
-	// and the route's schema deliberately reads no further into a step it does
-	// not compose from.
-	steps?: readonly { kind: string; column: string }[],
+	steps?: readonly AppliedStep[],
 ): Promise<DrillAxesResult> {
 	const reduced = sources.map((s) => ({
 		...s,
@@ -1566,15 +1669,14 @@ export async function resolveAnswerDrillAxes(
 	);
 	// Grey any axis that already breaks out this result — the answer's own base
 	// statement (a structural, schema/name-only read) and the drill stack the
-	// grid is already showing. No signal means nothing to determine.
+	// grid is already showing, both through the shared `alreadyInResult`. No
+	// signal means nothing to determine.
 	if (result.axes.length === 0) return result;
-	const existing = new Set<string>(
-		(steps ?? []).filter((s) => s.kind === "slice").map((s) => s.column),
-	);
-	if (baseSql !== undefined) {
-		for (const column of (await existingIdentifierColumns(baseSql)) ?? []) {
-			existing.add(column);
-		}
-	}
-	return { ...result, axes: markAlreadyInResult(result.axes, existing) };
+	return {
+		...result,
+		axes: markAlreadyInResult(
+			result.axes,
+			await alreadyInResult(baseSql, steps),
+		),
+	};
 }

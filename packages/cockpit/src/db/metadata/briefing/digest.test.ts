@@ -100,6 +100,40 @@ describe("formatBriefingDigest", () => {
 		expect(suggested).not.toContain("teach to fix"); // metric grounding — stage's
 	});
 
+	// DAT-671 R5 — the digest names at most DIGEST_BLOCKER_CAP blockers, and the
+	// model has no other way to learn there are more: `columnsBlocked` counts
+	// COLUMNS, while readinessBlockers also carries relationship and table
+	// targets, so the two numbers are not interchangeable. An unmarked list of
+	// five reads as the whole set.
+	it("says how many blockers it is NOT naming", () => {
+		const many: WorkspaceBriefing = {
+			...briefing(),
+			attention: {
+				...briefing().attention,
+				readinessBlockers: Array.from({ length: 12 }, (_, i) => ({
+					target: `column:src_a__orders.c${i}`,
+					source: "src_a",
+					label: `orders.c${i}`,
+					band: "blocked" as const,
+					topDriver: "Unit entropy",
+				})),
+			},
+		};
+		const digest = formatBriefingDigest(many, "connect");
+		expect(digest).toContain("(showing 5 of 12)");
+		// The five it DID name are still named — the disclosure adds, never
+		// replaces.
+		expect(digest).toContain("orders.c0");
+	});
+
+	it("stays silent about a cut it did not make", () => {
+		// Exactly one blocker, all of it shown: a "showing 1 of 1" would be noise
+		// that trains the reader to ignore the note when it matters.
+		expect(formatBriefingDigest(briefing(), "connect")).not.toContain(
+			"showing",
+		);
+	});
+
 	it("returns null when there's nothing notable and nothing to do", () => {
 		const calm: WorkspaceBriefing = {
 			...briefing(),

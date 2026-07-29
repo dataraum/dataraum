@@ -2,63 +2,53 @@
 // payload (DAT-807). Sibling of `metric-induction.ts` — same separation, same
 // reason.
 //
-// KNOWN GAP (teach-surface retire, DAT-725 — flagged by spec-compliance review,
-// deliberately NOT fixed in that lane): `validation-spec.ts`'s
-// `ValidationSpecSchema` migrated from the legacy `parameters`/`sql_hints` shape
-// to the engine's typed `tolerance`/`guidance` fields (DAT-735). This module's
-// `InducedValidation` schema was NOT migrated alongside it — it still emits the
-// legacy `parameters` (array) + `sql_hints` shape below. That is NOT a mechanical
-// rename: `getFrameValidationsInstructions()` (src/prompts/frame.ts) is a
-// byte-stable, LLM-facing CACHED prompt block describing this exact field set,
-// so migrating it is a semantically-graded prompt change needing a live
-// constrained-decoding probe to verify the new schema compiles — out of a
-// mechanical lane's scope/budget (no e2e without asking).
+// The field set is the engine's TYPED check definition (DAT-735): `tolerance`
+// (the ADR-0017 pass threshold) + `guidance` (advisory SQL-binding prose).
+// DAT-880's close-out migrated this schema off the pre-DAT-735
+// `parameters` (array) + `sql_hints` shape it used to emit, together with the
+// cached prompt block that instructs it (`getFrameValidationsInstructions()`,
+// src/prompts/frame.ts). Frame induction and the hand-authored
+// `teach_validation` path (`validation-spec.ts`'s `ValidationSpecSchema`) now
+// write ONE shape, which the engine's `ValidationSpec` reads natively — the
+// `mode="before"` fold that used to translate the legacy keys
+// (`_fold_legacy_check_fields`) is deleted with this migration, and that model's
+// `extra="forbid"` makes a residual legacy payload fail loudly at construction
+// instead of silently dropping tolerance + guidance.
 //
-// PRODUCTION IMPACT TODAY: real, confirmed (DAT-880 review — a deletion lane
-// probed this live and both reviewers independently reproduced it). `frame.ts`'s
-// `induceValidations` → `toProposedValidation` output is written to
-// `config_overlay` WITHOUT ever being parsed against the typed
-// `ProposedValidation` (== `ValidationSpecSchema.omit({vertical:true})`) —
-// `frameFamily` only runs `itemSchema.parse` on the SEPARATE "user-edited"
-// declare path (`opts.edited`), not the induce path — so the legacy
-// `parameters`/`sql_hints` keys survive verbatim into the overlay row, and the
-// engine's `ValidationSpec` `mode="before"` fold (models.py,
-// `_fold_legacy_check_fields`) is this shape's LIVE, load-bearing reader for
-// EVERY frame-induced validation, not a dormant compatibility path — deleting
-// it silently strips tolerance + guidance from every induced check. It stays
-// until this module is migrated to the typed shape alongside it (the planned
-// follow-on this file's KNOWN GAP note above describes — lead-gated on a live
-// constrained-decoding compile probe), not indefinitely. RISK NOT FULLY RULED
-// OUT: if the frame UI ever resubmits an induced-then-edited validation through
-// `frameFamily`'s `opts.edited` path carrying these legacy keys,
-// `ValidationSpecSchema.parse` (non-strict) would silently DROP them, losing
-// any induced tolerance — unverified UI-layer risk, out of this module's scope
-// to confirm.
+// Why the migration was gated on a live probe rather than done mechanically:
+// these bytes are compiled into a decoding grammar, and its limits are only
+// observable on a real request (see `induction-schema.contract.test.ts`). ONE
+// probe ran, on the production `induceNative` call shape against this schema
+// and the rewritten prompt. It compiled — that part is settled, it is a
+// property of the bytes. The sentinel behaviour it also showed (0.01 on a
+// balance check, 0 on a constraint admitting no violating rows, -1 on the one
+// check the model could not threshold) is a SINGLE RUN over a two-column
+// fixture: encouraging, not calibration. The change also DE-RISKED the grammar:
+// dropping `parameters` removed this schema's one union-typed property.
 //
-// `ValidationSpecSchema.parameters` used to be
-// `z.record(z.string(), z.unknown())` because that WAS the persisted shape: the
-// engine's `ValidationSpec.parameters` was a `dict[str, Any]`
-// (analysis/validation/models.py) with two real consumers —
-// `evaluate.py:122` reads `parameters["tolerance"]` as a float, and
-// `agent.py:320` JSON-dumps the whole map into the SQL-grounding prompt.
-// An open map is inexpressible under constrained decoding
-// (`additionalProperties: false`), so the model fills the ARRAY shape below and
-// `toProposedValidation` folds it back to the map at ONE boundary
-// (`induceValidations` in frame.ts). The engine is untouched.
+// Classification vocabularies (e.g. which `account_type` values count as
+// assets) used to ride `parameters` as `string_list` entries. They belong in
+// `guidance` prose now, which is where they ended up anyway: the deleted fold
+// JSON-appended every non-tolerance parameter onto `guidance` before the
+// SQL-binding agent ever saw them.
 //
-// The value space is not `unknown` — historically (before DAT-725 band 3
-// retired finance's nine shipped validation YAMLs) it was exactly what those
-// specs held, and nothing else:
-//   number      -> tolerance: 0.01 | 0.05 | 0.02 | 0.0,
-//                  max_violation_rate: 0.05, amount_tolerance_pct: 0.01,
-//                  quantity_tolerance_pct: 0.02
-//   string list -> asset_types / liability_types / equity_types /
-//                  revenue_types / expense_types (trial_balance.yaml)
-// Induction still only ever needs a numeric threshold or a classification
-// list, so the two-variant discriminated union stays the right shape even
-// with no shipped YAML left to enumerate against — not `z.unknown()`.
+// SENTINELS (the DAT-807 house pattern — every property required, none
+// optional): `""` for absent prose, `[]` for an absent list, and `-1` for an
+// absent `tolerance`. ADR-0017 judges every check by `deviation <= tolerance`
+// over a non-negative deviation, so a negative threshold is unsatisfiable and
+// cannot collide with a value the model might mean; `0` CAN be meant (exact
+// agreement / zero violating rows), which is why `0` cannot be the sentinel.
+// `toProposedValidation` decodes every engine-NULLABLE sentinel by OMITTING the
+// field, so the engine sees `None` and applies its own `DEFAULT_TOLERANCE`.
 //
-// SCHEMA BUDGET: 0 optional properties, 1 union-typed property, no recursion.
+// The sentinel is safe BECAUSE it is unsatisfiable — which means no boundary
+// downstream may accept it as a value. This schema is the only place `-1` is
+// legal; it dies in `toProposedValidation`, and both typed boundaries past it
+// now reject a negative outright (`ValidationSpec`'s `ge=0` engine-side,
+// `ValidationSpecSchema`'s `.min(0)` in validation-spec.ts). A `-1` that
+// reached the evaluator would grade a PERFECT result as failed.
+//
+// SCHEMA BUDGET: 0 optional properties, 0 union-typed properties, no recursion.
 
 import { z } from "zod";
 
@@ -74,49 +64,9 @@ import {
 // importable without booting `config.ts`, and so there is no import cycle.
 type ProposedValidation = Omit<ValidationSpecInput, "vertical">;
 
-/** One check parameter. The `kind` discriminator carries the type the engine
- * will read back out of the map — a numeric threshold, or a list of
- * classification hints.
- *
- * `z.union`, NOT `z.discriminatedUnion`: Zod renders a discriminated union as
- * `oneOf`, which Anthropic's constrained decoding does not accept (`anyOf` /
- * `allOf` only). `z.union` renders `anyOf`; the `kind` literal survives as a
- * `const` in each branch, so the model still sees a discriminator. Both
- * branches are `strictObject` because the adapter's normalizer does not descend
- * into union branches to add `additionalProperties: false`. */
-const ValidationParameterInput = z.union([
-	z.strictObject({
-		kind: z.literal("number"),
-		name: z
-			.string()
-			.describe(
-				"lowercase_snake_case parameter name. Use exactly 'tolerance' for a " +
-					"balance/comparison check's numeric slack — the engine's evaluator " +
-					"reads that key by name; any other name is a prompt hint only.",
-			),
-		value: z
-			.number()
-			.describe("The numeric value, e.g. 0.01 for a 1% tolerance."),
-	}),
-	z.strictObject({
-		kind: z.literal("string_list"),
-		name: z
-			.string()
-			.describe(
-				"lowercase_snake_case parameter name, e.g. 'asset_types'. Read by the " +
-					"SQL-grounding LLM as a classification hint.",
-			),
-		values: z
-			.array(z.string())
-			.describe(
-				"The values, e.g. ['asset', 'assets'] for account-type matching.",
-			),
-	}),
-]);
-
-/** One induced validation, shaped for constrained decoding. Same field set as
- * `ProposedValidation` except `parameters`, and with every optional promoted to
- * required-with-a-documented-sentinel ("" / []). */
+/** One induced validation, shaped for constrained decoding. The same field set
+ * as `ProposedValidation`, with every optional promoted to
+ * required-with-a-documented-sentinel ("" / [] / -1). */
 export const InducedValidation = z.strictObject({
 	validation_id: z
 		.string()
@@ -133,7 +83,7 @@ export const InducedValidation = z.strictObject({
 		.string()
 		.describe(
 			"What the check verifies, in business terms — the engine grounds SQL from " +
-				"this plus sql_hints, so be specific about the rule.",
+				"this plus guidance, so be specific about the rule.",
 		),
 	category: z
 		.string()
@@ -151,18 +101,21 @@ export const InducedValidation = z.strictObject({
 				"'constraint' (a query returns zero violating rows), 'aggregate' (an " +
 				"aggregate falls within bounds).",
 		),
-	parameters: z
-		.array(ValidationParameterInput)
+	tolerance: z
+		.number()
 		.describe(
-			"Check parameters the engine reads when grounding SQL. [] when the check " +
-				"needs none. A 'balance' or 'comparison' check should carry a numeric " +
-				"'tolerance'.",
+			"The declared pass threshold: the check passes when the computed " +
+				"deviation is <= this value, e.g. 0.01 for a 1% balance slack. 0 means " +
+				"EXACT agreement (or zero violating rows) — a real claim, not 'none'. " +
+				"Use -1, and only -1, when the check declares no threshold and the " +
+				"engine's default should apply.",
 		),
-	sql_hints: z
+	guidance: z
 		.string()
 		.describe(
 			"Guidance for grounding the SQL — join paths, columns to sum, how to " +
-				'classify rows. The richer this is, the more reliably the check binds. "" if none.',
+				"classify rows (e.g. which account_type values count as assets). The " +
+				'richer this is, the more reliably the check binds. "" if none.',
 		),
 	expected_outcome: z
 		.string()
@@ -184,20 +137,39 @@ export const InducedValidations = z.strictObject({
 });
 
 /**
- * THE CONVERSION BOUNDARY: induced (array) shape -> overlay payload (map) shape.
- * The only place the two meet; everything downstream sees `ProposedValidation`
- * exactly as before DAT-807.
+ * THE CONVERSION BOUNDARY: the induced shape -> the overlay payload.
+ *
+ * Field-for-field identical now that both sides carry the typed check
+ * definition; the only work left is DECODING the sentinels the schema forces on
+ * fields the engine types as NULLABLE — all three of them: `tolerance: -1`,
+ * `guidance: ""`, `expected_outcome: ""`. Each means "not declared", and the
+ * payload says that by OMITTING the property, so the typed row keeps NULL (the
+ * same conversion the concept family does in frame.ts). `tags` /
+ * `relevant_cycles` are deliberately NOT in that set: the engine defaults them
+ * to an empty list, so `[]` and absent are the same row — there is no null to
+ * preserve.
+ *
+ * `tolerance` is the one that MATTERS rather than merely tidies. Absent reads as
+ * the engine's `DEFAULT_TOLERANCE`; a literal `-1` reaching the engine would
+ * grade a perfect result as failed, since a deviation is never negative. Both
+ * value boundaries downstream now refuse it outright (`ValidationSpec`'s `ge=0`,
+ * `ValidationSpecSchema`'s `.min(0)`) — this decoder is what makes sure they
+ * never see it.
+ *
+ * The `>= 0` test is deliberately LAXER than the prompt, which says "-1, and
+ * only -1". Any negative decodes to absent on purpose: the prompt is guidance to
+ * a model, not a guarantee, and a `-0.5` slipping through should land on the
+ * documented "no threshold declared" path rather than on the loud-failure path
+ * meant for genuine corruption. Do not tighten this to `!== -1`.
  */
 export function toProposedValidation(
 	induced: InducedValidation,
 ): ProposedValidation {
-	const parameters: Record<string, unknown> = {};
-	for (const p of induced.parameters) {
-		parameters[p.name] = p.kind === "number" ? p.value : p.values;
-	}
-	const { parameters: _induced, ...rest } = induced;
+	const { tolerance, guidance, expected_outcome, ...rest } = induced;
 	return {
 		...rest,
-		...(Object.keys(parameters).length > 0 ? { parameters } : {}),
+		...(tolerance >= 0 ? { tolerance } : {}),
+		...(guidance !== "" ? { guidance } : {}),
+		...(expected_outcome !== "" ? { expected_outcome } : {}),
 	};
 }

@@ -1,30 +1,30 @@
-"""ValidationSpec — the typed check definition + the LIVE legacy fold (DAT-735;
+"""ValidationSpec — the typed check definition, ONE wire shape (DAT-735;
 retyped DAT-880).
 
 Pins three things: the ``check_type`` union (``ValidationCheckType |
 Literal["expected_formula"]``), the ``check_type``/``expected_formula`` pairing
-invariant (the DAT-447 declaration's typed shape), and the ``mode="before"``
-fold that maps the ``parameters``/``sql_hints`` wire shape onto the typed
-``tolerance``/``guidance`` fields.
+invariant (the DAT-447 declaration's typed shape), and — since DAT-880's
+close-out — that the typed fields are the ONLY accepted wire shape.
 
-DAT-880 REVIEW CORRECTION: the ticket's premise was that this fold's only
-remaining producer (the DAT-447 expected_formula overlay) had no live writer, so
-the whole fold could be deleted. That was correct about expected_formula — and
-WRONG about the fold overall: the cockpit's frame INDUCTION path
-(``validation-induction.ts``'s ``InducedValidation`` schema, filled by
-``getFrameValidationsInstructions()``'s cached LLM instructions) still emits
-this exact wire shape for the four CANONICAL check types, and its induce path
-writes straight to ``config_overlay`` without ever validating against the typed
-``ValidationSpecSchema``. Deleting the fold would have silently stripped
-tolerance + guidance from every frame-induced validation. The fold stays until
-that cockpit-side schema is migrated (a follow-on, lead-gated on a live
-constrained-decoding compile probe) — see ``_fold_legacy_check_fields``'s
-docstring on the model for the full producer chain.
+WHAT REPLACED WHAT, because the history is the reason these tests are worded
+this way. A ``mode="before"`` fold used to map a ``parameters``/``sql_hints``
+payload onto ``tolerance``/``guidance``. DAT-880 tried to delete it as dead; a
+review caught that the cockpit's frame INDUCTION path was a second, live
+producer of that shape, writing straight to ``config_overlay`` without ever
+validating against the typed ``ValidationSpecSchema`` — so deleting the fold
+would have silently stripped tolerance + guidance from every frame-induced
+check. The close-out migrated that producer instead
+(``validation-induction.ts``'s ``InducedValidation`` and the cached
+``getFrameValidationsInstructions()`` block, verified against the live
+constrained-decoding compiler), and THEN deleted the fold.
+
+So the silent-strip failure mode is not merely absent, it is unreachable:
+``extra="forbid"`` means a payload still carrying the legacy keys raises at
+construction. ``TestNativeTypedWireShape`` below pins exactly that, and it is
+what a future re-deletion of the migration would trip on.
 """
 
 from __future__ import annotations
-
-import json
 
 import pytest
 from pydantic import ValidationError
@@ -45,8 +45,12 @@ def _spec(**overrides) -> ValidationSpec:
 
 
 def test_typed_fields_construct_directly() -> None:
-    """The typed home's shape (tolerance/guidance) passes through unchanged —
-    the DB-home read never carries legacy keys, so the fold is a no-op."""
+    """The typed shape passes through unchanged — the one shape every producer
+    writes (the DB home, the teach overlay, frame induction).
+
+    ``tolerance=0.0`` specifically: the cockpit's ``-1`` sentinel decodes to an
+    ABSENT property, so a 0 arriving here is a real claim (exact agreement, or
+    zero violating rows) and must not collapse to the evaluator's default."""
     spec = _spec(tolerance=0.0, guidance="g")
     assert spec.tolerance == 0.0
     assert spec.guidance == "g"
@@ -59,69 +63,55 @@ def test_no_check_fields_leave_tolerance_and_guidance_none() -> None:
     assert spec.expected_formula is None
 
 
-class TestLegacyFold:
-    """The LIVE fold — frame induction's producer contract, not a retired shim."""
-
-    def test_legacy_parameters_tolerance_maps_to_typed_tolerance(self) -> None:
-        spec = _spec(parameters={"tolerance": 0.05})
-        assert spec.tolerance == 0.05
-
-    def test_legacy_sql_hints_maps_to_guidance(self) -> None:
-        spec = _spec(sql_hints="sum the debits")
-        assert spec.guidance == "sum the debits"
-
-    def test_non_tolerance_params_fold_into_guidance(self) -> None:
-        """Non-tolerance parameters (LLM classification hints, e.g. asset_types)
-        survive into guidance — the binding agent gets them as a JSON blob."""
-        spec = _spec(
-            sql_hints="classify accounts", parameters={"tolerance": 0.01, "asset_types": ["a"]}
-        )
-        assert spec.tolerance == 0.01
-        assert "classify accounts" in (spec.guidance or "")
-        assert "asset_types" in (spec.guidance or "")
-        folded = spec.guidance.split("Parameters: ", 1)[1]  # type: ignore[union-attr]
-        assert json.loads(folded) == {"asset_types": ["a"]}
-
-    def test_explicit_typed_fields_win_over_legacy(self) -> None:
-        """An explicit tolerance/guidance always wins; the legacy fields are dropped."""
-        spec = _spec(
-            tolerance=0.2,
-            guidance="explicit prose",
-            parameters={"tolerance": 0.9, "asset_types": ["x"]},
-            sql_hints="legacy prose",
-        )
-        assert spec.tolerance == 0.2
-        assert spec.guidance == "explicit prose"
-
-    def test_legacy_keys_never_survive_as_attributes(self) -> None:
-        """The fold CONSUMES parameters/sql_hints before field validation — they
-        are never exposed on the typed model, fold or no fold."""
-        spec = _spec(parameters={"tolerance": 0.5}, sql_hints="x")
-        assert not hasattr(spec, "parameters")
-        assert not hasattr(spec, "sql_hints")
+class TestNativeTypedWireShape:
+    """The ONE accepted wire shape — and the structural guarantee behind it."""
 
     def test_frame_induced_payload_shape(self) -> None:
-        """Pins the EXACT wire shape ``toProposedValidation``
-        (validation-induction.ts) produces from a frame induction turn — the
-        probe both reviewers ran independently, reproduced here byte-for-byte:
-        a numeric ``tolerance`` parameter (0.001 — the value that demonstrated a
-        10x-looser gate than the intended threshold once the fold was deleted)
-        plus a classification-hint parameter, and free-text ``sql_hints``. The
-        fold must recover the induced tolerance EXACTLY and compose guidance
-        from both the hint prose and the leftover parameter."""
+        """Pins the EXACT payload ``toProposedValidation``
+        (validation-induction.ts) produces from a frame induction turn, taken
+        from the live compile probe that gated the migration: a typed
+        ``tolerance`` and free-text ``guidance`` carrying the classification
+        vocabulary the retired ``parameters`` list used to hold. 0.001 is kept
+        from the pre-migration pin deliberately — it is the value that
+        demonstrated a 10x-looser gate than intended back when this field could
+        go missing, so it is the one that proves it no longer can."""
         frame_induced_payload = {
             "validation_id": "trial_balance",
             "name": "Trial Balance",
             "description": "Assets + expenses equal liabilities + equity + revenue",
             "category": "financial",
             "check_type": "balance",
-            "sql_hints": "Classify accounts by asset_types before summing.",
-            "parameters": {"tolerance": 0.001, "asset_types": ["asset", "assets"]},
+            "tolerance": 0.001,
+            "guidance": "Classify by account_type in ('asset','assets') before summing.",
         }
         spec = ValidationSpec.model_validate(frame_induced_payload)
         assert spec.tolerance == 0.001
-        assert "Classify accounts by asset_types before summing." in (spec.guidance or "")
-        assert "asset_types" in (spec.guidance or "")
+        assert "account_type in ('asset','assets')" in (spec.guidance or "")
+
+    def test_negative_tolerance_is_refused(self) -> None:
+        """``ge=0``: a negative tolerance is unsatisfiable under ADR-0017, so it is
+        induction's "not declared" SENTINEL and never a threshold. The sentinel is
+        safe BECAUSE unsatisfiable — therefore this boundary must not read it as a
+        value. Probe-proved consequence if it did: -1 grades a PERFECT result as
+        failed. ``load_all_validation_specs``'s per-row catch turns this raise into
+        a logged skip of the one check, rather than a silently mis-graded run."""
+        with pytest.raises(ValidationError):
+            _spec(tolerance=-1)
+
+    def test_legacy_parameters_key_fails_loud(self) -> None:
+        """The structural guarantee: with no fold left, ``extra="forbid"`` makes
+        a residual legacy payload raise at construction instead of silently
+        dropping the tolerance it carried. Re-introducing the pre-DAT-880
+        induction schema fails HERE, loudly, rather than in production as a
+        check quietly graded at DEFAULT_TOLERANCE."""
+        with pytest.raises(ValidationError):
+            _spec(parameters={"tolerance": 0.05})
+
+    def test_legacy_sql_hints_key_fails_loud(self) -> None:
+        """Same guarantee for the guidance half — a dropped ``sql_hints`` used to
+        empty the SQL-binding prompt slot with no signal at all."""
+        with pytest.raises(ValidationError):
+            _spec(sql_hints="sum the debits")
 
 
 @pytest.mark.parametrize(
@@ -169,7 +159,7 @@ def test_expected_formula_declaration_without_matching_check_type_is_rejected() 
 
 
 def test_extra_forbid_rejects_a_genuinely_unknown_field() -> None:
-    """DAT-880: once the fold consumes the one live legacy shape's keys, any OTHER
-    unrecognized key is a real unknown field — fails loud, never silently dropped."""
+    """DAT-880: every unrecognized key is a real unknown field — fails loud, never
+    silently dropped. The legacy-key cases above are one instance of this rule."""
     with pytest.raises(ValidationError):
         _spec(this_key_has_never_existed="x")

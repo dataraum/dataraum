@@ -68,7 +68,7 @@ Propose validations that fit THIS source's concepts and schema. A validation dec
 <validation_fields>
 - validation_id: lowercase_snake_case identifier for the check (e.g. "trial_balance", "non_negative_amounts")
 - name: human-readable check name (e.g. "Trial Balance (Accounting Equation)")
-- description: what the check verifies, in business terms — the engine grounds SQL from this + sql_hints, so be specific about the rule
+- description: what the check verifies, in business terms — the engine grounds SQL from this + guidance, so be specific about the rule
 - category: free-form grouping label (e.g. "financial", "data_quality", "business_rule")
 - severity: how bad a failure is — one of info | warning | error | critical (drives scoring weight)
 - check_type: the evaluator branch — a CLOSED vocabulary; pick the one whose semantics match:
@@ -76,8 +76,8 @@ Propose validations that fit THIS source's concepts and schema. A validation dec
     - "comparison": two computed values must agree
     - "constraint": a query must return zero violating rows
     - "aggregate": an aggregate must fall within bounds
-- parameters: a LIST of check parameters the engine reads when grounding SQL. Each entry is either { kind: "number", name, value } or { kind: "string_list", name, values }. Use [] when the check needs none.
-- sql_hints: guidance for grounding the SQL — join paths, columns to sum, how to classify rows. Use "" if you have none.
+- tolerance: the declared pass threshold — the check passes when the computed deviation is <= this value (e.g. 0.01 for a 1% balance slack). 0 means EXACT agreement, or zero violating rows: a real claim, not "none". Use -1, and only -1, when the check declares no threshold and the engine's default should apply.
+- guidance: guidance for grounding the SQL — join paths, columns to sum, how to classify rows (e.g. which account_type values count as assets). Use "" if you have none.
 - expected_outcome: what a passing result looks like, in prose. Use "" if you have none.
 - tags: free-form tags for grouping/search; [] if none apply
 - relevant_cycles: process/accounting cycle types this applies to; [] = universal
@@ -86,9 +86,10 @@ Propose validations that fit THIS source's concepts and schema. A validation dec
 <guidelines>
 - Propose validations OVER the framed concepts — anchor descriptions to the concept vocabulary, not raw column names you guess at
 - Pick the check_type whose semantics match the rule; never invent a type — the four branches are exhaustive
-- A "balance" or "comparison" check needs a numeric slack: give it a parameter { kind: "number", name: "tolerance", value: ... }. The engine reads that key BY NAME — spelling it anything else makes it a prompt hint instead of a threshold.
-- Every other parameter is a hint the SQL-grounding step reads: numeric thresholds as { kind: "number", ... }, classification vocabularies (e.g. which account_type values count as assets) as { kind: "string_list", ... }
-- The description + sql_hints shape WHAT is checked; the check_type is HOW the result is scored — keep them consistent
+- Every check is scored the same way: the engine computes a deviation and passes it when deviation <= tolerance. So a "balance" or "comparison" check needs the numeric slack it tolerates, and a "constraint" check that admits no violating rows declares tolerance 0.
+- Reach for -1 only when you genuinely cannot name a threshold — it hands the check to a default that knows nothing about the rule
+- Put every other binding detail in guidance prose: the join path, which columns to sum, and the classification vocabularies the SQL needs (e.g. which account_type values count as assets, spelled out as values). There is no separate parameter list — a vocabulary you leave out is one the grounding step has to guess.
+- The description + guidance shape WHAT is checked; the check_type + tolerance are HOW the result is scored — keep them consistent
 - Propose 3-12 validations depending on the data; quality over quantity — every validation should be one the data can support
 - Do NOT propose validations that need data the schema doesn't surface
 </guidelines>`;

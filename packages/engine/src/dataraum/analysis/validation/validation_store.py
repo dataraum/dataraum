@@ -205,14 +205,13 @@ def ensure_validations_seeded(session: Session, vertical: str) -> int:
     re-run is a no-op, a generated/frame supersede is never clobbered, and it is
     race-safe against a concurrent seed. Mirrors ``ensure_conventions_seeded``.
 
-    Each YAML doc is re-typed through :class:`ValidationSpec` (the ``mode="before"``
-    fold maps a legacy ``parameters``/``sql_hints`` shape onto the typed
-    ``tolerance``/``guidance`` fields — LIVE for the cockpit's frame-induced
-    validations, DAT-880; no vertical ships shipped YAML in that shape today, so
-    this seed path exercises it as a no-op passthrough only), so the seed rows
-    carry the typed check definition. A framed vertical (no on-disk YAML) seeds
-    nothing. Returns the number
-    of rows actually inserted (conflicts skipped).
+    Each YAML doc is re-typed through :class:`ValidationSpec`, so the seed rows
+    carry the typed check definition — and a doc still written in the
+    pre-DAT-735 ``parameters``/``sql_hints`` shape now fails its own savepoint
+    loudly rather than being folded (DAT-880's close-out deleted that fold; no
+    vertical ships a validations YAML at all since DAT-725 band 3). A framed
+    vertical (no on-disk YAML) seeds nothing. Returns the number of rows
+    actually inserted (conflicts skipped).
 
     **Per-doc fault isolation** (the ``ensure_metrics_seeded`` pattern): each doc is
     parsed AND written on its own, inside its OWN ``begin_nested`` savepoint, so one

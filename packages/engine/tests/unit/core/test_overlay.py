@@ -276,13 +276,13 @@ class TestApplyValidation:
         base = {"validations": [{"validation_id": "tb", "name": "shipped"}]}
         set_overlay_resolver(
             lambda: [
-                self._row("tb", parameters={"tolerance": 1.0}),
-                self._row("tb", parameters={"tolerance": 5.0}),
+                self._row("tb", tolerance=1.0),
+                self._row("tb", tolerance=5.0),
             ]
         )
         merged = apply_overlay("verticals/finance/validations", base)
         assert len(merged["validations"]) == 1
-        assert merged["validations"][0]["parameters"] == {"tolerance": 5.0}
+        assert merged["validations"][0]["tolerance"] == 5.0
         # Base dict untouched (no aliasing)
         assert base["validations"][0]["name"] == "shipped"
 

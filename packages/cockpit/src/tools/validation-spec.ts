@@ -23,15 +23,14 @@
 // columns are `tolerance: double precision` (the declared pass threshold) and
 // `guidance: text` (free-form SQL-grounding guidance) — a straight 1:1 typed
 // mirror, not a free-form bag, for a hand-authored `teach_validation` spec.
-// This does NOT mean the legacy shape is gone workspace-wide: `frame.ts`'s
-// INDUCE path (`validation-induction.ts`'s `InducedValidation`, a SEPARATE
-// schema from this one) still emits `parameters`/`sql_hints` for every
-// frame-induced validation, unmigrated (see that module's header for why), and
-// the engine's `mode="before"` fold on `ValidationSpec` reads it live —
-// DAT-880 confirmed this reading it after a review caught a lane's attempt to
-// delete that fold as dead. Migrating `InducedValidation` alongside this
-// module is the planned follow-on (lead-gated on a live constrained-decoding
-// compile probe), not something already done.
+// The legacy shape is now gone workspace-wide. `frame.ts`'s INDUCE path
+// (`validation-induction.ts`'s `InducedValidation`, a SEPARATE schema from this
+// one) emitted `parameters`/`sql_hints` for every frame-induced validation
+// until DAT-880's close-out migrated it to the same typed fields — so the
+// engine's `mode="before"` fold on `ValidationSpec`, which used to translate
+// them, is deleted, and `extra="forbid"` now rejects those keys at
+// construction. Both cockpit writers of a validation spec — this hand-authored
+// one and induction — produce one shape.
 //
 // DAT-725 band 3: finance's shipped `validations/*.yaml` are retired entirely
 // (no vertical ships one today), and `frame.ts`'s `induceValidations` no longer
@@ -123,13 +122,20 @@ export const ValidationSpecSchema = z.object({
 				"'aggregate' (an aggregate must fall within bounds). Pick the branch " +
 				"whose semantics match; the description + guidance shape WHAT it checks.",
 		),
+	// `.min(0)` mirrors the engine's `ge=0` (ValidationSpec): a negative tolerance is
+	// unsatisfiable under ADR-0017 and is frame induction's "not declared" SENTINEL,
+	// never a threshold — this is the second of the two value boundaries that must
+	// refuse to read it as one (the first is the engine model; the sentinel itself
+	// lives only in `InducedValidation` and dies in `toProposedValidation`).
 	tolerance: z
 		.number()
+		.min(0)
 		.optional()
 		.describe(
 			"The declared pass threshold: the check passes when the computed " +
 				"deviation is <= this value (ADR-0017's one `deviation <= tolerance` " +
-				"judgement, applied to every check_type). Omit to use the engine's default.",
+				"judgement, applied to every check_type). Non-negative — 0 means exact " +
+				"agreement. Omit to use the engine's default.",
 		),
 	guidance: z
 		.string()

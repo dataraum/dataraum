@@ -26,6 +26,13 @@
 //             unqualified names in the mirror resolve here.
 // Writes in tests therefore target `engine.<table>`; reads go through the
 // views, exactly as in production (ADR-0008).
+//
+// The operating-model PROPERTY GRAPH (ADR-0021, schema_graph.sql) is applied
+// on top of the read views, same token substitution, same reasoning: it is a
+// distinct SQL/PGQ object bound over those views (`CREATE PROPERTY GRAPH`),
+// so it must exist before any GRAPH_TABLE MATCH can run against the fixture.
+// Mirrors the engine's own boot order (`core/connections.py`): read views
+// first, graph second — the graph's element views select from `current_*`.
 
 import { spawnSync } from "node:child_process";
 import { readFileSync } from "node:fs";
@@ -157,6 +164,10 @@ export function startFixtureWorkspace(): FixtureWorkspace {
 		const readDdl = readFileSync(enginePath("schema_read.sql"), "utf8")
 			.replaceAll("__READ__", "public")
 			.replaceAll("__WS__", RAW_SCHEMA);
+		// --- the operating-model property graph, over those SAME read views ---
+		const graphDdl = readFileSync(enginePath("schema_graph.sql"), "utf8")
+			.replaceAll("__READ__", "public")
+			.replaceAll("__WS__", RAW_SCHEMA);
 		applySql(
 			containerId,
 			SCRATCH_DB,
@@ -165,6 +176,7 @@ export function startFixtureWorkspace(): FixtureWorkspace {
 				`SET search_path TO ${RAW_SCHEMA};`,
 				rawDdl,
 				readDdl,
+				graphDdl,
 			].join("\n"),
 		);
 

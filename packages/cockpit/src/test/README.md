@@ -50,6 +50,15 @@ these shipped silently.
   because that is the layout the checked-in Drizzle mirror was introspected
   from. Reads resolve unqualified to the views just as the reader role does in
   production (ADR-0008); test writes name `engine.<table>`.
+- the **operating-model property graph** (`schema_graph.sql`, ADR-0021) —
+  applied over those same `public` read views, same token substitution. A
+  `CREATE PROPERTY GRAPH` isn't a table or view Drizzle mirrors, so this is
+  the only way a fixture-backed suite reaches `GRAPH_TABLE ( ... MATCH ... )`;
+  query it through `src/db/metadata/property-graph.ts`'s
+  `queryOperatingModelGraph` (DAT-671 R0), never a bespoke client — that
+  module's header carries the PG19 gotchas (fixed-depth `MATCH`, `::text`
+  element keys, the grant being a separate privilege object from table
+  grants).
 - **cockpit_db** at the current migration head, applied with the real
   `drizzle-kit migrate` against the checked-in migration folder — never a
   hand-copied DDL snapshot, which would silently test yesterday's shape while

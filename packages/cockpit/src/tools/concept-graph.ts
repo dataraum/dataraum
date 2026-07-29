@@ -25,8 +25,14 @@
 // recursive CTE for `part_of` ancestry (depth 2..4); this module gets the same
 // ANSWER over the same raw ingredient rows (`concepts`, `concept_edges`,
 // `current_groundings` — all already Drizzle-mirrored) computed in memory
-// instead, since the whole vocabulary is small enough to hold at once and TS
-// has no PGQ.
+// instead — a CHOICE, not a constraint: SQL/PGQ's `GRAPH_TABLE (... MATCH
+// ...)` executes IN POSTGRES, so the calling client's language is irrelevant
+// (`../db/metadata/property-graph.ts` runs one from this very package,
+// DAT-671 R0). The whole vocabulary is small enough to hold at once, an
+// in-memory rebuild was already sitting here pre-PGQ-helper, and no reader
+// needed the graph form yet — that is now scheduled to change: R3 replaces
+// this builder with a `GRAPH_TABLE` read (keeping it only if the Model UI
+// still needs the client-shape output; otherwise deleted).
 //
 // IDENTITY: concepts/concept_edges are NOT run-versioned (unlike most of this
 // package's `current_*` views) — they're versioned by `superseded_at`

@@ -7,10 +7,18 @@
 //
 // No new mirror needed: `concepts`/`conceptEdges`/`currentGroundings` were
 // already pulled by prior lanes this epic (DAT-728/838); the engine's
-// `og_concepts`/`og_concept_edges`/`og_grounding` SQL/PGQ element views exist
-// only for the engine's own PGQ traversal and are never pulled into Drizzle —
-// this loader gets the SAME answer from their raw ingredient rows instead
-// (the whole vocabulary is small; no PGQ needed in TS).
+// `og_concepts`/`og_concept_edges`/`og_grounding` SQL/PGQ element views are
+// element views for the property graph (ADR-0021), never pulled into Drizzle
+// AS TABLES (a `CREATE PROPERTY GRAPH` isn't a table/view Drizzle introspects)
+// — but the graph itself is reachable from here: PGQ's `GRAPH_TABLE (...
+// MATCH ...)` executes IN POSTGRES, so TypeScript can issue it exactly like
+// any other query (`../db/metadata/property-graph.ts`, DAT-671 R0). This
+// loader instead gets the SAME answer from the raw ingredient rows computed
+// in memory (`concept-graph.ts`'s `buildConceptGraph`) — a CHOICE made when
+// the whole vocabulary was small enough to hold at once, now scheduled for
+// replacement: R3 reads the concept block via `GRAPH_TABLE` SQL directly and
+// deletes this in-memory rebuild (kept only if the Model UI still needs the
+// client shape).
 //
 // Workspace scoping: like the other `current_*` reads in this package
 // (`query-context.ts`'s `buildSchemaBlock` etc.), no explicit workspace

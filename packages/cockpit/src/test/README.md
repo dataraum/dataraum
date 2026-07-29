@@ -115,6 +115,50 @@ Older suites predating the fixture are gated on `providedByEnvironment(...)`
 and still expect a seeded compose stack; they skip unless the environment
 supplies real DSNs.
 
+## The journey workspace (J1-J8)
+
+`journeys.integration.test.ts` is the practitioner-journey acceptance net. It
+differs from every other suite here in one way that matters: it calls the
+**routes**, not the resolvers — `Route.options.server.handlers.POST({request})`
+with a real `Request`, returning a real `Response`. Nothing is mocked, including
+the lake.
+
+It runs against its **own workspace**, not the shared catalog above:
+
+| | |
+| --- | --- |
+| `journey` database | the same engine schema layout, seeded by `seed-journey.ts` |
+| `journey_lake_catalog` database | the DuckLake catalog for its lake |
+| a temp dir | the lake's `DATA_PATH` (local, not `s3://`) |
+
+All three live in the SAME container — isolation without a second ~6s boot. The
+separation is not tidiness: tier A matches the catalog to a result by column
+NAME with no fact scoping, so a second `account_id__name` in the shared database
+would surface as a duplicate axis and change what the existing tier-A suite
+sees.
+
+**The lake is real.** `buildDucklakeAttachSql` hardcodes `ducklake:postgres:`,
+so a file-catalog lake cannot be reached through config at all — which is why
+the catalog is a Postgres database in the fixture container and the cockpit
+reaches it through nothing but `DUCKLAKE_CATALOG_URL` + `DATARAUM_LAKE_PATH`.
+Its real `lake.ts` bootstrap then runs: extension load, S3 secret (inert, scoped
+to a bucket nothing reads), `ATTACH … READ_ONLY`, `USE lake.typed`.
+
+**The data is real and the answer key is external.** Rows come from the sibling
+`dataraum-testdata` corpus; every asserted figure is derived from it with the
+SQL quoted beside it in `journey-answer-key.ts` and cross-checked against that
+corpus's `ground_truth.yaml`. Numbers are asserted to the cent. A missing corpus
+is a **loud skip** (set `DATARAUM_TESTDATA_PATH` to override the upward search);
+a corpus that is present but fails to load is a hard failure.
+
+**Red pins.** Journeys describing behaviour we do not have yet land as a PAIR: a
+green `it(...)` pinning today's exact behaviour, and an `it.fails(...)` asserting
+the target. `it.fails` reports green while it throws and **fails the run the
+moment it starts passing**, so the fix cannot land silently — it must be flipped
+by deleting `.fails`. The paired green half is what stops `.fails` from masking a
+broken fixture. Do not "fix" a red pin by relaxing it; either the product
+changed (flip it) or it did not (leave it).
+
 ## Two runtime gotchas
 
 1. **The integration project MUST run under `bun --bun`** (wired in

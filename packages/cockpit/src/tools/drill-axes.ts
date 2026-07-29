@@ -1469,12 +1469,14 @@ export async function resolveAnswerTarget(
 	const ids = sources.map((s) => s.snippetId ?? "");
 	if (ids.some((id) => id === "")) return null;
 	const byId = await resolveGroundedConcepts(ids);
-	// Source order, deduped: two sources may reuse the same grounding (the same
-	// concept filtered two ways), and one concept is one carrier.
-	const concepts = [
-		...new Set(ids.map((id) => byId.get(id)).filter((c) => c !== undefined)),
-	];
-	if (concepts.length !== new Set(ids).size) return null;
+	// EVERY id must resolve — one unresolvable grounding (hallucinated, retired,
+	// retained-failed) is an input nothing can vouch for, same as a fresh step.
+	if (ids.some((id) => !byId.has(id))) return null;
+	// Then: source order, deduped by CONCEPT. Two sources may ground to the same
+	// concept (one snippet reused twice, or two groundings of it filtered two
+	// ways) and one concept is one carrier — its verdict is read once and would
+	// otherwise be gated twice against itself.
+	const concepts = [...new Set(ids.map((id) => byId.get(id) as string))];
 	return concepts.length === 1
 		? { kind: "measure", key: concepts[0] }
 		: { kind: "composed", carriers: concepts };

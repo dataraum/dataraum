@@ -1388,3 +1388,46 @@ def test_format_context_display_caps_slice_value_counts_without_touching_context
     assert "3 most frequent of 20 distinct" in rendered
     # The dict handed in is untouched — verify.py must still see all 5.
     assert len(context["slice_definitions"][0]["value_counts"]) == 5
+
+
+def test_format_context_display_caps_the_unranked_values_fallback_too(session) -> None:
+    """DAT-671 review fold-in (CRITICAL): the ``elif sd.get("values")`` fallback
+    used to bypass BOTH caps — reproduced live: max_sample_values=3 rendered
+    all 50 values of an unranked slice. ``sd["values"]`` reads the same
+    ``SliceDefinition.distinct_values`` the unranked persist-time fallback can
+    populate with the profiler's FULL top_values (up to 200) — this fires
+    whenever ``value_counts`` is empty (missing semantic_runs pin, or no typed
+    profile — ``_get_value_counts_for_column`` fails closed to ``[]``), a real
+    operating path, not a corner case. Must get the identical count + per-value
+    char treatment as the value_counts branch above it, not a silent bypass.
+    """
+    long_value = "x" * 500
+    many_values = [long_value] + [f"v{i:02d}" for i in range(49)]
+    context = {
+        "tables": [{"table_name": "facts", "row_count": 100, "columns": []}],
+        "slice_definitions": [
+            {
+                "table_name": "facts",
+                "column_name": "status",
+                "slice_type": "categorical",
+                "values": many_values,
+                "value_counts": [],  # the unranked path: no judged value_counts
+                "value_count": None,
+                "confidence": None,
+                "business_context": None,
+            }
+        ],
+    }
+
+    rendered = format_context_for_prompt(context, max_sample_values=3, max_sample_value_chars=100)
+
+    values_line = next(line for line in rendered.splitlines() if line.startswith("  Values:"))
+    shown = [v.strip() for v in values_line.removeprefix("  Values:").split(",")]
+    # COUNT cap: only 3 of the 50 values render.
+    assert len(shown) == 3
+    assert "v48" not in rendered
+    # LENGTH cap: the 500-char value is truncated, not served whole.
+    assert shown[0] == "x" * 100 + "..."
+    # The dict handed in is untouched — the unranked path may feed other
+    # readers (e.g. a future membership check) the FULL 50.
+    assert len(context["slice_definitions"][0]["values"]) == 50

@@ -109,7 +109,9 @@ class BusinessCycleAgent(LLMFeature):
             max_sample_value_chars=self.config.privacy.max_sample_value_chars,
         )
         context_str = format_context_for_prompt(
-            context, max_sample_values=self.config.privacy.max_sample_values
+            context,
+            max_sample_values=self.config.privacy.max_sample_values,
+            max_sample_value_chars=self.config.privacy.max_sample_value_chars,
         )
 
         # 2. Render prompt from template

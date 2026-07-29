@@ -131,20 +131,22 @@ def persist_column_concepts(
     pass left blank legitimately carries TWO entries by the time this
     persists — the first pass's blank one and the retry's filled one — and
     the fold is what makes the retry's (later) entry win
-    (``test_retry_never_overwrites_the_first_emission``,
-    ``test_blank_meaning_counts_as_missing_and_is_refilled``). Failing loud
-    on that duplicate would break the retry's OWN merge contract every time
-    it actually recovers a gap — the R-890 alignment does not port over
-    without first reworking ``_retry_missing_coverage`` to replace rather
-    than append (DAT-671 census follow-up, not done here).
+    (``test_blank_meaning_counts_as_missing_and_is_refilled``;
+    ``test_retry_style_duplicate_reaching_persist_keeps_the_later_entry``
+    pins the dependency directly, without depending on retry-orchestration
+    behavior). Failing loud on that duplicate would break the retry's OWN
+    merge contract every time it actually recovers a gap — the R-890
+    alignment does not port over without first reworking
+    ``_retry_missing_coverage`` to replace rather than append (DAT-671
+    census follow-up, not done here).
 
     Returns:
-        A :class:`ConceptPersistCounts` breakdown, with one warning per
-        unresolvable entry riding ``Result.warnings`` — the counts are also
-        logged so a name-resolution wipeout (every emitted concept dropped
-        as unresolved, DAT-768 path #2) is diagnosable rather than
-        indistinguishable from an empty emission; the caller gates
-        begin_session on ``with_meaning``.
+        A :class:`ConceptPersistCounts` breakdown, with a combined warning
+        naming every unresolvable entry riding ``Result.warnings`` — the
+        counts are also logged so a name-resolution wipeout (every emitted
+        concept dropped as unresolved, DAT-768 path #2) is diagnosable
+        rather than indistinguishable from an empty emission; the caller
+        gates begin_session on ``with_meaning``.
     """
     column_map = load_column_mappings(session, table_ids)
 
@@ -470,8 +472,9 @@ def author_and_store_catalogue(
             missing=len(missing),
             dropped_unresolved=counts.dropped_unresolved + len(dropped_readings),
         ),
-        # DAT-671: the per-entry unresolvable-column disclosure (was DEBUG-only
-        # and invisible) now rides the phase's warnings channel, same as the
+        # DAT-671: the unresolvable-column disclosure (was DEBUG-only and
+        # invisible; per-entry at the structured-log level, one combined
+        # summary here) now rides the phase's warnings channel, same as the
         # semantic_per_column phase's persist-side disclosures (DAT-890).
         warnings=persist_result.warnings,
     )

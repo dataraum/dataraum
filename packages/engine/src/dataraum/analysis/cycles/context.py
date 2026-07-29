@@ -836,7 +836,12 @@ def _get_value_counts_for_column(
     ]
 
 
-def format_context_for_prompt(context: dict[str, Any], *, max_sample_values: int = 10) -> str:
+def format_context_for_prompt(
+    context: dict[str, Any],
+    *,
+    max_sample_values: int = 10,
+    max_sample_value_chars: int = 100,
+) -> str:
     """Format the context dictionary as a readable string for the LLM prompt.
 
     Organizes metadata into sections that support cycle detection:
@@ -853,15 +858,22 @@ def format_context_for_prompt(context: dict[str, Any], *, max_sample_values: int
     Args:
         context: Context dictionary from build_cycle_detection_context
         max_sample_values: ``privacy.max_sample_values`` — the DISPLAY cap
-            applied to a slice's ``value_counts`` here (DAT-671). This is
-            deliberately a RENDER-time cap, not a cap on ``context`` itself:
-            ``context["slice_definitions"][*]["value_counts"]`` stays the
-            FULL stored set because ``verify.py``'s DAT-630 membership floor
-            reads it directly (see ``_get_value_counts_for_column``'s
-            docstring) — capping it upstream would make an honest value
-            outside the top-K read as unserved and wrongly reject a cycle.
-            Defaults to the shipped ``privacy.max_sample_values`` so existing
-            callers that pre-date this cap keep behaving identically.
+            applied to a slice's ``value_counts``/``values`` here (DAT-671).
+            This is deliberately a RENDER-time cap, not a cap on ``context``
+            itself: ``context["slice_definitions"][*]["value_counts"]``
+            (and ``["values"]``, the unranked fallback — same underlying
+            ``SliceDefinition.distinct_values``, DAT-671 review fold-in)
+            stay the FULL stored set because ``verify.py``'s DAT-630
+            membership floor reads them directly (see
+            ``_get_value_counts_for_column``'s docstring) — capping it
+            upstream would make an honest value outside the top-K read as
+            unserved and wrongly reject a cycle. Defaults to the shipped
+            ``privacy.max_sample_values`` so existing callers that pre-date
+            this cap keep behaving identically.
+        max_sample_value_chars: ``privacy.max_sample_value_chars`` — the
+            per-value length cap applied alongside the count cap above (via
+            :func:`~dataraum.analysis.semantic.utils.truncate_sample_value`).
+            Defaults to the shipped ``privacy.max_sample_value_chars``.
 
     Returns:
         Formatted string suitable for LLM prompt
@@ -966,16 +978,19 @@ def format_context_for_prompt(context: dict[str, Any], *, max_sample_values: int
             # never the column total — labelling it "total" (as this line did)
             # told the model it was seeing the whole distribution (DAT-622).
             # State the shown-vs-distinct split whenever the two differ.
-            # DISPLAY-capped to ``max_sample_values`` (DAT-671): the stored
-            # ``value_counts`` stays uncapped in ``context`` for verify.py's
-            # membership floor (see ``_get_value_counts_for_column``'s
-            # docstring) — only what reaches the PROMPT TEXT is bounded here.
+            # DISPLAY-capped to ``max_sample_values``/``max_sample_value_chars``
+            # (DAT-671): the stored ``value_counts`` stays uncapped in
+            # ``context`` for verify.py's membership floor (see
+            # ``_get_value_counts_for_column``'s docstring) — only what
+            # reaches the PROMPT TEXT is bounded here.
             value_counts = sd.get("value_counts", [])[:max_sample_values]
             if value_counts:
                 shown_rows = sum(vc["count"] for vc in value_counts)
                 distinct = sd.get("value_count")
                 values_str = ", ".join(
-                    f"{vc['value']} ({vc['count']:,}, {vc['percentage']}%)" for vc in value_counts
+                    f"{truncate_sample_value(vc['value'], max_chars=max_sample_value_chars)} "
+                    f"({vc['count']:,}, {vc['percentage']}%)"
+                    for vc in value_counts
                 )
                 if distinct is not None and distinct > len(value_counts):
                     header = (
@@ -986,7 +1001,19 @@ def format_context_for_prompt(context: dict[str, Any], *, max_sample_values: int
                     header = f"  Values ({shown_rows:,} rows across {len(value_counts)} values)"
                 lines.append(f"{header}: {values_str}")
             elif sd.get("values"):
-                lines.append(f"  Values: {', '.join(sd['values'])}")
+                # The unranked-path fallback (DAT-725: no LLM judgment ran, so
+                # no value_counts was built) — same underlying
+                # SliceDefinition.distinct_values, which the persist-time
+                # fallback can populate with the profiler's FULL top_values
+                # (up to 200, DAT-671 review fold-in: this branch used to
+                # bypass BOTH caps above, live-reproduced serving all 50 of a
+                # 50-value column at max_sample_values=3). Same count + char
+                # treatment as the value_counts branch.
+                capped_values = [
+                    truncate_sample_value(v, max_chars=max_sample_value_chars)
+                    for v in sd["values"][:max_sample_values]
+                ]
+                lines.append(f"  Values: {', '.join(capped_values)}")
             lines.append("")
 
     # Derived (numeric) relationships — completion signals a status column can't carry

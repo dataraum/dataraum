@@ -201,9 +201,14 @@ class TestPersistColumnConcepts:
         ``persist_column_annotations`` rule, DAT-671): ``_retry_missing_coverage``
         (DAT-725) relies on this exact fold to make its bounded retry's filled-in
         entry win over the first pass's blank one for the same column — see
-        ``test_retry_never_overwrites_the_first_emission`` and
-        ``test_blank_meaning_counts_as_missing_and_is_refilled`` below, and the
-        docstring on ``persist_column_concepts``.
+        ``test_blank_meaning_counts_as_missing_and_is_refilled`` below and the
+        docstring on ``persist_column_concepts`` (NOT
+        ``test_retry_never_overwrites_the_first_emission``: its retry never
+        re-mentions a1, because ``_retry_missing_coverage``'s own
+        still-missing-columns filter already dropped that entry before
+        ``persist_column_concepts`` ever saw a duplicate — see
+        ``test_retry_style_duplicate_reaching_persist_keeps_the_later_entry``
+        below for a fold pin that does not depend on retry-filter behavior).
         """
         table = _table_with_columns(session, "orders", ["total"])
         concepts = [_cc("orders", "total", "gross"), _cc("orders", "total", "net")]
@@ -218,6 +223,36 @@ class TestPersistColumnConcepts:
         rows = list(session.execute(select(ColumnConceptDB)).scalars())
         assert len(rows) == 1
         assert rows[0].meaning == "net"  # last mention wins
+
+    def test_retry_style_duplicate_reaching_persist_keeps_the_later_entry(self, session) -> None:
+        """Pins the EXACT dependency ``_retry_missing_coverage`` relies on,
+        directly at ``persist_column_concepts`` — not through the retry
+        orchestration (which is what made ``test_retry_never_overwrites_the_
+        first_emission`` an incidental, not a real, pin: its retry-filter
+        discards the duplicate before persist ever sees one).
+
+        Shape: a first-pass BLANK entry for a column, followed by a retry's
+        FILLED entry for the SAME column — reaching ``persist_column_concepts``
+        as two raw list entries, exactly as ``_retry_missing_coverage.extend()``
+        would leave them (it appends, never replaces). Without the fold this
+        either raises CardinalityViolation on the upsert or persists
+        arbitrarily; the fold must keep the LATER (filled) entry so a
+        legitimately-recovered gap is not silently re-blanked.
+        """
+        table = _table_with_columns(session, "orders", ["total"])
+        concepts = [
+            _cc("orders", "total", "   "),  # first pass: blank, counts as missing
+            _cc("orders", "total", "filled"),  # retry: appended, not a replacement
+        ]
+
+        result = persist_column_concepts(
+            session, concepts, [table.table_id], annotated_by="m", run_id=baseline_run_id()
+        ).unwrap()
+        session.flush()
+
+        assert result.resolved == 1
+        row = session.execute(select(ColumnConceptDB)).scalars().one()
+        assert row.meaning == "filled"
 
     def test_unresolvable_concept_dropped_and_counted(self, session) -> None:
         """DAT-768 path #2: a concept whose (table, column) name resolves to no

@@ -19,6 +19,44 @@ CREATE TABLE concept_edges (
 
 CREATE UNIQUE INDEX uq_concept_edge_active ON concept_edges (vertical, predicate, from_concept, to_concept) WHERE superseded_at IS NULL;
 
+CREATE TABLE concept_reconciliation (
+	reconciliation_id VARCHAR NOT NULL, 
+	run_id VARCHAR NOT NULL, 
+	vertical VARCHAR NOT NULL, 
+	from_concept VARCHAR NOT NULL, 
+	to_concept VARCHAR NOT NULL, 
+	pair_key VARCHAR NOT NULL, 
+	left_snippet_id VARCHAR, 
+	right_snippet_id VARCHAR, 
+	left_relation VARCHAR, 
+	right_relation VARCHAR, 
+	left_as_of VARCHAR, 
+	right_as_of VARCHAR, 
+	left_value NUMERIC, 
+	right_value NUMERIC, 
+	delta NUMERIC, 
+	relative_delta NUMERIC, 
+	tolerance FLOAT, 
+	status VARCHAR NOT NULL, 
+	verdict VARCHAR, 
+	abstain_reason VARCHAR, 
+	created_at TIMESTAMP WITH TIME ZONE NOT NULL, 
+	CONSTRAINT pk_concept_reconciliation PRIMARY KEY (reconciliation_id), 
+	CONSTRAINT uq_concept_reconciliation_pair UNIQUE (vertical, from_concept, to_concept, pair_key, run_id), 
+	CONSTRAINT ck_concept_reconciliation_status CHECK (status IN ('abstained', 'evaluated')), 
+	CONSTRAINT ck_concept_reconciliation_verdict CHECK (verdict IS NULL OR verdict IN ('beyond_tolerance', 'no_tolerance_declared', 'within_tolerance')), 
+	CONSTRAINT ck_concept_reconciliation_abstain_reason CHECK (abstain_reason IS NULL OR abstain_reason IN ('different_aggregations', 'different_reporting_instants', 'execution_failed', 'no_evaluable_pair', 'no_value', 'non_numeric_value', 'unresolved_grounding')), 
+	CONSTRAINT ck_concept_reconciliation_status_verdict_reason CHECK ((status = 'evaluated' AND verdict IS NOT NULL AND abstain_reason IS NULL AND left_value IS NOT NULL AND right_value IS NOT NULL AND delta IS NOT NULL AND relative_delta IS NOT NULL) OR (status = 'abstained' AND verdict IS NULL AND abstain_reason IS NOT NULL AND delta IS NULL AND relative_delta IS NULL)), 
+	CONSTRAINT ck_concept_reconciliation_tolerance_verdict CHECK (verdict IS NULL OR (verdict = 'no_tolerance_declared' AND tolerance IS NULL) OR (verdict <> 'no_tolerance_declared' AND tolerance IS NOT NULL)), 
+	CONSTRAINT ck_concept_reconciliation_pair_key_snippets CHECK ((pair_key = '*' AND left_snippet_id IS NULL AND right_snippet_id IS NULL) OR (pair_key <> '*' AND left_snippet_id IS NOT NULL AND right_snippet_id IS NOT NULL))
+);
+
+CREATE INDEX ix_concept_reconciliation_from_concept ON concept_reconciliation (from_concept);
+
+CREATE INDEX ix_concept_reconciliation_run_id ON concept_reconciliation (run_id);
+
+CREATE INDEX ix_concept_reconciliation_vertical ON concept_reconciliation (vertical);
+
 CREATE TABLE concepts (
 	concept_id VARCHAR NOT NULL, 
 	vertical VARCHAR NOT NULL, 
@@ -81,6 +119,25 @@ CREATE TABLE cycle_families (
 
 CREATE UNIQUE INDEX uq_cycle_family_active ON cycle_families (vertical, family) WHERE superseded_at IS NULL;
 
+CREATE TABLE cycle_types (
+	cycle_type_id VARCHAR NOT NULL, 
+	vertical VARCHAR NOT NULL, 
+	name VARCHAR NOT NULL, 
+	description TEXT, 
+	business_value VARCHAR, 
+	aliases JSON, 
+	typical_stages JSON, 
+	completion_indicators JSON, 
+	feeds_into JSON, 
+	source VARCHAR, 
+	created_at TIMESTAMP WITHOUT TIME ZONE NOT NULL, 
+	superseded_at TIMESTAMP WITHOUT TIME ZONE, 
+	CONSTRAINT pk_cycle_types PRIMARY KEY (cycle_type_id), 
+	CONSTRAINT ck_cycle_types_source CHECK (source IS NULL OR source IN ('seed'))
+);
+
+CREATE UNIQUE INDEX uq_cycle_type_active ON cycle_types (vertical, name) WHERE superseded_at IS NULL;
+
 CREATE TABLE detected_business_cycles (
 	cycle_id VARCHAR NOT NULL, 
 	run_id VARCHAR NOT NULL, 
@@ -107,6 +164,42 @@ CREATE TABLE detected_business_cycles (
 	CONSTRAINT pk_detected_business_cycles PRIMARY KEY (cycle_id), 
 	CONSTRAINT uq_detected_cycle_run UNIQUE (canonical_type, run_id), 
 	CONSTRAINT ck_detected_business_cycles_family_direction CHECK ((family IS NULL AND direction IS NULL) OR (family IS NOT NULL AND direction IS NOT NULL))
+);
+
+CREATE TABLE induced_validations (
+	row_id VARCHAR NOT NULL, 
+	run_id VARCHAR NOT NULL, 
+	vertical VARCHAR NOT NULL, 
+	validation_id VARCHAR NOT NULL, 
+	name VARCHAR NOT NULL, 
+	description TEXT NOT NULL, 
+	category VARCHAR NOT NULL, 
+	severity VARCHAR NOT NULL, 
+	check_type VARCHAR NOT NULL, 
+	tolerance FLOAT, 
+	guidance TEXT, 
+	expected_outcome TEXT, 
+	relevant_cycles JSON, 
+	relevant_conventions JSON, 
+	tags JSON, 
+	version VARCHAR NOT NULL, 
+	created_at TIMESTAMP WITHOUT TIME ZONE NOT NULL, 
+	CONSTRAINT pk_induced_validations PRIMARY KEY (row_id), 
+	CONSTRAINT uq_induced_validation_run UNIQUE (validation_id, run_id), 
+	CONSTRAINT ck_induced_validations_severity CHECK (severity IN ('critical', 'error', 'info', 'warning')), 
+	CONSTRAINT ck_induced_validations_check_type CHECK (check_type IN ('aggregate', 'balance', 'comparison', 'constraint'))
+);
+
+CREATE INDEX ix_induced_validations_run_id ON induced_validations (run_id);
+
+CREATE TABLE induction_runs (
+	row_id VARCHAR NOT NULL, 
+	run_id VARCHAR NOT NULL, 
+	vertical VARCHAR NOT NULL, 
+	proposed INTEGER NOT NULL, 
+	created_at TIMESTAMP WITHOUT TIME ZONE NOT NULL, 
+	CONSTRAINT pk_induction_runs PRIMARY KEY (row_id), 
+	CONSTRAINT uq_induction_run UNIQUE (run_id)
 );
 
 CREATE TABLE lifecycle_artifacts (
@@ -138,23 +231,35 @@ CREATE TABLE metadata_snapshot_head (
 	CONSTRAINT uq_snapshot_head_target_stage UNIQUE (target, stage)
 );
 
-CREATE TABLE metric_additivity (
+CREATE TABLE metric_axis_additivity (
 	additivity_id VARCHAR NOT NULL, 
 	run_id VARCHAR NOT NULL, 
 	target_kind VARCHAR NOT NULL, 
 	target_key VARCHAR NOT NULL, 
-	categorical_additive BOOLEAN NOT NULL, 
-	time_additive BOOLEAN NOT NULL, 
-	categorical_reason VARCHAR, 
-	time_reason VARCHAR, 
+	axis_kind VARCHAR NOT NULL, 
+	axis_key VARCHAR NOT NULL, 
+	status VARCHAR NOT NULL, 
+	verdict VARCHAR, 
+	reason VARCHAR, 
+	abstain_reason VARCHAR, 
+	bucket_grain VARCHAR, 
 	created_at TIMESTAMP WITH TIME ZONE NOT NULL, 
-	CONSTRAINT pk_metric_additivity PRIMARY KEY (additivity_id), 
-	CONSTRAINT uq_metric_additivity_target UNIQUE (target_kind, target_key, run_id)
+	CONSTRAINT pk_metric_axis_additivity PRIMARY KEY (additivity_id), 
+	CONSTRAINT uq_metric_axis_additivity_target UNIQUE (target_kind, target_key, axis_kind, axis_key, run_id), 
+	CONSTRAINT ck_metric_axis_additivity_target_kind CHECK (target_kind IN ('measure', 'metric')), 
+	CONSTRAINT ck_metric_axis_additivity_axis_kind CHECK (axis_kind IN ('categorical', 'time')), 
+	CONSTRAINT ck_metric_axis_additivity_status CHECK (status IN ('abstained', 'classified')), 
+	CONSTRAINT ck_metric_axis_additivity_verdict CHECK (verdict IS NULL OR verdict IN ('additive', 'non_additive_recompute', 'semi_additive')), 
+	CONSTRAINT ck_metric_axis_additivity_reason CHECK (reason IS NULL OR reason IN ('average', 'distinct_count', 'min_max', 'ratio', 'snapshot_count', 'stock')), 
+	CONSTRAINT ck_metric_axis_additivity_abstain_reason CHECK (abstain_reason IS NULL OR abstain_reason IN ('graph_parse_failed', 'materialization_conflict', 'missing_extract', 'no_catalogue_run', 'relation_outside_analysis', 'unknown_aggregate', 'unknown_temporal', 'unresolved_grounding')), 
+	CONSTRAINT ck_metric_axis_additivity_bucket_grain CHECK (bucket_grain IS NULL OR bucket_grain IN ('day', 'month', 'quarter', 'year')), 
+	CONSTRAINT ck_metric_axis_additivity_status_verdict_reason CHECK ((status = 'classified' AND verdict IS NOT NULL AND abstain_reason IS NULL AND ((verdict = 'additive' AND reason IS NULL) OR (verdict <> 'additive' AND reason IS NOT NULL))) OR (status = 'abstained' AND verdict IS NULL AND reason IS NULL AND abstain_reason IS NOT NULL)), 
+	CONSTRAINT ck_metric_axis_additivity_bucket_grain_time_axis_only CHECK (axis_kind = 'time' OR bucket_grain IS NULL)
 );
 
-CREATE INDEX ix_metric_additivity_run_id ON metric_additivity (run_id);
+CREATE INDEX ix_metric_axis_additivity_run_id ON metric_axis_additivity (run_id);
 
-CREATE INDEX ix_metric_additivity_target_key ON metric_additivity (target_key);
+CREATE INDEX ix_metric_axis_additivity_target_key ON metric_axis_additivity (target_key);
 
 CREATE TABLE metric_derives_from (
 	edge_id VARCHAR NOT NULL, 
@@ -188,6 +293,26 @@ CREATE TABLE metric_parameters (
 
 CREATE UNIQUE INDEX uq_metric_parameter_active ON metric_parameters (vertical, graph_id, name) WHERE superseded_at IS NULL;
 
+CREATE TABLE metric_unit_grain (
+	unit_grain_id VARCHAR NOT NULL, 
+	run_id VARCHAR NOT NULL, 
+	target_kind VARCHAR NOT NULL, 
+	target_key VARCHAR NOT NULL, 
+	axis VARCHAR NOT NULL, 
+	entity_value VARCHAR NOT NULL, 
+	value NUMERIC, 
+	reconciles BOOLEAN NOT NULL, 
+	recompute BOOLEAN NOT NULL, 
+	created_at TIMESTAMP WITH TIME ZONE NOT NULL, 
+	CONSTRAINT pk_metric_unit_grain PRIMARY KEY (unit_grain_id), 
+	CONSTRAINT uq_metric_unit_grain_entity UNIQUE (target_kind, target_key, axis, entity_value, run_id), 
+	CONSTRAINT ck_metric_unit_grain_target_kind CHECK (target_kind IN ('measure', 'metric'))
+);
+
+CREATE INDEX ix_metric_unit_grain_run_id ON metric_unit_grain (run_id);
+
+CREATE INDEX ix_metric_unit_grain_target_key ON metric_unit_grain (target_key);
+
 CREATE TABLE metrics (
 	metric_id VARCHAR NOT NULL, 
 	vertical VARCHAR NOT NULL, 
@@ -197,6 +322,9 @@ CREATE TABLE metrics (
 	unit VARCHAR, 
 	output_type VARCHAR, 
 	version VARCHAR, 
+	description TEXT, 
+	output JSON, 
+	dependencies JSON, 
 	source VARCHAR, 
 	created_at TIMESTAMP WITHOUT TIME ZONE NOT NULL, 
 	superseded_at TIMESTAMP WITHOUT TIME ZONE, 
@@ -228,6 +356,7 @@ CREATE TABLE sql_snippets (
 	standard_field VARCHAR, 
 	statement VARCHAR, 
 	aggregation VARCHAR, 
+	predicate VARCHAR DEFAULT '' NOT NULL, 
 	schema_mapping_id VARCHAR NOT NULL, 
 	parameter_value VARCHAR, 
 	normalized_expression VARCHAR, 
@@ -242,7 +371,7 @@ CREATE TABLE sql_snippets (
 	created_at TIMESTAMP WITHOUT TIME ZONE NOT NULL, 
 	updated_at TIMESTAMP WITHOUT TIME ZONE NOT NULL, 
 	CONSTRAINT pk_sql_snippets PRIMARY KEY (snippet_id), 
-	CONSTRAINT uq_snippet_semantic_key UNIQUE (snippet_type, standard_field, statement, aggregation, schema_mapping_id, parameter_value), 
+	CONSTRAINT uq_snippet_semantic_key UNIQUE (snippet_type, standard_field, statement, aggregation, predicate, schema_mapping_id, parameter_value), 
 	CONSTRAINT ck_sql_snippets_snippet_type CHECK (snippet_type IN ('extract', 'constant', 'formula', 'query'))
 );
 
@@ -296,6 +425,21 @@ CREATE TABLE validations (
 );
 
 CREATE UNIQUE INDEX uq_validation_active ON validations (vertical, validation_id) WHERE superseded_at IS NULL;
+
+CREATE TABLE vertical_envelopes (
+	envelope_id VARCHAR NOT NULL, 
+	vertical VARCHAR NOT NULL, 
+	name VARCHAR NOT NULL, 
+	version VARCHAR, 
+	description TEXT, 
+	source VARCHAR NOT NULL, 
+	created_at TIMESTAMP WITHOUT TIME ZONE NOT NULL, 
+	superseded_at TIMESTAMP WITHOUT TIME ZONE, 
+	CONSTRAINT pk_vertical_envelopes PRIMARY KEY (envelope_id), 
+	CONSTRAINT ck_vertical_envelopes_source CHECK (source IN ('seed'))
+);
+
+CREATE UNIQUE INDEX uq_vertical_envelope_active ON vertical_envelopes (vertical) WHERE superseded_at IS NULL;
 
 CREATE TABLE workspace_calendar (
 	pin BOOLEAN NOT NULL, 
@@ -557,6 +701,9 @@ CREATE TABLE column_concepts (
 	unit_source_column VARCHAR, 
 	derived_formula_hypothesis VARCHAR, 
 	derived_formula_confidence FLOAT, 
+	stored_sign_claim VARCHAR, 
+	stored_sign_claim_confidence FLOAT, 
+	stored_sign VARCHAR, 
 	annotation_source VARCHAR, 
 	annotated_at TIMESTAMP WITHOUT TIME ZONE NOT NULL, 
 	annotated_by VARCHAR, 
@@ -565,6 +712,8 @@ CREATE TABLE column_concepts (
 	CONSTRAINT uq_column_concept UNIQUE (column_id, run_id), 
 	CONSTRAINT ck_column_concepts_annotation_source CHECK (annotation_source IS NULL OR annotation_source IN ('llm')), 
 	CONSTRAINT ck_column_concepts_meaning_status CHECK (meaning_status IS NULL OR meaning_status IN ('ambiguous', 'determined')), 
+	CONSTRAINT ck_column_concepts_stored_sign CHECK (stored_sign IS NULL OR stored_sign IN ('ledger_signed', 'natural_balance')), 
+	CONSTRAINT ck_column_concepts_stored_sign_claim CHECK (stored_sign_claim IS NULL OR stored_sign_claim IN ('ledger_signed', 'natural_balance', 'unsure')), 
 	CONSTRAINT fk_column_concepts_column_id_columns FOREIGN KEY(column_id) REFERENCES columns (column_id)
 );
 
@@ -641,7 +790,7 @@ CREATE TABLE entropy_objects (
 	CONSTRAINT pk_entropy_objects PRIMARY KEY (object_id), 
 	CONSTRAINT ck_entropy_objects_layer CHECK (layer IN ('computational', 'semantic', 'structural', 'value')), 
 	CONSTRAINT ck_entropy_objects_dimension CHECK (dimension IN ('business_meaning', 'coverage', 'derived_values', 'dimensional', 'distribution', 'nulls', 'reconciliation', 'relations', 'temporal', 'types', 'units', 'variance')), 
-	CONSTRAINT ck_entropy_objects_sub_dimension CHECK (sub_dimension IN ('benford_compliance', 'cross_column_patterns', 'cross_table_consistency', 'dimension_coverage', 'formula_match', 'join_path_determinism', 'naming_clarity', 'null_ratio', 'null_semantics', 'relationship_discovery', 'relationship_quality', 'slice_conditional_null', 'slice_stability', 'temporal_behavior', 'time_role', 'type_fidelity', 'unit_declaration', 'unit_source')), 
+	CONSTRAINT ck_entropy_objects_sub_dimension CHECK (sub_dimension IN ('benford_compliance', 'cross_column_patterns', 'cross_table_consistency', 'dimension_coverage', 'formula_match', 'join_path_determinism', 'naming_clarity', 'null_ratio', 'null_semantics', 'relationship_discovery', 'relationship_quality', 'slice_conditional_null', 'slice_stability', 'stored_sign', 'temporal_behavior', 'time_role', 'type_fidelity', 'unit_declaration', 'unit_source')), 
 	CONSTRAINT ck_entropy_objects_status CHECK (status IN ('abstained', 'measured')), 
 	CONSTRAINT ck_entropy_objects_abstain_reason CHECK (abstain_reason IS NULL OR abstain_reason IN ('detector_error', 'insufficient_data', 'missing_inputs', 'not_applicable')), 
 	CONSTRAINT ck_entropy_objects_status_score_reason CHECK ((status = 'measured' AND score IS NOT NULL AND abstain_reason IS NULL) OR (status = 'abstained' AND score IS NULL AND abstain_reason IS NOT NULL)), 
@@ -706,6 +855,9 @@ CREATE TABLE measure_aggregation_lineage (
 	r_stock_median FLOAT NOT NULL, 
 	n_entities INTEGER NOT NULL, 
 	n_entities_fired INTEGER NOT NULL, 
+	sign_fired_primary INTEGER NOT NULL, 
+	sign_fired_mirror INTEGER NOT NULL, 
+	sign_fired_both INTEGER NOT NULL, 
 	created_at TIMESTAMP WITH TIME ZONE NOT NULL, 
 	CONSTRAINT pk_measure_aggregation_lineage PRIMARY KEY (lineage_id), 
 	CONSTRAINT uq_measure_lineage_column_run UNIQUE (measure_column_id, run_id), 
@@ -796,7 +948,8 @@ CREATE TABLE slice_definitions (
 	dimension_table_id VARCHAR, 
 	dimension_attribute VARCHAR, 
 	fk_role VARCHAR, 
-	slice_priority INTEGER NOT NULL, 
+	slice_relevance FLOAT, 
+	slice_interest VARCHAR, 
 	slice_type VARCHAR NOT NULL, 
 	distinct_values JSON, 
 	value_count INTEGER, 
@@ -809,6 +962,8 @@ CREATE TABLE slice_definitions (
 	CONSTRAINT uq_slice_def_table_column_run UNIQUE (table_id, column_name, run_id), 
 	CONSTRAINT ck_slice_definitions_slice_type CHECK (slice_type IN ('categorical')), 
 	CONSTRAINT ck_slice_definitions_detection_source CHECK (detection_source IN ('llm', 'structural')), 
+	CONSTRAINT ck_slice_definitions_slice_interest CHECK (slice_interest IS NULL OR slice_interest IN ('primary', 'supporting')), 
+	CONSTRAINT ck_slice_definitions_slice_relevance_range CHECK (slice_relevance IS NULL OR (slice_relevance >= 0.0 AND slice_relevance <= 1.0)), 
 	CONSTRAINT fk_slice_definitions_table_id_tables FOREIGN KEY(table_id) REFERENCES tables (table_id), 
 	CONSTRAINT fk_slice_definitions_column_id_columns FOREIGN KEY(column_id) REFERENCES columns (column_id), 
 	CONSTRAINT fk_slice_definitions_dimension_table_id_tables FOREIGN KEY(dimension_table_id) REFERENCES tables (table_id)

@@ -8,13 +8,18 @@ abstain guardrail. Properties and orderings, not fitted thresholds.
 
 from __future__ import annotations
 
+import pytest
+
 from dataraum.analysis.lineage.models import PATTERN_CUMULATIVE, PATTERN_PER_PERIOD
 from dataraum.analysis.lineage.reconcile import (
+    FIRE_RESIDUAL_MAX,
+    MIN_SEPARATION,
     classify_entity,
     classify_series,
     dispose,
     dispose_classified,
     reconcile,
+    separation,
     wilson_lcb,
 )
 
@@ -92,10 +97,96 @@ class TestClassifyEntity:
         assert classify_entity([1.0] * _T, [0.0] * _T).label is None
 
     def test_reconcile_rejects_length_mismatch(self) -> None:
-        import pytest
-
         with pytest.raises(ValueError, match="length mismatch"):
             reconcile([1.0, 2.0], [1.0])
+
+
+# --- near-tie margin (DAT-847) -------------------------------------------------
+def _plateau(width: int, height: float = 10.0) -> tuple[list[float], list[float]]:
+    """A series whose movement is one terminal period plus a mid-series plateau.
+
+    The anchor books everything in the last period; the measure additionally
+    holds ``height`` over ``width`` mid-series periods. Both hypotheses can
+    explain that plateau — flow pays for every period it is held (``width``
+    units of error), stock pays only for stepping on and off it (2 units) — so
+    the plateau width is a dial on how far apart the two residuals land, with
+    NOTHING else about the series changing. It separates "which hypothesis wins"
+    from "by how much", which is exactly what the margin gates.
+    """
+    anchor = [0.0] * (_T - 1) + [100.0]
+    measure = [0.0] * _T
+    for t in range(5, 5 + width):
+        measure[t] = height
+    measure[_T - 1] = 100.0
+    return measure, anchor
+
+
+class TestNearTieAbstention:
+    """A verdict needs a MARGIN, not a strict inequality — a coin-flip is ignorance."""
+
+    def test_indistinguishable_residuals_abstain(self) -> None:
+        # width 3: R_flow = 0.30 vs R_stock = 0.20 — stock wins, but by a factor
+        # of 1.5, inside the band this module already calls non-discriminating.
+        # A bare `<` reported CUMULATIVE here with full confidence.
+        y, m = _plateau(3)
+        r = classify_entity(y, m)
+        assert r.r_flow == pytest.approx(0.30)
+        assert r.r_stock == pytest.approx(0.20)
+        assert min(r.r_flow, r.r_stock) <= FIRE_RESIDUAL_MAX  # the fit gate passes
+        assert r.label is None  # ...and the margin gate does not
+
+    def test_same_series_with_a_clear_winner_still_fires(self) -> None:
+        # width 6 — the only thing that changed — puts stock 3× ahead of flow.
+        y, m = _plateau(6)
+        r = classify_entity(y, m)
+        assert r.r_flow == pytest.approx(0.60)
+        assert r.r_stock == pytest.approx(0.20)
+        assert r.label == PATTERN_CUMULATIVE
+
+    def test_exact_tie_abstains(self) -> None:
+        # Equal residuals used to fall through to PER_PERIOD purely because the
+        # comparison was `r_stock < r_flow` — the else-branch was a default, not
+        # a finding.
+        y = [20.0] + [0.0] * (_T - 2) + [100.0]
+        m = [0.0] * (_T - 1) + [100.0]
+        r = classify_entity(y, m)
+        assert r.r_flow == r.r_stock
+        assert r.label is None
+
+    def test_series_that_fits_both_hypotheses_abstains(self) -> None:
+        # A single terminal movement satisfies y == m AND Δy == m: both residuals
+        # are 0, a perfect fit for either reading and evidence for neither.
+        y = [0.0] * (_T - 1) + [100.0]
+        r = classify_entity(y, list(y))
+        assert (r.r_flow, r.r_stock) == (0.0, 0.0)
+        assert r.label is None
+
+    def test_margin_is_derived_from_the_fit_gate(self) -> None:
+        # Not a tuned constant: it is the separation the weakest STILL-ADMISSIBLE
+        # fit (FIRE_RESIDUAL_MAX) shows against the ≈1.0 the losing hypothesis
+        # structurally sits at under a correct anchor.
+        assert MIN_SEPARATION == separation(FIRE_RESIDUAL_MAX, 1.0)
+        # Equivalently: the loser must be at least twice the winner, at any scale.
+        assert separation(0.25, 0.5) == MIN_SEPARATION
+        assert separation(2.0, 4.0) == MIN_SEPARATION
+
+
+class TestSeparation:
+    def test_is_scale_free_and_symmetric(self) -> None:
+        assert separation(0.25, 0.5) == separation(0.5, 0.25)
+        assert separation(0.25, 0.5) == separation(2.5, 5.0)
+
+    def test_bounds(self) -> None:
+        assert separation(0.3, 0.3) == 0.0
+        assert separation(0.0, 0.5) == 1.0
+
+    def test_a_dead_hypothesis_is_total_separation(self) -> None:
+        # An infinite residual is a hypothesis whose normalizer died, not a bad
+        # fit — the surviving hypothesis is unopposed.
+        assert separation(0.1, float("inf")) == 1.0
+
+    def test_two_dead_hypotheses_are_no_separation(self) -> None:
+        assert separation(float("inf"), float("inf")) == 0.0
 
 
 # --- candidate disposal --------------------------------------------------------

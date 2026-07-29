@@ -24,6 +24,7 @@ import { metadataDb } from "../db/metadata/client";
 import { columns, currentStatisticalProfiles } from "../db/metadata/schema";
 import { withLakeConnection } from "../duckdb/lake";
 import { readerToResult } from "../duckdb/query-result";
+import { isSurrogateColumn } from "./surrogate";
 
 // cardinality_ratio = distinct_count / row_count. At/above this a column is treated
 // as near-unique (an id / per-row key), so grouping by it lists rather than
@@ -98,9 +99,32 @@ export async function loadNearUniqueColumns(): Promise<Set<string>> {
 			eq(columns.columnId, currentStatisticalProfiles.columnId),
 		);
 
+	return nearUniqueNames(rows);
+}
+
+/**
+ * The near-unique column names (lowercased) in a profile read — the pure core of
+ * {@link loadNearUniqueColumns}, split out so the exclusion below is unit-pinnable
+ * without mocking the query builder.
+ *
+ * Mint-owned surrogates are excluded HERE, at the shared projection, so BOTH
+ * consumers — the `<grain>` block and the GROUP BY caveat — are structurally
+ * surrogate-free rather than each remembering to filter.
+ *
+ * They are not a theoretical case: the mint writes a StatisticalProfile for every
+ * column it mints, and a surrogate is a hash of a composite key, so a
+ * dimension-side one has `cardinality_ratio` ≈ 1.0 and clears this threshold by
+ * construction. Before this, the grain block named `_sk__*` columns to the answer
+ * agent as grain keys — it reads `columnName` directly and never passes through
+ * `formatSchema`, so the schema-block filter did not cover it.
+ */
+export function nearUniqueNames(
+	rows: { columnName: string | null; cardinalityRatio: number | null }[],
+): Set<string> {
 	const nearUnique = new Set<string>();
 	for (const r of rows) {
 		if (!r.columnName) continue;
+		if (isSurrogateColumn(r.columnName)) continue;
 		if (r.cardinalityRatio !== null && r.cardinalityRatio >= NEAR_UNIQUE_RATIO)
 			nearUnique.add(r.columnName.toLowerCase());
 	}

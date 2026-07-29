@@ -3,12 +3,14 @@
 // in a result is core to dataraum; the `answer` tool already computes the band,
 // grounded ratio, per-concept reuse, and assumptions (all in the AnswerSchema
 // result), but the projector used to drop them and render only the table. This
-// surfaces them. The table itself is the unchanged result-grid stream — confidence
-// rides on top.
+// surfaces them. The table is the same streaming grid, now DRILLABLE (DAT-678) —
+// confidence rides on top.
 //
-// Splits in two: ConfidenceStrip is a PURE render (no I/O, unit-tested); the
-// registered AnswerResultWidget composes the strip over the streaming grid (the
-// grid owns the fetch, so it's covered by the result-grid tests + the smoke).
+// Splits in three: ConfidenceStrip and AnswerNoResult are PURE renders (no I/O,
+// unit-tested); the registered AnswerResultWidget picks between the no-result
+// card and AnswerResultBody, which composes the strip over the drillable grid
+// (the grid owns the fetch, so it's covered by the drill/result-grid tests + the
+// smoke).
 
 import { Badge, Button, Group, Stack, Text } from "@mantine/core";
 import { Link, useParams } from "@tanstack/react-router";
@@ -18,9 +20,11 @@ import { useState } from "react";
 import type { ChartConfig } from "#/charts/chart-config";
 import type { AnswerConfidence, CanvasState } from "#/ui/cockpit/canvas-state";
 import { BandBadge } from "#/ui/cockpit/widgets/band-badge";
-import { ChartToolbarButton } from "#/ui/cockpit/widgets/chart-toolbar-button";
-import { defaultReportTitle } from "#/ui/cockpit/widgets/report-title";
-import { ResultGridWidget } from "#/ui/cockpit/widgets/result-grid";
+import { DrillableGrid } from "#/ui/cockpit/widgets/drillable-grid";
+import {
+	defaultReportTitle,
+	drilledTitle,
+} from "#/ui/cockpit/widgets/report-title";
 
 // Bound both model-controlled arrays — the answer tool does not cap them, so a
 // pathological answer could enumerate dozens (cockpit "bound every data surface"
@@ -153,8 +157,17 @@ export function AnswerNoResult({ summary }: { summary: string }) {
  * verbatim (same NDJSON endpoint, virtualization, and sort) — confidence is purely
  * additive.
  *
- * The Report button (DAT-624) freezes this answer's SQL + narrative + confidence into
- * a durable, workspace-owned report. It is a user-action mutation living in an event
+ * The table is DRILLABLE (DAT-678). Which path it takes is decided by whether the
+ * sub-agent's declared source survived the value proof: proven → recompose at
+ * source, so even a single-number answer can be broken down by a dimension it
+ * never returned; not proven → tier A, which groups the result's own columns and
+ * is the honest (and for a breakdown query, the better) fallback.
+ *
+ * The Report button (DAT-624) freezes what the grid is CURRENTLY showing — the
+ * answer's own SQL/narrative/confidence undrilled, or a drilled composition's SQL
+ * (+ its bound params, DAT-627) with `confidence: null` and no narrative once a
+ * slice/pin has changed what the rows mean (drilled numbers the frozen prose
+ * was never computed against). It is a user-action mutation living in an event
  * handler (React convention 4), not an analysis recompute — the widget stays a pure
  * render of `state`. After minting, the button becomes a link to the new report.
  */
@@ -162,6 +175,26 @@ export function AnswerResultWidget({
 	state,
 }: {
 	state: Extract<CanvasState, { kind: "answer-result" }>;
+}) {
+	// No-result state: the answer sub-agent couldn't compose a runnable query — a
+	// legitimate outcome, surfaced explicitly (with its narrative) rather than a
+	// stale grid or a blank canvas. Nothing to stream, chart, mint, or drill.
+	if (state.sql === null) {
+		return <AnswerNoResult summary={state.summary} />;
+	}
+	// REMOUNT PER ANSWER (React rule 5). The focus canvas renders widgets without
+	// a key, so a second answer of the same kind reuses this component instance —
+	// and everything below is per-ANSWER state: the mint's outcome, the authored
+	// chart, and (since DAT-678) the committed drill. Carrying any of it over
+	// would attach the previous answer's "Saved to Reports", or freeze the
+	// previous answer's drilled statement into THIS answer's report.
+	return <AnswerResultBody key={state.sql} state={state} />;
+}
+
+function AnswerResultBody({
+	state,
+}: {
+	state: Extract<CanvasState, { kind: "answer-result"; sql: string }>;
 }) {
 	// strict:false — provenance is best-effort: read conversationId off the
 	// current route when present (the answer surface lives in a conversation route).
@@ -174,18 +207,35 @@ export function AnswerResultWidget({
 	// A chart the user authored over this result (DAT-626) — frozen into the report
 	// at mint. Null = table-only report (first-class), the default.
 	const [chartConfig, setChartConfig] = useState<ChartConfig | null>(null);
+	// The committed drill (DAT-678): the statement the grid is CURRENTLY
+	// showing, its bound params (a PINNED composition binds `$1…`), and
+	// whether it is pinned. The Report mint must freeze what the user is
+	// looking at — minting the undrilled base while a slice is on screen would
+	// save numbers the page stopped showing.
+	const [drilled, setDrilled] = useState<{
+		sql: string;
+		params: (string | number | boolean | null)[];
+		pinned: boolean;
+	} | null>(null);
 
-	// No-result state: the answer sub-agent couldn't compose a runnable query — a
-	// legitimate outcome, surfaced explicitly (with its narrative) rather than a stale
-	// grid or a blank canvas. Nothing to stream, chart, or mint, so this returns before
-	// the grid machinery (and narrows `state.sql` to string for everything below).
-	if (state.sql === null) {
-		return <AnswerNoResult summary={state.summary} />;
-	}
+	// What the grid is showing right now — the drill composes upstream, so this
+	// is the answer's own statement until a slice commits.
+	const shownSql = drilled?.sql ?? state.sql;
 
-	// POST to the mint endpoint over fetch (not an imported server fn) so this
-	// canvas-registered widget never drags the cockpit_db client / config into the
-	// client bundle — the /api/run-sql + /api/upload convention.
+	// A DRILLED MINT IS NOW HONEST (DAT-627/676, W2-d2). This surface used to
+	// block the Report action here — both reasons were report-SCHEMA gaps: a
+	// PINNED composition binds `$1…` params `reports` had nowhere to store, and
+	// a SLICED one returns numbers the frozen `summary`/`confidence` don't
+	// describe, with no way to record "no confidence describes this" short of
+	// widening a NOT NULL column. Both gaps are closed: `reports.sqlParams`
+	// carries a pinned drill's bound values, and `reports.confidence` is
+	// nullable — so a drilled mint freezes `confidence: null` rather than
+	// fabricating a band for rows nobody scored, and (for the same reason)
+	// drops the now-mismatched narrative rather than reusing prose that
+	// describes a different set of rows (`summary: ""`, the same "nothing
+	// computed" absence the null confidence expresses). The title still
+	// carries a human-readable default — a title is a NAME, not a factual
+	// claim, so reusing the answer's headline there is honest either way.
 	const onMint = async () => {
 		setSaving(true);
 		setMintFailed(false);
@@ -194,11 +244,20 @@ export function AnswerResultWidget({
 				method: "POST",
 				headers: { "content-type": "application/json" },
 				body: JSON.stringify({
-					sql: state.sql,
-					summary: state.summary,
-					title: defaultReportTitle(state.summary),
+					sql: shownSql,
+					sqlParams:
+						drilled && drilled.params.length > 0 ? drilled.params : null,
+					summary: drilled ? "" : state.summary,
+					title: drilled
+						? drilledTitle(defaultReportTitle(state.summary))
+						: defaultReportTitle(state.summary),
 					conversationId: params.conversationId ?? null,
-					confidence: state.confidence,
+					// No confidence describes a drilled view's rows (DAT-627) — an
+					// answer mint never carries report ancestry either way, so
+					// `parentId` is always null here (a report-origin mint is the
+					// report-detail page's own toolbar action, $reportId.tsx).
+					confidence: drilled ? null : state.confidence,
+					parentId: null,
 					chartConfig,
 				}),
 			});
@@ -212,16 +271,6 @@ export function AnswerResultWidget({
 			setSaving(false);
 		}
 	};
-
-	// The chart affordance sits LEFT of the Report action (DAT-626); its modal lets
-	// the user author a chart over this result, frozen into the report on mint.
-	const chartAction = (
-		<ChartToolbarButton
-			sql={state.sql}
-			value={chartConfig}
-			onChange={setChartConfig}
-		/>
-	);
 
 	// The mint action rides in the grid's own toolbar (left of "View SQL") rather
 	// than floating above the grid — it's a peer of the result-surface actions.
@@ -264,14 +313,57 @@ export function AnswerResultWidget({
 					Couldn’t save the report — try again.
 				</Text>
 			)}
-			<ResultGridWidget
-				state={{ kind: "result-grid", sql: state.sql }}
-				toolbarActions={
-					<>
-						{chartAction}
-						{reportAction}
-					</>
+			<DrillableGrid
+				sql={state.sql}
+				// Where the Slice menu comes from. With a proven source the axes are
+				// the RELATION's catalogued dimensions — including ones this answer
+				// never returned, which is the entire point for a scalar. Without one,
+				// tier A can only group this result's own columns, so the resolver
+				// intersects the catalog with them.
+				axesRequest={
+					state.drillSource
+						? {
+								partsSources: state.drillSource.sources.map((s) => ({
+									relation: s.parts.relation,
+									selectExpr: s.parts.selectExpr,
+								})),
+								// DAT-671: the answer's own BASE statement — deliberately
+								// `state.sql`, NOT this component's own `shownSql` (which
+								// tracks whatever's CURRENTLY displayed and changes per live
+								// drill) — so the resolver can grey an axis that already
+								// breaks out this result. Structural only, never executed.
+								baseSql: state.sql,
+							}
+						: { resultSql: state.sql }
 				}
+				source={
+					state.drillSource
+						? { kind: "parts", source: state.drillSource }
+						: undefined
+				}
+				onStepsChange={(steps, effective) => {
+					// Event-driven, not an effect: a committed drill replaces what the
+					// mint would freeze, and retires a chart authored over the previous
+					// shape (its encodings named columns this result may not have).
+					setDrilled(
+						steps.length > 0
+							? {
+									sql: effective.sql,
+									params: effective.params,
+									pinned: steps.some((s) => s.kind === "pin"),
+								}
+							: null,
+					);
+					setChartConfig(null);
+					// A stale mint no longer describes what's on screen the moment the
+					// drill changes again — retire it along with the chart.
+					setMintedId(null);
+					setMintFailed(false);
+				}}
+				// The grid owns the chart button; this surface owns its VALUE, because
+				// the mint freezes it into the report (DAT-626).
+				chart={{ value: chartConfig, onChange: setChartConfig }}
+				toolbarActions={reportAction}
 			/>
 		</div>
 	);

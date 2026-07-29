@@ -24,7 +24,8 @@ import pytest
 from sqlalchemy import Engine
 from sqlalchemy.orm import Session, sessionmaker
 
-from dataraum.graphs.context import GraphExecutionContext, build_execution_context
+from dataraum.graphs.context_models import GraphExecutionContext
+from dataraum.graphs.context_reads import build_execution_context
 from dataraum.server.workspace import schema_name_for
 from tests.integration.storage.test_property_graph import _boot, _seed
 
@@ -172,6 +173,59 @@ class TestStructuralEdges:
         assert cols["amount_declared"].materialization is None
         assert cols["amount_declared"].anchor_time_axis == "txn_date"  # declared anchor
 
+    def test_stored_sign_reaches_the_grounding_author(self, ctx: GraphExecutionContext) -> None:
+        """DAT-875/886: the resolved storage convention rides og_columns onto the
+        served column context, so a metric extract SUMming a stored balance knows
+        whether the magnitude it returns is already a natural balance. Without it a
+        credit-normal liability extract returns a negative magnitude into a ratio
+        (the accounts_payable / dpo defect). NULL stays NULL — no fact beats a guess.
+        """
+        t1 = next(t for t in ctx.tables if t.table_name == "journal")
+        cols = {c.column_name: c for c in t1.columns}
+        assert cols["amount"].stored_sign == "ledger_signed"
+        assert cols["amount_declared"].stored_sign is None
+
+    def test_stored_sign_is_rendered_into_the_column_notes(self) -> None:
+        """The served fact has to reach the PROMPT, not just the dataclass — the
+        notes column is what the grounding author actually reads."""
+        from dataraum.graphs.context_format import _build_column_notes
+        from dataraum.graphs.context_models import ColumnContext
+
+        ledger = _build_column_notes(
+            ColumnContext(
+                column_id="c",
+                column_name="ending_balance",
+                table_name="balance_sheet",
+                semantic_role="measure",
+                stored_sign="ledger_signed",
+            )
+        )
+        assert "ledger_signed" in ledger
+        assert "opposite sign to its natural balance" in ledger
+        # DESCRIPTIVE, never prescriptive. "A bare SUM returns a signed quantity"
+        # is false wherever the reconciling population is single-family or the
+        # measure is not account-shaped — the label is still right there, but the
+        # consequence is not, and it invited a sign flip on a family that need not
+        # exist. State the convention; let the author reason about its own query.
+        assert "bare SUM" not in ledger
+        assert "SUM" not in ledger
+
+        natural = _build_column_notes(
+            ColumnContext(
+                column_id="c",
+                column_name="ending_balance",
+                table_name="balance_sheet",
+                semantic_role="measure",
+                stored_sign="natural_balance",
+            )
+        )
+        assert "natural_balance" in natural
+
+        undetermined = _build_column_notes(
+            ColumnContext(column_id="c", column_name="x", table_name="t", semantic_role="measure")
+        )
+        assert "Stored sign" not in undetermined
+
     def test_enriched_view_serves_dimension_bases(self, ctx: GraphExecutionContext) -> None:
         """derived_from edges attach the view's dimension base TABLES."""
         ev = next(v for v in ctx.enriched_views if v.view_name == "enriched_journal")
@@ -222,28 +276,29 @@ class TestEndpointMissesDropLoudNotCrash:
             # A conformed pair whose shared dimension table is t9.
             "INSERT INTO slice_definitions (slice_id, run_id, table_id, column_id, "
             " column_name, dimension_table_id, dimension_attribute, fk_role, "
-            " slice_priority, slice_type, detection_source, created_at) "
+            " slice_relevance, slice_interest, slice_type, detection_source, created_at) "
             f"VALUES ('sl_9', '{run}', 't1', 'c_k1', 'ghost__region', 't9', 'region9', "
-            f"'account_id', 2, 'categorical', 'llm', '{ts}')",
+            f"'account_id', 0.7, 'supporting', 'categorical', 'llm', '{ts}')",
             "INSERT INTO slice_definitions (slice_id, run_id, table_id, column_id, "
             " column_name, dimension_table_id, dimension_attribute, fk_role, "
-            " slice_priority, slice_type, detection_source, created_at) "
+            " slice_relevance, slice_interest, slice_type, detection_source, created_at) "
             f"VALUES ('sl_9b', '{run}', 't4', 'c_k4', 'ghost__region', 't9', 'region9', "
-            f"'account_id', 2, 'categorical', 'llm', '{ts}')",
+            f"'account_id', 0.7, 'supporting', 'categorical', 'llm', '{ts}')",
             # DAT-788: referenced cells so the t9 conformed edge FORMS (same account_id
             # role → one group) — it must then drop on the unresolvable t9 endpoint,
-            # not silently vanish for want of a cell.
+            # not silently vanish for want of a cell. 'judge' because the edge serves
+            # CONFIRMED cells only (DAT-809), so an unconfirmed pair never forms one.
             "INSERT INTO bus_matrix (entry_id, run_id, fact_table_id, attachment, "
             " concept_label, dimension_table_id, roles, attributes, confirmation_source, "
             " conformed_group, needs_confirmation, signature, created_at) "
             f"VALUES ('bm_9', '{run}', 't1', 'referenced', 'ghost', 't9', "
-            f"'[\"account_id\"]', '[]', 'unconfirmed', 'ref:t9:account_id', false, "
+            f"'[\"account_id\"]', '[]', 'judge', 'ref:t9:account_id', false, "
             f"'bus:referenced:t1:t9:account_id', '{ts}')",
             "INSERT INTO bus_matrix (entry_id, run_id, fact_table_id, attachment, "
             " concept_label, dimension_table_id, roles, attributes, confirmation_source, "
             " conformed_group, needs_confirmation, signature, created_at) "
             f"VALUES ('bm_9b', '{run}', 't4', 'referenced', 'ghost', 't9', "
-            f"'[\"account_id\"]', '[]', 'unconfirmed', 'ref:t9:account_id', false, "
+            f"'[\"account_id\"]', '[]', 'judge', 'ref:t9:account_id', false, "
             f"'bus:referenced:t4:t9:account_id', '{ts}')",
             # An enriched view deriving from the unresolvable t9 dimension base.
             # Fact t4 — one enriched view per fact (uq_enriched_view_fact_table),

@@ -37,8 +37,9 @@ from dataraum.analysis.relationships.graph_topology import (
 from dataraum.analysis.relationships.utils import load_defined_relationships
 from dataraum.analysis.semantic.db_models import SemanticAnnotation, TableEntity, TableRole
 from dataraum.analysis.semantic.utils import load_column_concepts
+from dataraum.analysis.served_columns import served_columns
+from dataraum.analysis.slicing.curation import curated_slices
 from dataraum.analysis.slicing.db_models import SliceDefinition
-from dataraum.analysis.slicing.models import CURATED_SLICE_BUDGET
 from dataraum.analysis.statistics.db_models import StatisticalProfile
 from dataraum.analysis.temporal.db_models import TemporalColumnProfile
 from dataraum.analysis.views.db_models import EnrichedView
@@ -204,8 +205,12 @@ def build_cycle_detection_context(
     # entity a flow involves, so the judging LLM must see them instead of
     # inheriting a name-starved annotation's hedge. Structural gate only —
     # derived from served metadata, never from name patterns or value shapes.
+    # This map is also the allow-list `_served_identity_columns` checks LLM-named
+    # identity columns against, so the surrogate exclusion (DAT-878) has to apply
+    # here too: an identity column is a business column, and a `_sk__*` that
+    # passed the physically-exists gate would be served back with value samples.
     columns_by_table: dict[str, set[str]] = {
-        t.table_name: {c.column_name for c in t.columns} for t in tables
+        t.table_name: {c.column_name for c in served_columns(t.columns)} for t in tables
     }
     served_identity: dict[str, list[dict[str, Any]]] = {
         ent_table_name: _served_identity_columns(
@@ -286,7 +291,9 @@ def build_cycle_detection_context(
         # per relationship × measure column, the measure selection being this
         # builder's pinned annotations (semantic_role == "measure").
         ranges: list[dict[str, Any]] = []
-        for measure_col in sorted(from_tbl.columns, key=lambda c: c.column_position):
+        for measure_col in sorted(
+            served_columns(from_tbl.columns), key=lambda c: c.column_position
+        ):
             ann = annotations.get(measure_col.column_id)
             if ann is None or ann.semantic_role != "measure":
                 continue
@@ -320,7 +327,7 @@ def build_cycle_detection_context(
     table_info = []
     for t in tables:
         columns = []
-        for c in t.columns:
+        for c in served_columns(t.columns):
             col_info: dict[str, Any] = {
                 "name": c.column_name,
                 "type": c.resolved_type or c.raw_type,
@@ -408,9 +415,11 @@ def build_cycle_detection_context(
     # like entities/relationships when the session has no pinned run (empty,
     # never a cross-run read). CURATED read (DAT-725): the catalog is the full
     # deterministic inventory now, so LLM-facing context takes the top-priority
-    # budget (1 = most interesting; column_name tiebreak keeps the cut
-    # deterministic across floor-priority structural rows).
+    # subset (DAT-879): the rows the cataloguing agent JUDGED to be business
+    # axes, ordered by measured relevance, with what was left out reported to
+    # the model rather than silently cut at a constant.
     slices: list[SliceDefinition] = []
+    curated = curated_slices([])
     if run_id is not None:
         slice_stmt = (
             select(SliceDefinition)
@@ -419,10 +428,9 @@ def build_cycle_detection_context(
                 SliceDefinition.run_id == run_id,
             )
             .options(selectinload(SliceDefinition.table), selectinload(SliceDefinition.column))
-            .order_by(SliceDefinition.slice_priority, SliceDefinition.column_name)
-            .limit(CURATED_SLICE_BUDGET)
         )
-        slices = list(session.execute(slice_stmt).scalars().all())
+        curated = curated_slices(list(session.execute(slice_stmt).scalars().all()))
+        slices = curated.served
 
     slice_list = []
     for sd in slices:
@@ -445,7 +453,11 @@ def build_cycle_detection_context(
                 "value_counts": value_counts,
                 "confidence": sd.confidence,
                 "business_context": sd.business_context,
-                "priority": sd.slice_priority,
+                "interest": sd.slice_interest,
+                "relevance": sd.slice_relevance,
+                # The axis's measured COUNT(DISTINCT), so the renderer can say
+                # how much of the distribution it is actually showing (DAT-622).
+                "value_count": sd.value_count,
             }
         )
 
@@ -550,10 +562,20 @@ def build_cycle_detection_context(
     # 9. Summary statistics
     context["summary"] = {
         "total_tables": len(tables),
-        "total_columns": sum(len(t.columns) for t in tables),
+        # Served, not catalogued — and deliberately NOT the DAT-622 treatment below.
+        # That case labels a catalogued-vs-shown gap because a curated-out slice is a
+        # real column of the user's dataset. A mint-owned surrogate is not a column of
+        # the dataset at all, so counting it here would inflate the "Columns: N" line
+        # this renders into — the same prompt whose per-table column lists exclude it.
+        "total_columns": sum(len(served_columns(t.columns)) for t in tables),
         "total_relationships": len(rel_list),
         "conformed_meetings_found": len(conformed_list),
-        "slice_dimensions_found": len(slice_list),
+        # The CATALOGUED total, not the served count (DAT-622): reporting the
+        # post-curation number told the model "this dataset has 12 categorical
+        # dimensions" when it had 53 and was shown 12.
+        "slice_dimensions_found": curated.total,
+        "slice_dimensions_served": len(slice_list),
+        "slice_catalog_note": curated.note,
         "derived_relationships_found": len(derived_list),
         "temporal_columns": len(context["temporal_profiles"]),
         "enriched_views": len(enriched_list),
@@ -851,9 +873,14 @@ def format_context_for_prompt(context: dict[str, Any]) -> str:
     lines.append(f"- Confirmed relationships: {summary.get('total_relationships', 0)}")
     lines.append(f"- Fact tables: {summary.get('fact_tables', 0)}")
     lines.append(f"- Dimension tables: {summary.get('dimension_tables', 0)}")
-    lines.append(
-        f"- Categorical dimensions (status/type columns): {summary.get('slice_dimensions_found', 0)}"
-    )
+    # Catalogued vs shown (DAT-622): this line used to print the post-curation
+    # count as though it were the dataset's dimension count.
+    n_catalogued = summary.get("slice_dimensions_found", 0)
+    n_served = summary.get("slice_dimensions_served", n_catalogued)
+    dim_line = f"- Categorical dimensions (status/type columns): {n_catalogued}"
+    if n_served != n_catalogued:
+        dim_line += f" ({n_served} detailed below)"
+    lines.append(dim_line)
     lines.append(
         f"- Derived numeric relationships: {summary.get('derived_relationships_found', 0)}"
     )
@@ -899,6 +926,10 @@ def format_context_for_prompt(context: dict[str, Any]) -> str:
         lines.append("")
         lines.append("These columns were identified by the semantic agent as key categorical")
         lines.append("dimensions. Status columns are strong cycle completion indicators.")
+        note = context.get("summary", {}).get("slice_catalog_note", "")
+        if note:
+            lines.append("")
+            lines.append(note)
         lines.append("")
         for sd in slice_defs:
             # Structural inventory rows (DAT-725) carry no LLM confidence — the
@@ -909,14 +940,26 @@ def format_context_for_prompt(context: dict[str, Any]) -> str:
             if sd.get("business_context"):
                 lines.append(f"  Context: {sd['business_context'][:500]}")
 
-            # Show values with counts if available
+            # Show values with counts if available. The counts come from the
+            # profiler's top-K, so their sum is the mass of the SHOWN values,
+            # never the column total — labelling it "total" (as this line did)
+            # told the model it was seeing the whole distribution (DAT-622).
+            # State the shown-vs-distinct split whenever the two differ.
             value_counts = sd.get("value_counts", [])
             if value_counts:
-                total = sum(vc["count"] for vc in value_counts)
+                shown_rows = sum(vc["count"] for vc in value_counts)
+                distinct = sd.get("value_count")
                 values_str = ", ".join(
                     f"{vc['value']} ({vc['count']:,}, {vc['percentage']}%)" for vc in value_counts
                 )
-                lines.append(f"  Values ({total:,} total): {values_str}")
+                if distinct is not None and distinct > len(value_counts):
+                    header = (
+                        f"  Values ({len(value_counts)} most frequent of {distinct:,} distinct; "
+                        f"{shown_rows:,} rows covered)"
+                    )
+                else:
+                    header = f"  Values ({shown_rows:,} rows across {len(value_counts)} values)"
+                lines.append(f"{header}: {values_str}")
             elif sd.get("values"):
                 lines.append(f"  Values: {', '.join(sd['values'])}")
             lines.append("")

@@ -15,6 +15,7 @@ failed-snippet path.
 from __future__ import annotations
 
 import json
+from datetime import datetime
 from unittest.mock import MagicMock
 
 import duckdb
@@ -158,7 +159,7 @@ def _generate(agent: GraphAgent) -> object:
 
 
 def _patch_context(monkeypatch) -> None:
-    monkeypatch.setattr("dataraum.graphs.context.format_served_context", lambda c: "META")
+    monkeypatch.setattr("dataraum.graphs.context_format.format_served_context", lambda c: "META")
     monkeypatch.setattr("dataraum.graphs.field_mapping.format_meanings_for_prompt", lambda f: "M")
 
 
@@ -357,3 +358,61 @@ def test_fall_loud_grounding_is_exempt_from_the_contract(monkeypatch) -> None:
     assert result.success
     assert provider.converse.call_count == 1
     assert result.value.steps[0]["sql"] == "SELECT NULL AS value"
+
+
+# --- DAT-887: the period-binding abstention wire ---------------------------
+
+
+def test_unresolvable_stock_composes_the_fall_loud_shape(monkeypatch) -> None:
+    """A known stock whose instant will not resolve must NOT compose unfiltered.
+
+    The prompt tells the model to leave the period axis to the system for a served
+    `stock`, so composing what it wrote would aggregate EVERY period — ~14× off on the
+    corpus, worse than the unbound MAX(period) this ticket fixes. The acceptance bar is
+    that no reachable branch yields a predicate-free stock extract, so the agent must
+    turn the resolver's reason into the existing fall-loud shape.
+    """
+    _patch_context(monkeypatch)
+    monkeypatch.setattr(
+        "dataraum.graphs.boundary_resolver.resolve_period_binding",
+        lambda *a, **k: "anchor axis 'period' has no temporal profile",
+    )
+    agent = _agent_with(_provider(_output_response(_VALID_OUTPUT)))
+
+    result = _generate(agent)
+
+    assert result.success
+    step = result.unwrap().steps[0]
+    assert step["sql"] == "SELECT NULL AS value"
+    assert step["parts"]["from"] == []
+    assert step["parts"]["where"] == []
+    assert "period_binding" not in step["parts"]
+    disclosure = [a for a in result.unwrap().assumptions if a.dimension == "period.binding"]
+    assert len(disclosure) == 1
+    assert "ABSTAINED" in disclosure[0].assumption
+
+
+def test_resolved_binding_reaches_the_composed_parts(monkeypatch) -> None:
+    """The resolving path appends the typed predicate and records the observable."""
+    from dataraum.graphs.boundary_resolver import PeriodBinding
+
+    binding = PeriodBinding(
+        as_of=datetime(2025, 12, 1),
+        window_close=datetime(2026, 1, 1),
+        axis="period",
+        relation="t",
+        fiscal_year_start_month=1,
+        calendar_source="default",
+    )
+    _patch_context(monkeypatch)
+    monkeypatch.setattr(
+        "dataraum.graphs.boundary_resolver.resolve_period_binding", lambda *a, **k: binding
+    )
+    agent = _agent_with(_provider(_output_response(_VALID_OUTPUT)))
+
+    result = _generate(agent)
+
+    assert result.success
+    parts = result.unwrap().steps[0]["parts"]
+    assert "\"period\" = TIMESTAMP '2025-12-01 00:00:00'" in parts["where"]
+    assert parts["period_binding"]["as_of"] == "2025-12-01 00:00:00"

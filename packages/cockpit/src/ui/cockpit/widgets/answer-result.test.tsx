@@ -7,13 +7,15 @@
 // nothing is analyzed / nothing is reused.
 
 import { MantineProvider } from "@mantine/core";
-import { cleanup, render, screen } from "@testing-library/react";
+import { cleanup, fireEvent, render, screen } from "@testing-library/react";
 import type { ReactNode } from "react";
-import { afterEach, describe, expect, it } from "vitest";
+import { act } from "react";
+import { afterEach, describe, expect, it, vi } from "vitest";
 
 import type { AnswerConfidence } from "#/ui/cockpit/canvas-state";
 import {
 	AnswerNoResult,
+	AnswerResultWidget,
 	ConfidenceStrip,
 } from "#/ui/cockpit/widgets/answer-result";
 import { theme } from "#/ui/theme";
@@ -137,5 +139,171 @@ describe("AnswerNoResult", () => {
 				"The engine couldn’t compose a grounded query for that question.",
 			),
 		).toBeTruthy();
+	});
+});
+
+// --- the drilled mint (DAT-627/676) -------------------------------------------
+//
+// The mint used to BLOCK once a slice/pin was committed — both reasons were
+// report-SCHEMA gaps (a PINNED composition's `$1…` params had nowhere to
+// live; a SLICED one's numbers had no way to say "no confidence describes
+// this" short of widening a NOT NULL column). Both gaps are closed
+// (`reports.sqlParams`, nullable `reports.confidence`), so the Report action
+// is ALWAYS available now — this pins the mint payload for each shape
+// instead: undrilled carries the answer's own confidence/summary; drilled
+// carries the composed sql (+ bound params for a pin), `confidence: null`,
+// and an empty summary (the prose described a different set of rows).
+
+const answerState = {
+	kind: "answer-result" as const,
+	sql: "SELECT SUM(amount) AS value FROM orders",
+	summary: "Revenue was 175.",
+	confidence: FULL,
+	drillSource: null,
+};
+
+// The widget reads the conversation id off the route and links to the minted
+// report; neither needs a real router here. Forward `data-testid` (Mantine's
+// `renderRoot` passes it through as a prop, expecting the custom root to spread
+// it onto the real element) — dropping it silently hid "report-saved" from
+// every query below before this fix.
+vi.mock("@tanstack/react-router", () => ({
+	useParams: () => ({}),
+	Link: ({
+		children,
+		"data-testid": testId,
+	}: {
+		children?: ReactNode;
+		"data-testid"?: string;
+	}) => <span data-testid={testId}>{children}</span>,
+}));
+
+// Stand in for the drill grid: render the surface's toolbar actions and expose
+// a control that commits a drill (with its composed sql/params), so the
+// mint's reaction is observable without the streaming/query machinery.
+let commitDrill:
+	| ((
+			steps: { kind: "slice" | "pin"; column: string }[],
+			effective?: { sql: string; params: unknown[] },
+	  ) => void)
+	| null = null;
+vi.mock("#/ui/cockpit/widgets/drillable-grid", () => ({
+	DrillableGrid: ({
+		toolbarActions,
+		onStepsChange,
+	}: {
+		toolbarActions?: ReactNode;
+		onStepsChange?: (
+			steps: { kind: "slice" | "pin"; column: string }[],
+			effective: { sql: string; params: unknown[] },
+		) => void;
+	}) => {
+		commitDrill = (steps, effective = { sql: "DRILLED_SQL", params: [] }) =>
+			onStepsChange?.(steps, effective);
+		return <div data-testid="mock-drillable-grid">{toolbarActions}</div>;
+	},
+}));
+
+function stubMintFetch() {
+	const calls: Array<Record<string, unknown>> = [];
+	vi.stubGlobal(
+		"fetch",
+		vi.fn(async (_url: RequestInfo | URL, init?: RequestInit) => {
+			calls.push(JSON.parse(String(init?.body ?? "{}")));
+			return new Response(JSON.stringify({ id: `report-${calls.length}` }), {
+				status: 200,
+				headers: { "Content-Type": "application/json" },
+			});
+		}),
+	);
+	return calls;
+}
+
+describe("AnswerResultWidget — the drilled mint", () => {
+	afterEach(() => vi.unstubAllGlobals());
+
+	it("offers the Report action on an undrilled answer and mints its own confidence/summary/title", async () => {
+		const calls = stubMintFetch();
+		renderInMantine(<AnswerResultWidget state={answerState} />);
+		expect(screen.getByTestId("report-mint")).toBeTruthy();
+		fireEvent.click(screen.getByTestId("report-mint"));
+		expect(calls).toEqual([
+			expect.objectContaining({
+				sql: answerState.sql,
+				sqlParams: null,
+				summary: answerState.summary,
+				title: "Revenue was 175.",
+				confidence: FULL,
+				parentId: null,
+			}),
+		]);
+		expect(await screen.findByTestId("report-saved")).toBeTruthy();
+	});
+
+	it("never blocks the mint once a SLICE is committed — mints null confidence + empty summary (DAT-627)", async () => {
+		const calls = stubMintFetch();
+		renderInMantine(<AnswerResultWidget state={answerState} />);
+		act(() => commitDrill?.([{ kind: "slice", column: "region" }]));
+		// Still available, never a disabled/blocked state.
+		expect(screen.getByTestId("report-mint")).toBeTruthy();
+		fireEvent.click(screen.getByTestId("report-mint"));
+		expect(calls).toEqual([
+			expect.objectContaining({
+				sql: "DRILLED_SQL",
+				sqlParams: null,
+				summary: "",
+				title: "Revenue was 175. (drilled)",
+				confidence: null,
+				parentId: null,
+			}),
+		]);
+	});
+
+	it("mints a PINNED drill's bound params alongside the composed sql (DAT-627)", async () => {
+		const calls = stubMintFetch();
+		renderInMantine(<AnswerResultWidget state={answerState} />);
+		act(() =>
+			commitDrill?.(
+				[
+					{ kind: "slice", column: "region" },
+					{ kind: "pin", column: "region" },
+				],
+				{ sql: "PINNED_SQL", params: ["EU"] },
+			),
+		);
+		fireEvent.click(screen.getByTestId("report-mint"));
+		expect(calls).toEqual([
+			expect.objectContaining({
+				sql: "PINNED_SQL",
+				sqlParams: ["EU"],
+				confidence: null,
+			}),
+		]);
+	});
+
+	it("restores the undrilled mint payload when the drill is cleared", async () => {
+		const calls = stubMintFetch();
+		renderInMantine(<AnswerResultWidget state={answerState} />);
+		act(() => commitDrill?.([{ kind: "slice", column: "region" }]));
+		act(() => commitDrill?.([]));
+		fireEvent.click(screen.getByTestId("report-mint"));
+		expect(calls).toEqual([
+			expect.objectContaining({
+				sql: answerState.sql,
+				sqlParams: null,
+				summary: answerState.summary,
+				confidence: FULL,
+			}),
+		]);
+	});
+
+	it("retires a 'Saved to Reports' state once the drill changes again", async () => {
+		stubMintFetch();
+		renderInMantine(<AnswerResultWidget state={answerState} />);
+		fireEvent.click(screen.getByTestId("report-mint"));
+		expect(await screen.findByTestId("report-saved")).toBeTruthy();
+		act(() => commitDrill?.([{ kind: "slice", column: "region" }]));
+		expect(screen.queryByTestId("report-saved")).toBeNull();
+		expect(screen.getByTestId("report-mint")).toBeTruthy();
 	});
 });

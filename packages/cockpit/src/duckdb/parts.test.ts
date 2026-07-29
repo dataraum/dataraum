@@ -18,11 +18,11 @@ import {
 	type ComposedNodeQuery,
 	composeNodeQuery,
 	composeNodeTotals,
-	flattenAdditive,
 	type NodeDrill,
 	type NodeStep,
 	narrowSnippetParts,
 	type SnippetParts,
+	signedContributions,
 } from "./parts";
 
 let instance: DuckDBInstance;
@@ -69,12 +69,17 @@ const num = (v: unknown): number | null => {
 	return Number.isFinite(n) ? n : null;
 };
 
+// `sumsAcrossDrilledAxes` is the ENGINE'S VERDICT, supplied by the route — the
+// composer no longer decides additivity for itself (DAT-857/868). Tests that
+// exercise the signed-contribution path therefore have to state it, exactly as
+// production does; the default is the conservative carrier-spine path.
 const composed = (
 	steps: NodeStep[],
 	stepId?: string,
 	drill?: NodeDrill,
+	sumsAcrossDrilledAxes = false,
 ): ComposedNodeQuery => {
-	const result = composeNodeQuery(steps, stepId, drill);
+	const result = composeNodeQuery(steps, stepId, drill, sumsAcrossDrilledAxes);
 	if ("refusal" in result)
 		throw new Error(`unexpected refusal: ${result.refusal}`);
 	return result;
@@ -280,12 +285,53 @@ describe("composeNodeQuery — grouped", () => {
 		),
 	];
 
+	it("THE VERDICT DECIDES THE SHAPE: one signed-sum node, two compositions, two different answers", async () => {
+		// The lane's core premise, pinned. Same steps, same drill — only the
+		// ENGINE'S VERDICT differs, and it changes both the SQL and the numbers.
+		// (Before DAT-857/868 this flag did not exist: the module classified the
+		// node itself, so `false` was unreachable for an additive shape.)
+		const drill = { slices: [{ column: "account" }], pins: [] };
+		const summed = composed(GROSS_PROFIT, undefined, drill, true);
+		const recomputed = composed(GROSS_PROFIT, undefined, drill, false);
+
+		// Shape: signed UNION-ALL decomposition vs the NULL-safe carrier spine.
+		expect(summed.sql).toContain("UNION ALL");
+		expect(summed.sql).not.toContain("FULL JOIN");
+		expect(recomputed.sql).toContain("FULL JOIN");
+		expect(recomputed.sql).not.toContain("UNION ALL");
+
+		// Row sets: revenue and cogs live on DISJOINT accounts in this fixture.
+		// Summing, each side contributes its own group. Recomputing, the formula
+		// is evaluated per group and SQL NULL absorbs — so a group that observes
+		// only one carrier is the honest dash, not a number.
+		const byAccount = async (q: { sql: string }) =>
+			new Map((await rows(q.sql)).map((r) => [r.account, num(r.value)]));
+		const summedRows = await byAccount(summed);
+		const recomputedRows = await byAccount(recomputed);
+		expect(summedRows.get("sales")).toBe(800);
+		expect(summedRows.get("materials")).toBe(-200);
+		expect(recomputedRows.get("sales")).toBeNull();
+		expect(recomputedRows.get("materials")).toBeNull();
+		// Same groups, different values — the flag is load-bearing, not cosmetic.
+		expect([...recomputedRows.keys()].sort()).toEqual(
+			[...summedRows.keys()].sort(),
+		);
+	});
+
 	it("ADDITIVE: disjoint decomposition via signed contributions — union domain, Σ = scalar, no COALESCE, no join", async () => {
-		const scalar = num((await rows(composed(GROSS_PROFIT).sql))[0]?.value);
-		const q = composed(GROSS_PROFIT, undefined, {
-			slices: [{ column: "account" }],
-			pins: [],
-		});
+		const scalar = num(
+			(await rows(composed(GROSS_PROFIT, undefined, undefined, true).sql))[0]
+				?.value,
+		);
+		const q = composed(
+			GROSS_PROFIT,
+			undefined,
+			{
+				slices: [{ column: "account" }],
+				pins: [],
+			},
+			true,
+		);
 		expect(q.sql).toContain("UNION ALL");
 		expect(q.sql).not.toContain("FULL JOIN");
 		expect(q.sql).not.toContain("COALESCE");
@@ -392,8 +438,12 @@ describe("composeNodeQuery — grouped", () => {
 		];
 		const scalar = num((await rows(composed(steps).sql))[0]?.value);
 		const result = await rows(
-			composed(steps, undefined, { slices: [{ column: "account" }], pins: [] })
-				.sql,
+			composed(
+				steps,
+				undefined,
+				{ slices: [{ column: "account" }], pins: [] },
+				true,
+			).sql,
 		);
 		const byAccount = new Map(result.map((r) => [r.account, num(r.value)]));
 		expect(byAccount.get("depr")).toBe(40);
@@ -446,8 +496,12 @@ describe("composeNodeQuery — grouped", () => {
 			formula("out", "revenue + weird", ["revenue", "weird"], true),
 		];
 		const grouped = await rows(
-			composed(steps, undefined, { slices: [{ column: "account" }], pins: [] })
-				.sql,
+			composed(
+				steps,
+				undefined,
+				{ slices: [{ column: "account" }], pins: [] },
+				true,
+			).sql,
 		);
 		expect(grouped).toHaveLength(1); // both carriers observe only 'sales'
 		expect(grouped[0]?.value).toBeNull();
@@ -479,14 +533,19 @@ describe("composeNodeQuery — grouped", () => {
 	});
 
 	it("slices by several dims at once (GROUP BY over every dim, deduped)", async () => {
-		const q = composed(GROSS_PROFIT, undefined, {
-			slices: [
-				{ column: "account" },
-				{ column: "region" },
-				{ column: "account" },
-			],
-			pins: [],
-		});
+		const q = composed(
+			GROSS_PROFIT,
+			undefined,
+			{
+				slices: [
+					{ column: "account" },
+					{ column: "region" },
+					{ column: "account" },
+				],
+				pins: [],
+			},
+			true,
+		);
 		const result = await rows(q.sql);
 		for (const r of result) {
 			expect(Object.keys(r)).toEqual(["account", "region", "value"]);
@@ -509,10 +568,12 @@ describe("composeNodeQuery — grouped", () => {
 		];
 		const scalar = num((await rows(composed(steps).sql))[0]?.value);
 		expect(scalar).toBe(560); // 800 - 200 - 40
-		const q = composed(steps, undefined, {
-			slices: [{ column: "account" }],
-			pins: [],
-		});
+		const q = composed(
+			steps,
+			undefined,
+			{ slices: [{ column: "account" }], pins: [] },
+			true,
+		);
 		expect(q.sql.match(/UNION ALL/g)).toHaveLength(2); // three signed branches
 		const result = await rows(q.sql);
 		expect(result).toHaveLength(3); // union domain across all three sides
@@ -683,15 +744,15 @@ describe("composeNodeQuery — NULL-dim non-additive slice (DAT-714)", () => {
 	});
 });
 
-// --- flattenAdditive (the doctrine-v2 classifier, pure) ---------------------------
+// --- signedContributions (composition mechanics, pure) ---------------------------
 
-describe("flattenAdditive", () => {
+describe("signedContributions", () => {
 	const byIdOf = (steps: NodeStep[]) =>
 		new Map(steps.map((s) => [s.stepId, s]));
 	const contributionsOf = (steps: NodeStep[]) => {
 		const target = steps.find((s) => s.outputStep);
 		if (!target) throw new Error("no output step");
-		return flattenAdditive(target, byIdOf(steps));
+		return signedContributions(target, byIdOf(steps));
 	};
 
 	it("flips signs through nesting, unary minus, and double negation", () => {
@@ -804,10 +865,15 @@ describe("composeNodeQuery — pins", () => {
 	];
 
 	it("pushes a pin into EVERY extract's WHERE, pre-aggregation, as $n", async () => {
-		const q = composed(GROSS_PROFIT, undefined, {
-			slices: [{ column: "account" }],
-			pins: [{ column: "region", value: "west" }],
-		});
+		const q = composed(
+			GROSS_PROFIT,
+			undefined,
+			{
+				slices: [{ column: "account" }],
+				pins: [{ column: "region", value: "west" }],
+			},
+			true,
+		);
 		expect(q.params).toEqual(["west"]);
 		expect(q.sql).toContain('"region" = $1');
 		const byAccount = new Map(
@@ -981,10 +1047,12 @@ describe("composeNodeQuery — time grain", () => {
 		const scalar = num((await rows(composed(GROSS_PROFIT).sql))[0]?.value);
 		// Raw slice: revenue books on two January DAYS → two revenue groups.
 		const raw = await rows(
-			composed(GROSS_PROFIT, undefined, {
-				slices: [{ column: "booked_on" }],
-				pins: [],
-			}).sql,
+			composed(
+				GROSS_PROFIT,
+				undefined,
+				{ slices: [{ column: "booked_on" }], pins: [] },
+				true,
+			).sql,
 		);
 		expect(raw.length).toBe(4); // 01-05, 01-20 (rev) ∪ 01-12, 02-08 (cogs)
 		// Month buckets: the two January days MUST fold into ONE group — if the
@@ -992,10 +1060,12 @@ describe("composeNodeQuery — time grain", () => {
 		// start (`GROUP BY "booked_on"` resolving to the source column), this
 		// would still be 4+ rows showing duplicated bucket labels.
 		const monthly = await rows(
-			composed(GROSS_PROFIT, undefined, {
-				slices: [{ column: "booked_on", grain: "1M" }],
-				pins: [],
-			}).sql,
+			composed(
+				GROSS_PROFIT,
+				undefined,
+				{ slices: [{ column: "booked_on", grain: "1M" }], pins: [] },
+				true,
+			).sql,
 		);
 		expect(monthly).toHaveLength(2);
 		const byMonth = new Map(
@@ -1077,10 +1147,15 @@ describe("composeNodeQuery — time grain", () => {
 	it("a grained pin keeps ITS grain when the slice moves on — pin ≡ the row it came from", async () => {
 		// Pin January at month grain, then slice by account: the pin's bucket
 		// must keep filtering rows to January regardless of the new slice.
-		const q = composed(GROSS_PROFIT, undefined, {
-			slices: [{ column: "account" }],
-			pins: [{ column: "booked_on", value: "2025-01-01", grain: "1M" }],
-		});
+		const q = composed(
+			GROSS_PROFIT,
+			undefined,
+			{
+				slices: [{ column: "account" }],
+				pins: [{ column: "booked_on", value: "2025-01-01", grain: "1M" }],
+			},
+			true,
+		);
 		const byAccount = new Map(
 			(await rows(q.sql, q.params)).map((r) => [r.account, num(r.value)]),
 		);

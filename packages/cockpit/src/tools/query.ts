@@ -36,10 +36,16 @@ import { config } from "../config";
 import { findById } from "../db/metadata/snippet-library";
 import { saveQuerySnippet } from "../db/metadata/snippet-writer";
 import {
+	type AnswerDrillSource,
+	type AnswerSource,
+	narrowDeclaredSource,
+} from "../duckdb/answer-source";
+import {
 	composeStandalone,
 	runSteps,
 	validateStepNames,
 } from "../duckdb/run-steps";
+import { declaredValueExprRefusal } from "../duckdb/sql-ast";
 import { linkedAbortController } from "../lib/abort";
 import { llmOtel } from "../lib/llm-otel";
 import { sqlEquivalent } from "../lib/sql-canonical";
@@ -51,11 +57,13 @@ import {
 } from "../llm";
 import { buildConventionsBlock, getQueryInstructions } from "../prompts";
 import { asAgentError, withAgentError } from "./agent-error";
+import { proveAnswerSource } from "./answer-source-proof";
 import { computeGrainNote, loadNearUniqueColumns } from "./grain-note";
 import { listTables } from "./list-tables";
 import { lookValuesTool } from "./look-values";
 import {
 	buildCatalogBlock,
+	buildConceptContextBlock,
 	buildDriversBlock,
 	buildEntitiesBlock,
 	buildGrainBlock,
@@ -150,6 +158,26 @@ const DataQuality = z
 	})
 	.nullable();
 
+/** The PROVEN parts-at-source handle (DAT-678) — where this answer's number
+ *  comes from, in clause parts, verified to reproduce it. Present only for a
+ *  scalar answer whose declared source passed the value proof; null otherwise,
+ *  and null is a first-class outcome (the surface drills tier A instead). */
+const DrillSource = z
+	.object({
+		sources: z.array(
+			z.object({
+				name: z.string(),
+				parts: z.object({
+					selectExpr: z.string(),
+					relation: z.string(),
+					where: z.array(z.string()),
+				}),
+			}),
+		),
+		expression: z.string(),
+	})
+	.nullable();
+
 export const AnswerSchema = z.object({
 	answer: z.string(),
 	// The grid handle — the browser streams the FULL result from this SQL
@@ -166,6 +194,9 @@ export const AnswerSchema = z.object({
 	components: z.array(Component),
 	// How grounded the answer's SQL is in validated snippets (from components).
 	reliability: Reliability,
+	// DAT-678: where the number comes from, proven — the handle the answer
+	// surface drills from at source. null = tier A (the honest fallback).
+	drill_source: DrillSource,
 });
 export type AnswerResult = z.infer<typeof AnswerSchema>;
 
@@ -181,6 +212,10 @@ const RunStepsOk = z.object({
 	// query STILL ran; this informs (never blocks). Absent when the grouping is
 	// coarse enough. The agent should reflect it to the user.
 	grain_note: z.string().optional(),
+	// A REFUSED source declaration (DAT-671) — the step's SQL ran, but what it
+	// declared about where its number comes from cannot be composed. Informs the
+	// model so it can repair; never blocks, and absent when nothing was refused.
+	source_note: z.string().optional(),
 });
 
 /** What a successful run_steps validation captured, for the grid + the surface. */
@@ -189,6 +224,11 @@ interface ValidatedRun {
 	components: Component[];
 	/** Grain caveat to surface to the user (DAT-538), or null when none. */
 	grainNote: string | null;
+	/** The model's declared clause parts for this run (DAT-678), unproven. Null
+	 *  when the model abstained on every step or declared no combining
+	 *  arithmetic. Proven — or dropped — after the loop, never here: the proof
+	 *  costs a query and only the LAST validated run is the answer. */
+	declaredSource: AnswerDrillSource | null;
 }
 
 /** The last run_steps FAILURE (DAT-608) — captured so a sub-agent that exhausts
@@ -204,7 +244,7 @@ export interface RunStepsFailure {
  * the grid) and the last failure (for the no-result diagnostic). The model's draft
  * is NOT captured here — it is the return value of the structured-output call
  * (DAT-807), so nothing writes it through a tool any more. */
-interface RunStepsCapture {
+export interface RunStepsCapture {
 	value: ValidatedRun | null;
 	lastError: RunStepsFailure | null;
 }
@@ -272,6 +312,83 @@ export async function classifyComponents(
 	return out;
 }
 
+/** What one run's declarations amounted to: the candidate to prove, plus the
+ *  declarations that were REFUSED — the notes are model-facing, so a repairable
+ *  mistake gets repaired instead of silently costing the drill. */
+export interface DeclaredSourceOutcome {
+	candidate: AnswerDrillSource | null;
+	notes: string[];
+}
+
+/**
+ * The model's declared clause parts for one run → a parts-at-source CANDIDATE
+ * (DAT-678). Structure only — nothing here believes the declaration:
+ * `proveAnswerSource` executes it against the answer's own value afterwards.
+ *
+ * Null candidate when there is nothing to compose from: no combining arithmetic
+ * declared (the model said final_sql is not a plain formula over its steps), or
+ * no step declared a usable source. A declaration that names a step which then
+ * abstained also collapses here — `answerNodeSteps` would refuse the phantom
+ * operand, so refusing at the boundary keeps a half-declaration from reaching
+ * the proof.
+ *
+ * Two outcomes look alike from the outside and must not be confused (DAT-671):
+ * an ABSTENTION (empty relation + value_expr) is the contract working — the step
+ * is a join or a window and says so — while a MALFORMED declaration is a mistake
+ * the model can fix. The malformed one used to be invisible: `SUM(x) AS revenue`
+ * composed to a double-`AS` parse error, the executed proof recorded a bind
+ * failure, and the answer quietly dropped to tier A. Now it is checked
+ * STRUCTURALLY at acceptance (DuckDB's parser, never a regex over the model's
+ * SQL) and reported back through run_steps.
+ */
+export async function candidateSource(
+	steps: {
+		name: string;
+		source: { relation: string; value_expr: string; filters: string[] };
+	}[],
+	combiningExpression: string,
+): Promise<DeclaredSourceOutcome> {
+	const expression = combiningExpression.trim();
+	if (expression === "") return { candidate: null, notes: [] };
+	const sources: AnswerSource[] = [];
+	const notes: string[] = [];
+	for (const step of steps) {
+		const parts = narrowDeclaredSource({
+			relation: step.source.relation,
+			valueExpr: step.source.value_expr,
+			filters: step.source.filters,
+		});
+		// Abstained (or unusable structure) — silent by design.
+		if (!parts) continue;
+		const refusal = await declaredValueExprRefusal(parts.selectExpr);
+		if (refusal !== null) {
+			console.info("answer_source_declaration_refused", {
+				step: step.name,
+				reason: refusal,
+			});
+			notes.push(`'${step.name}' — ${refusal}`);
+			continue;
+		}
+		sources.push({ name: step.name, parts });
+	}
+	return {
+		candidate: sources.length > 0 ? { sources, expression } : null,
+		notes,
+	};
+}
+
+/** The run_steps note for refused declarations — states the cost precisely (the
+ *  drill affordance, never the answer) so the model repairs rather than
+ *  re-plans the query. Null when every declaration was accepted or abstained. */
+export function declarationNote(notes: string[]): string | null {
+	if (notes.length === 0) return null;
+	return (
+		`Declared source not usable, so this number cannot be re-sliced at source: ${notes.join("; ")}. ` +
+		"Your SQL and your answer are unaffected — fix the source declaration and " +
+		"call run_steps again only if the rest of the query is already correct."
+	);
+}
+
 /**
  * The per-invocation run_steps tool: it composes the model's steps + final_sql
  * into ONE standalone CTE statement, validates THAT (the exact form the grid
@@ -279,7 +396,7 @@ export async function classifyComponents(
  * model sees only the validator status; the composed SQL + components stay
  * server-side, so the grid is provably the validated query — not a re-emission.
  */
-function makeRunStepsTool(
+export function makeRunStepsTool(
 	captured: RunStepsCapture,
 	nearUniqueColumns: Set<string>,
 ) {
@@ -287,8 +404,9 @@ function makeRunStepsTool(
 		name: "run_steps",
 		description:
 			"Validate your decomposed query before answering. Pass your concept " +
-			"`steps` (each {name, sql}, plus snippet_id when you reuse/adapt a snippet) " +
-			"and the combining `final_sql`. They are folded into one CTE statement and " +
+			"`steps` (each {name, sql, source}, plus snippet_id when you reuse/adapt a " +
+			"snippet), the combining `final_sql`, and `combining_expression`. They are " +
+			"folded into one CTE statement and " +
 			"run on a read-only connection; you get back ok + the result columns + a " +
 			"BOUNDED headline sample (not the full result — the full result streams to " +
 			"the user's grid), or an error message to repair and retry. Always call " +
@@ -305,12 +423,68 @@ function makeRunStepsTool(
 							.nullable()
 							.optional()
 							.describe("The reused/adapted snippet's id; omit for fresh SQL."),
+						// DAT-678. REQUIRED and non-nullable, with declared-empty as the
+						// abstention: an optional field is one the model silently omits,
+						// and a nullable object is a union branch the request's grammar
+						// pays for. Required-with-an-empty-answer keeps the schema flat
+						// (no added optionals, no added unions) AND makes "can I say
+						// where this number comes from?" a question about every step.
+						source: z
+							.object({
+								relation: z
+									.string()
+									.describe(
+										"The ONE table or view this step reads, written exactly as " +
+											"in its SQL (lake.<layer>.<name>). Empty string if the " +
+											"step reads no table or more than one.",
+									),
+								value_expr: z
+									.string()
+									.describe(
+										"This step's single value expression, copied whole and " +
+											"WITHOUT any AS alias of your own — however many aggregate " +
+											'calls it contains. E.g. SUM("Amount"), or ' +
+											"SUM(credit) - SUM(debit), or the row-guarded form the " +
+											"empty-aggregations rule requires: CASE WHEN COUNT(*) = 0 " +
+											"THEN NULL ELSE COALESCE(SUM(a), 0) - COALESCE(SUM(b), 0) " +
+											"END. No FROM and no WHERE — those are `relation` and " +
+											"`filters`. Empty string if the step projects anything " +
+											"other than one computed value.",
+									),
+								filters: z
+									.array(z.string())
+									.describe(
+										"This step's WHERE predicates, one per element, combined " +
+											"with AND — e.g. [\"posting_date >= DATE '2024-01-01'\"]. " +
+											"Empty when the step has no WHERE.",
+									),
+							})
+							.describe(
+								"Where this step's number comes from, as clause parts. Fill it " +
+									"in when the step reads one table and computes one value with " +
+									"optional filters — the number of aggregate calls in that " +
+									"value is irrelevant, so an empty-aggregation-guarded scalar " +
+									"still qualifies. Leave relation and value_expr empty for " +
+									"anything else (a join, a window, several output columns). " +
+									"It lets the user re-slice this number by a dimension the " +
+									"query didn't return, and it is checked against your result " +
+									"before it is used — a guess costs the feature, not the answer.",
+							),
 					}),
 				)
 				.describe("The concept steps; each becomes a CTE named `name`."),
 			final_sql: z
 				.string()
 				.describe("The query combining the step CTEs into the final result."),
+			combining_expression: z
+				.string()
+				.describe(
+					"DAT-678. The arithmetic over your step NAMES that final_sql " +
+						"computes — e.g. `revenue - cost`, or just `revenue` when final_sql " +
+						"simply returns that one step. Only + - * / and step names. Empty " +
+						"string when final_sql is anything else (a grouped breakdown, a " +
+						"join, a filter over a step).",
+				),
 		}),
 		outputSchema: withAgentError(RunStepsOk),
 	}).server(async (input, ctx) => {
@@ -340,8 +514,22 @@ function makeRunStepsTool(
 		// so an ambiguous "per X" question that meant a summary is caught. Computed
 		// only after a clean run; captured for the deterministic surface too.
 		const grainNote = await computeGrainNote(composed, nearUniqueColumns);
-		captured.value = { composedSql: composed, components, grainNote };
-		return grainNote ? { ...result, grain_note: grainNote } : result;
+		const declared = await candidateSource(
+			input.steps,
+			input.combining_expression,
+		);
+		captured.value = {
+			composedSql: composed,
+			components,
+			grainNote,
+			declaredSource: declared.candidate,
+		};
+		const sourceNote = declarationNote(declared.notes);
+		return {
+			...result,
+			...(grainNote ? { grain_note: grainNote } : {}),
+			...(sourceNote ? { source_note: sourceNote } : {}),
+		};
 	});
 }
 
@@ -393,12 +581,15 @@ export async function readDataQuality(
  * Assemble the answer from the model draft + the captured validated run + the
  * data-quality band (pure). The grid is the CAPTURED composed statement (what was
  * validated), null when nothing validated. The components are the captured reuse
- * surface. Unit-tested.
+ * surface. `drillSource` is the already-PROVEN parts handle (DAT-678) — this
+ * function never promotes an unproven candidate, so a caller that skips the
+ * proof simply gets no drill source. Unit-tested.
  */
 export function assembleAnswer(
 	draft: QueryDraft,
 	validated: ValidatedRun | null,
 	dataQuality: z.infer<typeof DataQuality>,
+	drillSource: AnswerDrillSource | null = null,
 ): AnswerResult {
 	const grid =
 		validated && validated.composedSql.trim() !== ""
@@ -427,6 +618,9 @@ export function assembleAnswer(
 				total > 0 ? (counts.exact_reuse + counts.adapted) / total : 0,
 			...counts,
 		},
+		// A drill source without a grid is meaningless (there is nothing to drill
+		// FROM), so the two travel together.
+		drill_source: grid ? drillSource : null,
 	};
 }
 
@@ -592,6 +786,7 @@ export async function querySubAgent(
 		vocabularyBlock,
 		nearUniqueColumns,
 		conventionsBlock,
+		conceptBlock,
 	] = await Promise.all([
 		buildSchemaBlock(),
 		buildEntitiesBlock(),
@@ -609,6 +804,11 @@ export async function querySubAgent(
 		// workspace's active vertical, so it joins the parallel batch (no workspace row to
 		// thread in). Empty (section omitted) when none target `qa`.
 		buildConventionsBlock(),
+		// DAT-737: the vertical vocabulary's own graph (part_of/disjoint_with/
+		// reconciles_with + groundings) — parity with the engine's GraphAgent,
+		// which already renders this neighbourhood for every concept. Empty
+		// (section omitted) when the workspace has no framed concepts yet.
+		buildConceptContextBlock(),
 	]);
 
 	// DAT-660: the workspace context is session-stable (all blocks read from the
@@ -622,7 +822,7 @@ export async function querySubAgent(
 		grainBlock ? `\n\n${grainBlock}` : ""
 	}\n\n${relationshipsBlock}\n\n${driversBlock}\n\n${vocabularyBlock}${
 		conventionsBlock ? `\n\n${conventionsBlock}` : ""
-	}`;
+	}${conceptBlock ? `\n\n${conceptBlock}` : ""}`;
 
 	const userMessage = `<question>\n${question}\n</question>`;
 
@@ -721,6 +921,15 @@ export async function querySubAgent(
 	void persistLearnedSnippets(captured.value);
 
 	if (captured.value) {
+		// PARTS-AT-SOURCE (DAT-678): the model declared where its number comes
+		// from; this runs the declaration and keeps it only if it reproduces the
+		// answer's own value. Awaited — the handle is part of the result — but
+		// structurally incapable of failing the answer: every failure path inside
+		// returns null, and null just means the surface drills tier A.
+		const drillSource = await proveAnswerSource(
+			captured.value.declaredSource,
+			captured.value.composedSql,
+		);
 		// A query validated — that's the answer. Use the model's emitted draft, or salvage
 		// from the validated run if it validated but never emitted (the grid IS the answer,
 		// DAT-608: a near-miss returns the real result rather than failing the turn).
@@ -728,6 +937,7 @@ export async function querySubAgent(
 			draft ?? salvageDraft(captured.value),
 			captured.value,
 			dataQuality,
+			drillSource,
 		);
 	}
 
@@ -760,8 +970,10 @@ export const answerTool = toolDefinition({
 		"from the knowledge base where they fit. Returns the practitioner answer " +
 		"with the headline figure, a grid handle whose full result streams in the " +
 		"canvas, the assumptions made, the concepts and tables used, an " +
-		"informational data-quality band for the tables touched (NOT a gate), and " +
-		"the reused/adapted/fresh components. Read-only. Use for analytical " +
+		"informational data-quality band for the tables touched (NOT a gate), the " +
+		"reused/adapted/fresh components, and — when the answer is a single number " +
+		"whose declared source was verified against it — the clause parts the user " +
+		"can re-slice it by. Read-only. Use for analytical " +
 		"questions ('what is total revenue', 'monthly sales trend') once data has " +
 		"been imported and typed.",
 	inputSchema: z.object({

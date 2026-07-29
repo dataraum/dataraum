@@ -17,14 +17,23 @@
 // shared frame-a-family core (frame-family.ts) two ways:
 //   - induce: no edited set → the LLM proposes that family's set, OVER the
 //     same-call concepts. Cycles and metrics seed with the nearest shipped
-//     vertical's specs as structural few-shot; validations do NOT (DAT-725 band
-//     3 — a finance few-shot example IS finance vocabulary, and leaking it into
-//     another vertical's induction is exactly the cross-vertical leakage the
-//     epic's band-6 goal forbids), so they propose from the schema + concepts
-//     alone, same as every vertical.
-//   - declare: an edited set → written verbatim, no LLM. This is how the
-//     ModelFrame widget's accept/edit round-trips: the agent re-invokes frame
-//     with the edited concepts and/or validations and/or cycles and/or metrics.
+//     vertical's specs as structural few-shot, read via the LIBRARY reader
+//     (`readShippedCycles` / `readShippedMetrics`, teach-cycle.ts /
+//     teach-metric.ts — see their module headers for the DAT-881/882 split from
+//     the WORKSPACE reader teach-shadow uses: this is a frame-time, cross-
+//     vertical question the typed tables cannot answer). Validations do NOT
+//     (DAT-725 band 3 — a finance few-shot example IS finance vocabulary, and
+//     leaking it into another vertical's induction is exactly the cross-
+//     vertical leakage the epic's band-6 goal forbids), so they propose from
+//     the schema + concepts alone, same as every vertical.
+//   - declare: an edited set → written verbatim, no LLM. The designed path for
+//     the ModelFrame widget's accept/edit round-trip — NOT CURRENTLY REACHABLE,
+//     by either route: `frame` is in no toolstack (registry.ts's `toolsByKind`
+//     covers connect/stage/analyse, none of which lists it), so no agent can
+//     re-invoke it; and its one production caller, `server/stage-frame.ts`,
+//     only ever drives the induce path — it passes no edited set. Built and
+//     wired, awaiting the widget. Treat any claim that user-edited specs flow
+//     through here today as unfounded until a caller actually passes `edited`.
 // Either way each member is persisted as a vertical-tagged overlay row and
 // returned for the ModelFrame widget to render.
 //
@@ -364,23 +373,23 @@ export async function induceConcepts(
 
 /**
  * Induce a validation set for a source via one NATIVE structured-output call
- * (DAT-807). The model fills the ARRAY-shaped `InducedValidations`
- * (validation-induction.ts) — `parameters` as a typed list rather than the open
- * map the payload uses — and `toProposedValidation` folds it back to the engine's
- * `dict[str, Any]` here, at the single conversion boundary. Induced OVER the
- * framed concept vocabulary — the concepts are part of the context, so the
- * proposed checks anchor to them rather than to guessed column names. Returns
- * the proposed validations; does NOT write anything. `signal` bridges the
- * tool-context abort.
+ * (DAT-807). The model fills `InducedValidations` (validation-induction.ts),
+ * which carries the engine's typed check definition (`tolerance`/`guidance`)
+ * with the sentinels constrained decoding needs; `toProposedValidation` decodes
+ * those at the single conversion boundary here. Induced OVER the framed concept
+ * vocabulary — the concepts are part of the context, so the proposed checks
+ * anchor to them rather than to guessed column names. Returns the proposed
+ * validations; does NOT write anything. `signal` bridges the tool-context abort.
  *
  * NO shipped-vertical few-shot (DAT-725 band 3, lead-ruled): a finance few-shot
  * example IS finance vocabulary, and seeding a newly-onboarded vertical's
  * induction with it is exactly the cross-vertical leakage the epic's band-6
  * zero-leakage goal forbids — unlike cycles/metrics (`induceCycles` /
- * `induceMetrics` below), which still read a shipped library because no
- * cross-vertical-leakage concern was raised for them. A brand-new vertical's
- * validations are proposed from the schema + concepts alone, same as any other
- * vertical's.
+ * `induceMetrics` below), which still read a shipped LIBRARY (any vertical,
+ * cross-vertical, DAT-881/882's split reader — see teach-cycle.ts's module
+ * header) because no cross-vertical-leakage concern was raised for them. A
+ * brand-new vertical's validations are proposed from the schema + concepts
+ * alone, same as any other vertical's.
  */
 export async function induceValidations(
 	schema: ConnectSchema,
@@ -408,9 +417,13 @@ export async function induceValidations(
  * names. The induce prompt
  * is seeded with the nearest shipped vertical's `cycle_types` as STRUCTURAL
  * few-shot (DAT-468/470) — the framing that makes the proposed shape reliable.
- * Returns the proposed cycles; does NOT write anything. The shipped-spec reader is
- * injectable so the seed wiring is unit-testable without the config tree; production
- * uses the default. `signal` bridges the tool-context abort.
+ * Returns the proposed cycles; does NOT write anything. The default reader
+ * (`readShippedCycles`, teach-cycle.ts) is the LIBRARY reader — fs/YAML,
+ * cross-vertical, valid at frame time before any workspace has seeded anything
+ * (DAT-881 split from the WORKSPACE reader teach-shadow uses; see that module's
+ * header for why one reader cannot serve both). Injectable so the seed wiring
+ * is unit-testable without the config tree; production uses the default.
+ * `signal` bridges the tool-context abort.
  */
 export async function induceCycles(
 	schema: ConnectSchema,
@@ -455,9 +468,12 @@ export async function induceCycles(
  * copy, which is what makes DAG induction reliable. Returns the proposed metrics;
  * does NOT write anything (the induced DAG is inspiration, not a frame-time gate
  * — a malformed one still declares + surfaces born-loud after execution). The
- * shipped-spec reader is injectable so the seed wiring is unit-testable without
- * the config tree; production uses the default. `signal` bridges the tool-context
- * abort (DAT-449).
+ * default reader (`readShippedMetrics`, teach-metric.ts) is the LIBRARY reader
+ * — fs/YAML rglob, cross-vertical, valid at frame time before any workspace has
+ * seeded anything (DAT-882 split from the WORKSPACE reader teach-shadow uses;
+ * see that module's header for why one reader cannot serve both). Injectable
+ * so the seed wiring is unit-testable without the config tree; production uses
+ * the default. `signal` bridges the tool-context abort (DAT-449).
  */
 export async function induceMetrics(
 	schema: ConnectSchema,

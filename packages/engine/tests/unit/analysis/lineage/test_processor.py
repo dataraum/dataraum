@@ -235,7 +235,6 @@ def _seed(
                 dimension_table_id=dim_table_id,
                 dimension_attribute=attribute,
                 fk_role=role,
-                slice_priority=1,
                 distinct_values=list(values),
                 value_count=len(values),
                 detection_source="llm",
@@ -265,7 +264,6 @@ def _seed(
                 dimension_table_id=ids["chart_of_accounts"],
                 dimension_attribute=rp_attr or None,
                 fk_role=rp_role,
-                slice_priority=2,
                 distinct_values=list(values),
                 value_count=len(values),
                 detection_source="llm",
@@ -457,7 +455,6 @@ def _seed_series(
                 dimension_table_id=dim_table.table_id,
                 dimension_attribute="account_type",
                 fk_role="account_id",
-                slice_priority=1,
                 distinct_values=list(entities),
                 value_count=len(entities),
                 detection_source="llm",
@@ -950,3 +947,112 @@ class TestDiscoverAggregationLineage:
         # Another run (e.g. an add_source detect) sees nothing → witness abstains.
         assert load_structural_reconciliation(real_session, column_id, "other-run") is None
         assert load_structural_reconciliation(real_session, column_id, None) is None
+
+
+class TestSignPartition:
+    """The stored_sign witness substrate (DAT-875).
+
+    ``_sign_partition`` re-runs the reconciliation with the anchor NEGATED and counts
+    which entities vote the winning pattern under each sign. The separation is
+    arithmetic, not tuned: a carried-forward series matched against a sign-flipped
+    anchor lands at residual ``Σ|-m - m| / Σ|m| = 2``, against the reconciliation's
+    wrong-anchor gate of 0.5 — so an entity votes under exactly one sign.
+    """
+
+    @staticmethod
+    def _cumsum(movements: list[float]) -> list[float]:
+        out: list[float] = []
+        total = 0.0
+        for m in movements:
+            total += m
+            out.append(total)
+        return out
+
+    def test_one_ledger_direction_explains_every_entity(self) -> None:
+        """Raw storage: ``ending_balance = cumsum(debit - credit)`` for asset AND
+        liability accounts alike, so one convention fits all — the corpus signature
+        whose one-sided normalization DAT-875 exists to prevent."""
+        from dataraum.analysis.lineage.processor import _sign_partition
+        from dataraum.analysis.lineage.reconcile import classify_series
+
+        movements = [100.0, -40.0, 70.0, -25.0, 60.0]
+        series = {f"acct-{i}": (self._cumsum(movements), movements) for i in range(4)}
+        part = _sign_partition(series, classify_series(series), "cumulative")
+        assert part.primary == 4
+        assert part.mirror == 0
+        assert part.both == 0
+
+    def test_opposite_signs_explain_disjoint_families(self) -> None:
+        """Account-natural storage: the credit-normal family's stored values already
+        absorbed the sign flip, so they reconcile only against the negated anchor."""
+        from dataraum.analysis.lineage.processor import _sign_partition
+        from dataraum.analysis.lineage.reconcile import classify_series
+
+        movements = [100.0, -40.0, 70.0, -25.0, 60.0]
+        flipped = [-m for m in movements]
+        series = {
+            "asset-1": (self._cumsum(movements), movements),
+            "asset-2": (self._cumsum(movements), movements),
+            "liab-1": (self._cumsum(flipped), movements),
+            "liab-2": (self._cumsum(flipped), movements),
+        }
+        part = _sign_partition(series, classify_series(series), "cumulative")
+        assert part.primary == 2
+        assert part.mirror == 2
+        # Disjoint by construction — an entity cannot fit both signs.
+        assert part.both == 0
+
+    def test_a_dead_anchor_votes_under_neither_sign(self) -> None:
+        """An entity whose anchor never moves abstains symmetrically, so it inflates
+        neither family — it is unobserved, not evidence."""
+        from dataraum.analysis.lineage.processor import _sign_partition
+        from dataraum.analysis.lineage.reconcile import classify_series
+
+        series = {"dead": ([0.0, 0.0, 0.0, 0.0, 0.0], [0.0, 0.0, 0.0, 0.0, 0.0])}
+        part = _sign_partition(series, classify_series(series), "cumulative")
+        assert (part.primary, part.mirror, part.both) == (0, 0, 0)
+
+    def test_partition_is_persisted_on_the_lineage_row(
+        self, real_session: Session, duck: duckdb.DuckDBPyConnection
+    ) -> None:
+        """The counts reach the row the stored_sign witness loads — otherwise the
+        measurement has no substrate at all."""
+        ids = _seed(real_session, duck)
+        _discover(real_session, duck, ids)
+        real_session.flush()
+        row = real_session.execute(
+            select(MeasureAggregationLineage).where(
+                MeasureAggregationLineage.measure_column_id == ids["trial_balance.balance"]
+            )
+        ).scalar_one()
+        # EXACT values, not >= 0: the fixture is deterministic, and NOT-NULL ints
+        # make every inequality vacuous — a writer replaced by _SignPartition(0, 0, 0)
+        # (the witness substrate completely dead) passed the whole unit suite under
+        # the previous assertions. Two entities, both reconciling under the winning
+        # convention, none under its mirror.
+        assert (
+            row.n_entities,
+            row.sign_fired_primary,
+            row.sign_fired_mirror,
+            row.sign_fired_both,
+        ) == (2, 2, 0, 0)
+
+    def test_loader_serves_the_partition_exact_run(
+        self, real_session: Session, duck: duckdb.DuckDBPyConnection
+    ) -> None:
+        from dataraum.entropy.detectors.loaders import load_sign_partition
+
+        ids = _seed(real_session, duck)
+        _discover(real_session, duck, ids)
+        real_session.flush()
+        column_id = ids["trial_balance.balance"]
+        hit = load_sign_partition(real_session, column_id, _RUN)
+        assert hit == {
+            "n_entities": 2,
+            "fired_primary": 2,
+            "fired_mirror": 0,
+            "fired_both": 0,
+        }
+        # Exact-run, no pinned fallback — same contract as the stock/flow witness.
+        assert load_sign_partition(real_session, column_id, "other-run") is None
+        assert load_sign_partition(real_session, column_id, None) is None

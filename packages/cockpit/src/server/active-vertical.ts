@@ -7,10 +7,11 @@
 // workspace, only to have the run die deep in the pipeline.
 //
 // `framed` reuses the SAME concept count the engine's grounding guard keys off
-// (`verticalConceptCount` — builtin ontology + active config_overlay concept rows),
-// so the UI gate and the engine's fail-loud agree. A selected builtin vertical
-// (shipped concepts) and a framed `_adhoc` both read framed=true; a cold-start
-// `_adhoc` reads false.
+// (`verticalConceptCount` — the workspace's typed `concepts` rows once any
+// exist, else the builtin's on-disk ontology.yaml concepts as a pre-frame
+// hint; DAT-728/883), so the UI gate and the engine's fail-loud agree. A
+// selected builtin vertical (shipped concepts) and a framed `_adhoc` both read
+// framed=true; a cold-start `_adhoc` reads false.
 //
 // Server-only deps load INSIDE the handler so this module's static graph stays
 // config-free — the probe WIDGET imports it at module scope, and the canvas

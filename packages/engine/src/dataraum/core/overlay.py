@@ -209,27 +209,44 @@ def _apply_unit(base: dict[str, Any], rows: list[OverlayRow]) -> dict[str, Any]:
 def _apply_validation(base: dict[str, Any], rows: list[OverlayRow]) -> dict[str, Any]:
     """Upsert-replace validation rows into a vertical's ``validations:`` list.
 
-    Payload shape mirrors :class:`ValidationSpec`:
-    ``{vertical, validation_id, name, description, category, severity,
-    check_type, parameters?, sql_hints?, expected_outcome?, tags?,
-    relevant_cycles?, version?}``. ``vertical`` is matched by the caller
-    (this applier only sees rows already filtered to the loading vertical).
+    Payload shape mirrors :class:`ValidationSpec`: ``{vertical, validation_id,
+    name, description, category, severity, check_type, tolerance?, guidance?,
+    expected_outcome?, expected_formula?, tags?, relevant_cycles?, version?}``.
+    Both cockpit writers produce it — the hand-authored ``teach_validation`` and
+    frame induction, whose ``InducedValidation`` schema was retyped onto these
+    fields by DAT-880's close-out (the pre-DAT-735
+    ``parameters``/``sql_hints`` shape it used to write, and the
+    ``mode="before"`` fold that translated it, are both gone). This applier is
+    payload-agnostic (a raw dict merge), so it never inspects the shape; typing
+    happens downstream, when the merged row is parsed into
+    :class:`ValidationSpec` (``analysis.validation.config.
+    load_all_validation_specs``) — where ``extra="forbid"`` now rejects a
+    legacy-shaped payload loudly. ``vertical`` is matched by the caller (this
+    applier only sees rows already filtered to the loading vertical).
 
     Merge semantics mirror ``concept``: one row = one whole spec. Same
     ``validation_id`` replaces — the last row for a given id wins (rows are
     pre-sorted ASC by ``created_at``). A framed vertical resolves
     overlay-only: an empty base list plus rows IS the declared set.
 
-    Expected-formula declaration (DAT-447, Option B): the ``derived_value``
-    measurement's teach rides this type — a spec-shaped payload with
-    ``check_type: "expected_formula"`` and ``parameters: {table, column,
-    formula}`` (formula in the discovery's binary-arithmetic language, e.g.
-    ``"subtotal + tax"``; suggested identity ``validation_id:
-    "expected_formula:{table}.{column}"`` so a re-declaration replaces). The
-    validation phase executes it as a declared check every run via this
-    applier; ``entropy.detectors.loaders.load_declared_formula`` reads the
-    same rows directly and pools the declaration as the ``human_declaration``
-    witness on the matching formula claim.
+    Expected-formula declaration (DAT-447, Option B; retyped DAT-880): the
+    ``derived_value`` measurement's teach rides this type — a spec-shaped payload
+    with ``check_type: "expected_formula"`` and ``expected_formula: {table, column,
+    formula}`` (:class:`~dataraum.analysis.validation.models.
+    ExpectedFormulaDeclaration`; formula in the discovery's binary-arithmetic
+    language, e.g. ``"subtotal + tax"``; suggested identity ``validation_id:
+    "expected_formula:{table}.{column}"`` so a re-declaration replaces). Were such a
+    row ever written, the validation phase would execute it as a declared check
+    every run via this applier, and ``entropy.detectors.loaders.
+    load_declared_formula`` reads the same rows directly to pool the declaration as
+    the ``human_declaration`` witness on the matching formula claim — but NO writer
+    of a ``type='validation'`` overlay row can produce ``check_type:
+    "expected_formula"`` today (the cockpit's sole writer of a hand-authored spec,
+    ``teach_validation``, is gated by a closed 4-value ``check_type`` enum that
+    never admitted this fifth value; frame induction's own ``InducedValidation``
+    enum is equally closed to the four canonical values). This one declaration
+    shape is a designed, typed contract this applier stays ready to merge, not a
+    currently-exercised one.
     """
     out = dict(base)
     specs = [dict(s) for s in (out.get("validations") or [])]

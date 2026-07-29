@@ -11,19 +11,26 @@
 // `core/overlay.py` `_apply_validation` upsert-replaces by `validation_id` into
 // the vertical's declared set. A teach declares a new INSTANCE or overrides a
 // seeded one — NEVER a new TYPE: `check_type` is closed here to the four values
-// the engine's typed home enforces. The engine's `ValidationSpec.check_type`
-// is a plain `str` (no runtime validation today), and the evaluator does not
-// branch on it — the user's words shape WHAT gets grounded, never HOW results
-// get scored (ADR-0017: one `deviation <= tolerance` judgement for every type).
+// the engine's typed home enforces. The engine's `ValidationSpec.check_type` is
+// a closed union (`ValidationCheckType | Literal["expected_formula"]`, DAT-880)
+// with a `model_validator` — no longer "a plain str, no runtime validation" — but
+// the evaluator still does not branch on it — the user's words shape WHAT gets
+// grounded, never HOW results get scored (ADR-0017: one `deviation <= tolerance`
+// judgement for every type).
 //
-// `tolerance`/`guidance` replace the legacy `parameters`/`sql_hints` fields
-// (teach-surface retire, DAT-725): the typed home's columns are
-// `tolerance: double precision` (the declared pass threshold) and
+// `tolerance`/`guidance` replace the legacy `parameters`/`sql_hints` fields for
+// THIS tool's own writes (teach-surface retire, DAT-725): the typed home's
+// columns are `tolerance: double precision` (the declared pass threshold) and
 // `guidance: text` (free-form SQL-grounding guidance) — a straight 1:1 typed
-// mirror, not a free-form bag. NO migration of existing legacy `config_overlay`
-// rows written under the old shape (repo rule: no backwards-compat shims); a
-// pre-existing overlay row still carrying `parameters`/`sql_hints` is read by
-// the engine's legacy normalizer (untouched by this cockpit-only lane).
+// mirror, not a free-form bag, for a hand-authored `teach_validation` spec.
+// The legacy shape is now gone workspace-wide. `frame.ts`'s INDUCE path
+// (`validation-induction.ts`'s `InducedValidation`, a SEPARATE schema from this
+// one) emitted `parameters`/`sql_hints` for every frame-induced validation
+// until DAT-880's close-out migrated it to the same typed fields — so the
+// engine's `mode="before"` fold on `ValidationSpec`, which used to translate
+// them, is deleted, and `extra="forbid"` now rejects those keys at
+// construction. Both cockpit writers of a validation spec — this hand-authored
+// one and induction — produce one shape.
 //
 // DAT-725 band 3: finance's shipped `validations/*.yaml` are retired entirely
 // (no vertical ships one today), and `frame.ts`'s `induceValidations` no longer
@@ -115,13 +122,20 @@ export const ValidationSpecSchema = z.object({
 				"'aggregate' (an aggregate must fall within bounds). Pick the branch " +
 				"whose semantics match; the description + guidance shape WHAT it checks.",
 		),
+	// `.min(0)` mirrors the engine's `ge=0` (ValidationSpec): a negative tolerance is
+	// unsatisfiable under ADR-0017 and is frame induction's "not declared" SENTINEL,
+	// never a threshold — this is the second of the two value boundaries that must
+	// refuse to read it as one (the first is the engine model; the sentinel itself
+	// lives only in `InducedValidation` and dies in `toProposedValidation`).
 	tolerance: z
 		.number()
+		.min(0)
 		.optional()
 		.describe(
 			"The declared pass threshold: the check passes when the computed " +
 				"deviation is <= this value (ADR-0017's one `deviation <= tolerance` " +
-				"judgement, applied to every check_type). Omit to use the engine's default.",
+				"judgement, applied to every check_type). Non-negative — 0 means exact " +
+				"agreement. Omit to use the engine's default.",
 		),
 	guidance: z
 		.string()

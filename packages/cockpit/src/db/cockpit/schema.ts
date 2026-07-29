@@ -35,6 +35,10 @@ import {
 	varchar,
 } from "drizzle-orm/pg-core";
 import type { ChartConfig } from "#/charts/chart-config";
+// Type-only (erased at compile time) — the same bound-param shape a drilled
+// composition's SQL carries (`$1…` placeholders), reused here so a report can
+// freeze a PINNED drill's statement together with the values it binds.
+import type { DrillPinValue } from "#/duckdb/drill";
 import type { AnswerConfidence } from "#/ui/cockpit/canvas-state";
 
 /**
@@ -380,10 +384,24 @@ export const uiState = pgTable("ui_state", {
  * provenance, not owners — deleting the chat must never orphan the report.
  *
  * `parentId` is the evolve-lineage self-reference (DAT-627): null for a freshly
- * minted report, set when re-minted from a drilled-down answer. Deletion is SOFT
- * (`deletedAt`) — a deleted parent keeps its children. `summaryFingerprint`
+ * minted report, set when re-minted from a drilled-down answer or report. Deletion
+ * is SOFT (`deletedAt`) — a deleted parent keeps its children. `summaryFingerprint`
  * (DAT-625 staleness) and `chartConfig` (DAT-626 charts) are reserved here so those
  * phases need no migration; both stay null until then.
+ *
+ * `sqlParams` (DAT-627) freezes the bound params a PINNED drill's `sql` needs —
+ * a pin composes `$1…` placeholders (`composeTierA`/`composeNodeQuery`), so a
+ * mint from a pinned view has to carry the values alongside the statement or the
+ * report would re-run parameterless and 400 on every open. Null for the common
+ * case (an unparameterized `sql`, which is every report before DAT-627 and every
+ * unpinned one since).
+ *
+ * `confidence` is NULLABLE (DAT-627, widened from the DAT-624 keystone): it is
+ * the frozen ANSWER's confidence (band/grounded ratio/reuse/concepts/assumptions),
+ * which describes the exact rows that answer returned. A report minted from a
+ * SLICED or PINNED drill shows different rows, so carrying the parent answer's
+ * confidence forward would misrepresent them — null is the honest "not computed
+ * for this view", never a fabricated 0%.
  */
 export const reports = pgTable(
 	"reports",
@@ -413,13 +431,17 @@ export const reports = pgTable(
 		summaryFingerprint: varchar("summary_fingerprint"),
 		// The frozen composed CTE (stable lake names) — re-run live on every open.
 		sql: text("sql").notNull(),
+		// Bound params for a PINNED drill's `sql` (DAT-627) — null for an
+		// unparameterized statement (the common case).
+		sqlParams: jsonb("sql_params").$type<DrillPinValue[]>(),
 		// Frozen chart config (DAT-626) — null = table-only report (first-class). The
 		// thin LLM-authorable Vega-Lite subset (ADR-0015); rendered over LIVE re-run
 		// data on detail/gallery, never carrying its own data.
 		chartConfig: jsonb("chart_config").$type<ChartConfig>(),
 		// The answer's confidence at mint (band / grounded ratio / reuse) — colored
-		// in the gallery + detail, never recomputed.
-		confidence: jsonb("confidence").$type<AnswerConfidence>().notNull(),
+		// in the gallery + detail, never recomputed. NULLABLE (DAT-627): a report
+		// minted from a drilled view has no confidence describing that view's rows.
+		confidence: jsonb("confidence").$type<AnswerConfidence>(),
 		createdAt: timestamp("created_at", { mode: "date" }).notNull().defaultNow(),
 		// Soft delete — a deleted report drops out of the gallery; its children
 		// (parentId) remain. Null = live.

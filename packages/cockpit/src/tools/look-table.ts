@@ -3,7 +3,7 @@
 // Pure read via the Drizzle metadata client: LEFT JOINs ws_<id>.columns to the
 // persisted `entropy_readiness` rows the engine's terminal `detect` step writes
 // (DAT-394/399). Surfaces, per column, the calibrated band (ready/investigate/
-// blocked) across the three intents (query/aggregation/reporting) plus the top
+// blocked) across the three intents (query/aggregation/presentation) plus the top
 // quality drivers — reading the PERSISTED, calibrated band, never re-deriving it
 // in TS (the engine owns the noisy-OR rollup; the cockpit reads it).
 //
@@ -619,7 +619,7 @@ export const lookTableTool = toolDefinition({
 	name: "look_table",
 	description:
 		"Show a table's per-column readiness — ready/investigate/blocked across the " +
-		"query, aggregation, and reporting intents — with the top quality drivers " +
+		"query, aggregation, and presentation intents — with the top quality drivers " +
 		"per column. Read-only; reflects the latest analysis (the calibrated, " +
 		"persisted band). table_name is the display name for prose; physical_name " +
 		"is the DuckDB name — use it ONLY to address the table in run_sql as " +

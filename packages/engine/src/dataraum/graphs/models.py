@@ -89,6 +89,27 @@ class StepSource:
     column: str | None = None  # Concrete column name
     standard_field: str | None = None  # Abstract field (resolved by schema mapping)
     statement: str | None = None  # balance_sheet, income_statement
+    # The DECLARED row restriction this extract measures over (DAT-838). Before it,
+    # an extract carried only field+statement+aggregation, so "count the rows WHERE
+    # status is reconciled" was unsayable and the model wrote the closest expressible
+    # thing — `count(reconciliation_status)`, a count of a dimension column, which
+    # counts every row and makes any rate ≈1.0 by construction while its declared
+    # `0 <= value <= 1` check passes. Rates, shares, ratios-of-subset and conditional
+    # counts are all that shape, so this is a large fraction of what a practitioner
+    # means by "metric".
+    #
+    # It is INTENT, in business terms ("status is reconciled"), never SQL and never a
+    # column/value pair: at frame time the real columns and their values are not known
+    # yet — grounding a value to a column that actually carries it is the semantic
+    # phase's business. The authoring path serves this line to the grounding agent,
+    # which turns it into verified predicates over SERVED values
+    # (`ExtractGroundingOutput.where` + the `filter_members` it must declare), and
+    # `validate_grounding_basis` refuses a grounding that dropped it.
+    #
+    # `""` (never None) means "no restriction" — the same stated-attribute convention
+    # `statement` and `ConceptGroundingBasis.filter` use, so the LLM-facing contract
+    # needs no optional field (constrained decoding budgets those; DAT-807).
+    predicate: str = ""
 
 
 @dataclass
@@ -492,11 +513,19 @@ class SnippetFailureMode(StrEnum):
       violation of contract v2 after its repair turn (DAT-727): the SQL may be
       fine, but the operating-model graph cannot ground ``uses`` edges on an
       unenforced enumeration.
+    - ``DISJOINT_COLLISION`` — the extract is byte-identical (modulo SQL syntax
+      noise) to the one grounded for a concept this one is ``disjoint_with``
+      (DAT-709). Disjoint concepts cannot select the same rows, so at most one
+      of the two groundings can be right and nothing here can tell which: the
+      SQL may execute and verify perfectly and still be the wrong concept's.
+      Written by the cross-concept guard, never by a single grounding call —
+      it is the ONE failure mode no per-concept check can reach.
     """
 
     EXECUTION_FAILED = "execution_failed"
     VERIFIER_REJECTED = "verifier_rejected"
     PROVENANCE_INVALID = "provenance_invalid"
+    DISJOINT_COLLISION = "disjoint_collision"
 
 
 class SnippetAssumption(BaseModel):
@@ -508,6 +537,13 @@ class SnippetAssumption(BaseModel):
 
     model_config = ConfigDict(extra="forbid")
 
+    # The authored assumption's DIMENSION (DAT-887) — the kind of judgment it records
+    # ('scope.validity', 'period.binding', …). Persisted because it is what makes the
+    # grading surface FILTERABLE: an eval attributing period error must be able to
+    # select the period-binding assumptions without pattern-matching prose. Defaults to
+    # "" rather than being optional — every writer supplies it from the authored
+    # GraphAssumptionOutput, and pre-DAT-887 rows simply carry no dimension.
+    dimension: str = ""
     assumption: str
     basis: AssumptionBasis
     confidence: float = Field(ge=0.0, le=1.0)

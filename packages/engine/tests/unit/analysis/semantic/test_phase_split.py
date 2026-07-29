@@ -6,6 +6,7 @@ without invoking a live LLM (the agent is faked where needed).
 
 from __future__ import annotations
 
+from datetime import UTC, datetime
 from unittest.mock import MagicMock
 
 import pytest
@@ -14,7 +15,7 @@ from sqlalchemy import select
 from dataraum.analysis.relationships.db_models import Relationship as RelationshipDB
 from dataraum.analysis.semantic.agent import SemanticAgent
 from dataraum.analysis.semantic.db_models import SemanticAnnotation as AnnotationDB
-from dataraum.analysis.semantic.db_models import TableEntity
+from dataraum.analysis.semantic.db_models import TableEntity, TableRole
 from dataraum.analysis.semantic.models import (
     ColumnAnnotationOutput,
     ColumnSemanticOutput,
@@ -30,9 +31,24 @@ from dataraum.analysis.semantic.processor import (
     persist_column_annotations,
     synthesize_and_store_tables,
 )
+from dataraum.analysis.statistics.models import ColumnProfile, ColumnRef
 from dataraum.core.models.base import RelationshipType, Result
 from dataraum.storage import Column, Source, Table
 from tests.conftest import baseline_run_id
+
+
+def _profile(table: str, column: str, *, total: int, distinct: int) -> ColumnProfile:
+    """A column profile carrying only the cardinality the role derivation reads."""
+    return ColumnProfile(
+        column_id=f"{table}.{column}",
+        column_ref=ColumnRef(table_name=table, column_name=column),
+        profiled_at=datetime(2026, 1, 1, tzinfo=UTC),
+        total_count=total,
+        null_count=0,
+        distinct_count=distinct,
+        null_ratio=0.0,
+        cardinality_ratio=distinct / total if total else 0.0,
+    )
 
 
 def _table_with_columns(session, name: str, columns: list[str]) -> Table:
@@ -1049,11 +1065,129 @@ class TestTableSynthesisHelpers:
                 "relationships": [],
             }
         )
-        result = agent._build_enrichment_result(synthesis)
+        result = agent._build_enrichment_result(synthesis, [])
         enrichment = result.unwrap()
         assert enrichment.annotations == []
         assert len(enrichment.entity_detections) == 1
         assert enrichment.entity_detections[0].table_role == "fact"
+
+    def test_build_enrichment_result_roles_a_period_fk_snapshot(self) -> None:
+        """DAT-847, through the REAL call site.
+
+        ``balances`` carries no date column at all — its period is the integer
+        key ``period_id`` into a surrogate-keyed calendar, the standard warehouse
+        snapshot. The calendar is recognized by the cardinality witness computed
+        off the profiles (``period_date`` unique across its 24 rows), so the FK
+        resolves to the reporting period and the fact roles as a snapshot rather
+        than a plain FACT.
+        """
+        agent = SemanticAgent.__new__(SemanticAgent)  # no LLM init needed
+        synthesis = TableSynthesisOutput.model_validate(
+            {
+                "tables": [
+                    {
+                        "table_name": "balances",
+                        "is_fact_table": True,
+                        "grain": ["account_id", "period_id"],
+                        "time_columns": [],
+                        "identity_columns": [],
+                    },
+                    {
+                        "table_name": "dim_period",
+                        "is_fact_table": False,
+                        "grain": ["period_id"],
+                        "time_columns": [
+                            {
+                                "column": "period_date",
+                                "aspect": "period",
+                                "role": "event",
+                                "is_anchor": True,
+                                "note": "One row per accounting period.",
+                            }
+                        ],
+                        "identity_columns": [],
+                    },
+                ],
+                "relationships": [
+                    {
+                        "from_table": "balances",
+                        "from_column": "period_id",
+                        "to_table": "dim_period",
+                        "to_column": "period_id",
+                        "key_columns": [],
+                        "relationship_type": "foreign_key",
+                        "confidence": 0.95,
+                        "reasoning": "period_id keys the calendar dimension",
+                    }
+                ],
+            }
+        )
+        profiles = [
+            _profile("dim_period", "period_id", total=24, distinct=24),
+            _profile("dim_period", "period_date", total=24, distinct=24),
+            _profile("balances", "account_id", total=2400, distinct=100),
+            _profile("balances", "period_id", total=2400, distinct=24),
+        ]
+        enrichment = agent._build_enrichment_result(synthesis, profiles).unwrap()
+        assert enrichment.entity_detections[0].table_name == "balances"
+        assert enrichment.entity_detections[0].table_role == TableRole.PERIODIC_SNAPSHOT
+        # The calendar itself is still a plain dimension.
+        assert enrichment.entity_detections[1].table_role == TableRole.DIMENSION
+
+    def test_build_enrichment_result_period_fk_needs_the_cardinality_witness(self) -> None:
+        """The same synthesis, with a calendar whose date REPEATS, stays a FACT.
+
+        Nothing about the LLM's output distinguishes the two cases — only the
+        profile does. This is what stops every surrogate-keyed dimension (a
+        customer, a product) from reading as a period.
+        """
+        agent = SemanticAgent.__new__(SemanticAgent)
+        synthesis = TableSynthesisOutput.model_validate(
+            {
+                "tables": [
+                    {
+                        "table_name": "balances",
+                        "is_fact_table": True,
+                        "grain": ["account_id", "period_id"],
+                        "time_columns": [],
+                        "identity_columns": [],
+                    },
+                    {
+                        "table_name": "dim_period",
+                        "is_fact_table": False,
+                        "grain": ["period_id"],
+                        "time_columns": [
+                            {
+                                "column": "period_date",
+                                "aspect": "period",
+                                "role": "event",
+                                "is_anchor": True,
+                                "note": "Not one row per period.",
+                            }
+                        ],
+                        "identity_columns": [],
+                    },
+                ],
+                "relationships": [
+                    {
+                        "from_table": "balances",
+                        "from_column": "period_id",
+                        "to_table": "dim_period",
+                        "to_column": "period_id",
+                        "key_columns": [],
+                        "relationship_type": "foreign_key",
+                        "confidence": 0.95,
+                        "reasoning": "period_id keys the dimension",
+                    }
+                ],
+            }
+        )
+        profiles = [
+            _profile("dim_period", "period_id", total=24, distinct=24),
+            _profile("dim_period", "period_date", total=24, distinct=8),  # repeats
+        ]
+        enrichment = agent._build_enrichment_result(synthesis, profiles).unwrap()
+        assert enrichment.entity_detections[0].table_role == TableRole.FACT
 
     def test_format_persisted_annotations_groups_by_table(self) -> None:
         formatted = SemanticAgent._format_persisted_annotations(

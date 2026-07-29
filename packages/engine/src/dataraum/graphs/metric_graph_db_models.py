@@ -25,7 +25,7 @@ axis is declaration-versioned exactly like :class:`~dataraum.analysis.semantic.d
 — a stable ``(vertical, graph_id[, …])`` key, ``superseded_at`` the sole lifecycle axis,
 seeded ``INSERT … ON CONFLICT DO NOTHING`` so a re-run is a no-op and a supersede is
 never clobbered. This is deliberately NOT the run-versioned axis of
-:class:`~dataraum.graphs.additivity_db_models.MetricAdditivity` (a verdict RECOMPUTED
+:class:`~dataraum.graphs.additivity_db_models.MetricAxisAdditivity` (a verdict RECOMPUTED
 every operating_model run from live ``temporal_behavior``); the DAG STRUCTURE is not
 recomputed from data, so keying it on ``run_id`` would be wrong. Workspace identity is
 the ``ws_<id>`` schema itself (no ``workspace_id`` column), and the read surface scopes
@@ -42,6 +42,7 @@ from __future__ import annotations
 
 from datetime import UTC, datetime
 from enum import StrEnum
+from typing import Any
 from uuid import uuid4
 
 from sqlalchemy import JSON, CheckConstraint, DateTime, Index, String, Text, text
@@ -108,6 +109,21 @@ class Metric(Base):
     unique index keeps one active row per ``(vertical, graph_id)``), so a head-free read
     is deterministic. Bound into the property graph as the ``metric_node`` vertex over
     ``og_metrics``.
+
+    **The description + DAG body get a typed home here too (DAT-882)**:
+    ``description`` (the metric's declared prose), ``output`` and ``dependencies``
+    (the RAW ``output:``/``dependencies:`` sub-dicts off the shipped YAML, verbatim —
+    same key names a hand-authored ``<graph_id>.yaml`` uses, e.g. ``output.type`` not
+    the parsed dataclass's ``output_type``). This gives the bodies a home; it does not
+    change the graph SHAPE — the vertex/edge structure (this table's other columns +
+    :class:`MetricParameter` / :class:`MetricDerivesFrom`) is unchanged, DAT-732's.
+    The cockpit's ``teach_metric`` override-shadow detection (and the
+    ``/api/shipped-metric-dag`` canvas route) read these two JSON columns — a
+    WORKSPACE question, valid post add_source. The frame induction few-shot seed
+    is a DIFFERENT, cross-vertical question (any vertical, valid before any
+    workspace exists) these columns cannot serve; it still walks the shipped
+    ``metrics/**`` directory directly (``readShippedMetrics``, the cockpit's
+    teach-metric.ts — see that module's header for the LIBRARY/WORKSPACE split).
     """
 
     __tablename__ = "metrics"
@@ -141,6 +157,11 @@ class Metric(Base):
         String
     )  # OutputType value (scalar|series|table)
     version: Mapped[str | None] = mapped_column(String)
+    # DAT-882: the declared prose + the RAW output/dependencies sub-dicts, verbatim
+    # off the shipped YAML (see the class docstring for why raw, not re-derived).
+    description: Mapped[str | None] = mapped_column(Text)
+    output: Mapped[dict[str, Any] | None] = mapped_column(JSON)
+    dependencies: Mapped[dict[str, Any] | None] = mapped_column(JSON)
 
     # Lifecycle: workspace-persistent with supersession (NULL superseded_at = active).
     # Closed vocab: see ck_metrics_source — 'seed' is the one live writer.

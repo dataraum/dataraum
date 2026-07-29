@@ -14,16 +14,16 @@ that is the usage example.
 """
 
 from .agent import ExecutionContext, GeneratedCode, GraphAgent
-from .context import (
+from .context_format import format_served_context
+from .context_models import (
     ColumnContext,
     ConceptContext,
     GraphExecutionContext,
     GroundingContext,
     RelationshipContext,
     TableContext,
-    build_execution_context,
-    format_served_context,
 )
+from .context_reads import build_execution_context
 from .loader import GraphLoader, GraphLoadError
 from .models import (
     AssumptionBasis,

@@ -101,7 +101,11 @@ def persist_column_concepts(
     the SOLE INSERT writer. ``temporal_behavior`` is NOT seeded here (DAT-657):
     stock/flow is a data-format property, left NULL at authoring and written
     only by the data-grounded resolve pass (``entropy.resolve``), the one second
-    writer. ``meaning_status`` persists the agent's determination — 'ambiguous'
+    writer. ``stored_sign`` follows that same split (DAT-875) — the agent's
+    ``stored_sign_claim`` IS seeded here (it is the LLM witness), while the
+    resolved ``stored_sign`` stays NULL until the same resolve pass pools that
+    claim against the data-grounded sign-partition witness.
+    ``meaning_status`` persists the agent's determination — 'ambiguous'
     is declared ignorance WITH a meaning present (the meaning text states what
     is undetermined, DAT-769); a row without a meaning carries no status.
     Run-scoped upsert on ``(column_id, run_id)``; a column the agent did not
@@ -138,6 +142,12 @@ def persist_column_concepts(
                 "unit_source_column": (cc.unit_source_column or "").strip() or None,
                 "derived_formula_hypothesis": (cc.derived_formula_hypothesis or "").strip() or None,
                 "derived_formula_confidence": cc.derived_formula_confidence,
+                # The LLM sign witness (DAT-875). 'unsure' is persisted AS 'unsure',
+                # not folded to NULL: an agent that looked and abstained is a
+                # different fact from a row written before the field existed, and
+                # the pooling layer treats only the former as a present abstention.
+                "stored_sign_claim": cc.stored_sign_claim,
+                "stored_sign_claim_confidence": cc.stored_sign_claim_confidence,
                 "annotation_source": DecisionSource.LLM.value,
                 "annotated_by": annotated_by,
             }

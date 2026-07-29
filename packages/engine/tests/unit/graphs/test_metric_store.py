@@ -16,6 +16,11 @@ from sqlalchemy import func, select, update
 from sqlalchemy.orm import Session
 
 from dataraum.analysis.semantic.db_models import WorkspaceSettings
+from dataraum.core.overlay import (
+    OverlayRow,
+    reset_overlay_resolver_for_tests,
+    set_overlay_resolver,
+)
 from dataraum.graphs.agent import GraphAgent
 from dataraum.graphs.metric_graph_db_models import (
     Metric,
@@ -70,6 +75,45 @@ def test_seed_creates_metric_nodes_params_and_edges(session: Session) -> None:
     assert dpo.source == "seed"
     # Only the four working-capital metrics declare a parameter (days_in_period).
     assert _count(session, MetricParameter) == 4
+
+
+def test_seed_carries_description_and_the_raw_dag_body(session: Session) -> None:
+    """DAT-882: the typed home now carries description + the RAW output/dependencies
+    sub-dicts verbatim off the shipped YAML — the exact shape teach_metric's
+    shipped-baseline readers already expect (raw `type`, not the parsed dataclass's
+    `output_type`)."""
+    ensure_metrics_seeded(session, "finance")
+    ebitda = session.execute(select(Metric).where(Metric.graph_id == "ebitda")).scalar_one()
+    assert ebitda.description == ("Earnings before interest, taxes, depreciation, and amortization")
+    assert ebitda.output == {
+        "type": "scalar",
+        "metric_id": "ebitda",
+        "unit": "currency",
+        "decimal_places": 0,
+    }
+    assert ebitda.dependencies is not None
+    assert set(ebitda.dependencies) == {
+        "revenue",
+        "cost_of_goods_sold",
+        "operating_expense",
+        "depreciation",
+        "operating_income",
+        "ebitda",
+    }
+    # A leaf extract step keeps the RAW YAML shape (source/aggregation), not the
+    # parsed dataclass's field names.
+    revenue_step = ebitda.dependencies["revenue"]
+    assert revenue_step["type"] == "extract"
+    assert revenue_step["source"] == {
+        "standard_field": "revenue",
+        "statement": "income_statement",
+    }
+    assert revenue_step["aggregation"] == "sum"
+    # The output step keeps depends_on + output_step verbatim.
+    output_step = ebitda.dependencies["ebitda"]
+    assert output_step["type"] == "formula"
+    assert output_step["output_step"] is True
+    assert output_step["depends_on"] == ["operating_income", "depreciation"]
 
 
 def test_seed_derives_from_edges_are_the_distinct_extract_concepts(session: Session) -> None:
@@ -183,7 +227,7 @@ def test_one_malformed_metric_does_not_sink_the_seed(
         "parameters": {"p": {"type": "integer", "default": 1, "derivation": "not_a_rule"}},
     }
     monkeypatch.setattr(
-        "dataraum.graphs.metric_store.get_metric_definitions",
+        "dataraum.graphs.metric_store._shipped_metric_definitions",
         lambda _vertical: {
             "good": good,
             "bad_noname": bad_no_name,
@@ -242,3 +286,76 @@ def test_resolve_parameters_precedence_provided_then_db_then_parsed(session: Ses
     # (c) a metric with no seeded row → fall back to the parsed default.
     unseeded = _param_graph("not_seeded", default=999)
     assert agent._resolve_parameters(session, unseeded, {}) == {"days_in_period": 999}
+
+
+class TestSeedSourceDiscipline:
+    """Mutation-invisible discipline (owner round, item 4).
+
+    Without a registered overlay resolver, ``apply_overlay`` short-circuits to
+    the base unchanged — so ``get_metric_definitions`` (overlay-inclusive) and
+    ``_shipped_metric_definitions`` (shipped-only) are IDENTICAL under plain
+    resolver-less pytest, and a test that never registers a resolver cannot
+    tell a correct shipped-only seed source from a reverted overlay-inclusive
+    one (both produce the same 16 shipped metrics). These tests register a
+    resolver returning a TAUGHT metric absent from finance's shipped
+    ``metrics/**``, so the two sources diverge — reverting
+    ``ensure_metrics_seeded`` to read ``get_metric_definitions`` instead of
+    ``_shipped_metric_definitions`` must fail this test (the taught metric
+    would land in the typed table mislabeled ``source='seed'``).
+    """
+
+    def teardown_method(self) -> None:
+        reset_overlay_resolver_for_tests()
+
+    def test_a_taught_only_metric_is_never_seeded_as_seed(self, session: Session) -> None:
+        set_overlay_resolver(
+            lambda: [
+                OverlayRow(
+                    type="metric",
+                    payload={
+                        "vertical": "finance",
+                        "graph_id": "custom_taught_kpi",
+                        "metadata": {"name": "Custom Taught KPI", "category": "custom"},
+                        "output": {"type": "scalar"},
+                        "dependencies": {
+                            "revenue": {
+                                "type": "extract",
+                                "source": {"standard_field": "revenue"},
+                            },
+                        },
+                    },
+                )
+            ]
+        )
+        ensure_metrics_seeded(session, "finance")
+        graph_ids = {r.graph_id for r in session.execute(select(Metric)).scalars()}
+        assert "custom_taught_kpi" not in graph_ids
+        # The shipped baseline still seeds normally — the resolver only ADDS a
+        # taught metric to the overlay-inclusive view; it must not suppress the
+        # shipped read.
+        assert "dso" in graph_ids
+
+    def test_a_taught_override_of_a_shipped_metric_keeps_the_shipped_content(
+        self, session: Session
+    ) -> None:
+        # The overlay REPLACES ebitda's name in the overlay-inclusive view; the
+        # typed table must still carry the SHIPPED name (source='seed' means
+        # genuinely shipped, not "taught, relabeled").
+        set_overlay_resolver(
+            lambda: [
+                OverlayRow(
+                    type="metric",
+                    payload={
+                        "vertical": "finance",
+                        "graph_id": "ebitda",
+                        "metadata": {"name": "EBITDA (taught override)"},
+                        "output": {"type": "scalar"},
+                        "dependencies": {},
+                    },
+                )
+            ]
+        )
+        ensure_metrics_seeded(session, "finance")
+        row = session.execute(select(Metric).where(Metric.graph_id == "ebitda")).scalar_one()
+        assert row.name != "EBITDA (taught override)"
+        assert row.name == "EBITDA"

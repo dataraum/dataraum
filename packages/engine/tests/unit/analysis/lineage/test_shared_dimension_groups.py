@@ -44,7 +44,6 @@ def _slice(
         dimension_table_id=dim,
         dimension_attribute=attr,
         fk_role=fk_role,
-        slice_priority=1,
         slice_type="categorical",
         detection_source="llm",
     )

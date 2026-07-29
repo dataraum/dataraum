@@ -29,6 +29,7 @@ from dataraum.analysis.semantic.db_models import (
     DimensionOrdering,
     WorkspaceSettings,
 )
+from dataraum.analysis.semantic.envelope_store import load_workspace_envelope
 from dataraum.analysis.semantic.ontology import (
     OntologyConcept,
     OntologyDefinition,
@@ -176,11 +177,20 @@ def ensure_concepts_seeded(session: Session, vertical: str) -> int:
 def load_workspace_concepts(session: Session, vertical: str) -> OntologyDefinition:
     """The workspace's concept vocabulary as an ``OntologyDefinition``.
 
-    Concepts come from the typed ``concepts`` table AND conventions from the typed
-    ``conventions`` table (both config→DB homes; conventions moved in DAT-789 via
-    :func:`~dataraum.analysis.semantic.convention_store.load_workspace_conventions`).
-    The returned definition is the same shape existing prompt/context consumers already
-    accept — only the SOURCE moved off the YAML/overlay merge onto the typed tables.
+    Fully typed now (DAT-883): concepts from the ``concepts`` table, conventions from
+    the ``conventions`` table (DAT-789, via
+    :func:`~dataraum.analysis.semantic.convention_store.load_workspace_conventions`),
+    and the envelope (name/version/description) from the ``vertical_envelopes`` table
+    (via :func:`~dataraum.analysis.semantic.envelope_store.load_workspace_envelope`) —
+    no YAML read on this path at all. The returned definition is the same shape
+    existing prompt/context consumers already accept — only the SOURCE moved off the
+    YAML/overlay merge onto the typed tables.
+
+    A vertical with no seeded envelope (a framed vertical — no on-disk YAML to seed
+    from) serves ``name=effective`` (the vertical's own key: the one honest fact
+    available, not an invention) and ``version=None`` / ``description=None`` — typed-
+    absent, never a fabricated placeholder. This is the lead's north star: a framed
+    (generated) vertical is the FIRST-CLASS envelope case, not a degraded one.
 
     **Scoped to the workspace's bound active vertical (DAT-848).** The read filters
     on the ``workspace_settings.active_vertical`` binding, NOT blindly on the
@@ -213,18 +223,18 @@ def load_workspace_concepts(session: Session, vertical: str) -> OntologyDefiniti
         )
         for r in rows
     ]
-    yaml_def = OntologyLoader().load(effective)
+    envelope = load_workspace_envelope(session, effective)
     # model_construct: the convention↔concept lint is a YAML-AUTHORING check that
-    # already ran when yaml_def loaded. Re-linting here would be wrong — the active
-    # concept set is a legitimate SUBSET (a superseded concept a convention still
-    # names is stale text, not an authoring error), and re-validation would crash
-    # the runtime read the moment a referenced concept is superseded. This bypass now
-    # ALSO covers the DB conventions (DAT-789): they are served verbatim, never
-    # re-linted against the live concept set.
+    # already ran when the seed's source YAML loaded. Re-linting here would be wrong
+    # — the active concept set is a legitimate SUBSET (a superseded concept a
+    # convention still names is stale text, not an authoring error), and
+    # re-validation would crash the runtime read the moment a referenced concept is
+    # superseded. This bypass covers the DB conventions (DAT-789) and the DB envelope
+    # (DAT-883) alike: both are served verbatim, never re-linted at read time.
     return OntologyDefinition.model_construct(
-        name=yaml_def.name if yaml_def else effective,
-        version=yaml_def.version if yaml_def else "1.0.0",
-        description=yaml_def.description if yaml_def else None,
+        name=envelope.name if envelope else effective,
+        version=envelope.version if envelope else None,
+        description=envelope.description if envelope else None,
         concepts=concepts,
         conventions=load_workspace_conventions(session, effective),
     )

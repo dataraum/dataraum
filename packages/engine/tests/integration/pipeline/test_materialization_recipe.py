@@ -154,6 +154,14 @@ class TestStronglyTypedRecipe:
         ``raw_type``s; the CSV loader stages VARCHAR, so flip one column to a
         non-VARCHAR type to model a strongly-typed source, then drive the branch
         directly and assert the recipe is persisted + run-stamped.
+
+        The flipped metadata (``BIGINT``) disagrees with the CSV-staged raw
+        column's real DuckDB type (``VARCHAR``) — the DAT-748 physical
+        cross-check catches exactly this and ADOPTS the live type (VARCHAR is
+        present, just not what the metadata claimed — the live DESCRIBE is
+        ground truth, per the owner ruling), so the recipe DDL still shapes up
+        the same (``CREATE OR REPLACE TABLE`` / ``AS SELECT`` / no
+        quarantine); only the per-column CAST differs.
         """
         raw_id = _seed_source(duckdb_conn, session, simple_csv)
         raw_table = session.get(Table, raw_id)
@@ -169,7 +177,7 @@ class TestStronglyTypedRecipe:
             table_ids=[raw_id],
             run_id="run-strong",
         )
-        typed_id, _ = TypingPhase()._promote_strongly_typed(raw_table, ctx)
+        typed_id, _decisions, _warnings = TypingPhase()._promote_strongly_typed(raw_table, ctx)
 
         recipes = _recipes(session, typed_id, "run-strong")
         assert "typed" in recipes

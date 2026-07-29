@@ -1,13 +1,14 @@
-"""Context builder for graph execution (DAT-734 — graph-shaped).
+"""Served-context assembly (DAT-869 split of ``graphs/context.py``).
 
-Assembles the GraphAgent's served context by GRAPH TRAVERSAL over the
-operating-model property graph (ADR-0021): concept → part_of subconcepts →
-groundings (grounded_by) → columns (uses), with disjoint_with /
-reconciles_with / conformed-dimension / references / materializes_as served AS
-STRUCTURE. The knowledge sections with no graph element yet — value sets,
-drivers, validation results, business cycles — are assembled from their typed
-rows alongside the traversal core (conventions ride their own prompt slot).
-``format_served_context`` renders the whole thing for the grounding prompt.
+``build_execution_context`` assembles the GraphAgent's served context by GRAPH
+TRAVERSAL over the operating-model property graph (ADR-0021): concept →
+part_of subconcepts → groundings (grounded_by) → columns (uses), with
+disjoint_with / reconciles_with / conformed-dimension / references /
+materializes_as served AS STRUCTURE. The knowledge sections with no graph
+element yet — value sets, drivers, validation results, business cycles — are
+assembled from their typed rows alongside the traversal core (conventions ride
+their own prompt slot). ``context_format.format_served_context`` renders the
+result for the grounding prompt.
 """
 
 from __future__ import annotations
@@ -20,415 +21,34 @@ from sqlalchemy import select, text
 from sqlalchemy.orm import Session
 
 from dataraum.core.logging import get_logger
+from dataraum.graphs.context_models import (
+    _NON_CATEGORICAL_ROLES,
+    _VALUE_SET_COMPLETE_MAX,
+    BusinessCycleContext,
+    ColumnContext,
+    ConceptContext,
+    ConceptReconciliation,
+    ConformedDimensionContext,
+    CycleStageContext,
+    DriverContext,
+    EnrichedViewContext,
+    EntityFlowContext,
+    GraphExecutionContext,
+    GroundingContext,
+    GroundingUseContext,
+    RelationshipContext,
+    ReportingCalendarContext,
+    SliceContext,
+    TableContext,
+    ValidationContext,
+)
 
 if TYPE_CHECKING:
     import duckdb
 
     from dataraum.analysis.cycles.health import HealthReport
-    from dataraum.graphs.field_mapping import ColumnMeaning
 
 logger = get_logger(__name__)
-
-
-# =============================================================================
-# Context Models
-# =============================================================================
-
-
-@dataclass
-class ColumnContext:
-    """One column's STRUCTURAL + quality facts for the served context (DAT-734).
-
-    Business semantics (meaning, unit source, temporal behaviour prose) are NOT
-    here — their one home is the column-meanings feed (``field_mappings``,
-    DAT-769), served in its own prompt block. This carries what that feed does
-    not: physical type, role, the graph-resolved materialization/anchor, value
-    enumeration, ranges, derivations, and quality/readiness flags.
-    """
-
-    column_id: str
-    column_name: str
-    table_name: str
-
-    # Type info
-    data_type: str | None = None
-    semantic_role: str | None = None  # key, measure, dimension, timestamp, etc.
-
-    # Graph-served semantics (og_columns, DAT-734): the resolved materializes_as
-    # verdict ('flow' | 'stock' — witness posterior over concept prior) and the
-    # measure's anchor event-time axis (witness axis over declared anchor).
-    materialization: str | None = None
-    anchor_time_axis: str | None = None
-
-    # Statistical metrics
-    null_ratio: float | None = None
-    cardinality_ratio: float | None = None
-
-    # Value enumeration (DAT-616): the freq-ordered value-set the SQL agent
-    # grounds metric predicates in, instead of improvising an ILIKE filter.
-    # `top_values` is [{value, count, percentage}] capped at the profiler's
-    # top_k; it is the COMPLETE enumeration iff `distinct_count <= len(top_values)`.
-    distinct_count: int | None = None
-    top_values: list[dict[str, Any]] = field(default_factory=list)
-
-    # DAT-616: measure range/sign — grounds signed measures (a min < 0 tells the agent
-    # the column carries negatives, e.g. debit/credit, so a bare SUM may not be the metric).
-    numeric_min: float | None = None
-    numeric_max: float | None = None
-
-    # Temporal metrics
-    is_stale: bool | None = None
-    detected_granularity: str | None = None
-
-    # Temporal bounds (from TemporalColumnProfile)
-    min_timestamp: str | None = None
-    max_timestamp: str | None = None
-    # Coverage window + worst discontinuity — promoted from the temporal profile
-    # (DAT-783) so the agent knows a time axis's span and whether it's gappy.
-    span_days: float | None = None
-    largest_gap_days: float | None = None
-
-    # Derived column info from correlation analysis
-    is_derived: bool = False
-    derived_formula: str | None = None  # e.g., "quantity * unit_price"
-
-    # Quality flags
-    flags: list[str] = field(default_factory=list)
-
-    # Entropy scores (from entropy layer)
-    entropy_scores: dict[str, Any] | None = None  # Layer scores and composite
-
-
-@dataclass
-class TableContext:
-    """Context for a single table."""
-
-    table_id: str
-    table_name: str
-    duckdb_name: str | None = None  # Actual DuckDB table name (e.g., "sales_csv__orders")
-    row_count: int | None = None
-    column_count: int = 0
-
-    # Classification
-    table_role: str | None = None  # TableRole: fact | periodic_snapshot | dimension
-    entity_type: str | None = None
-
-    # From TableEntity
-    table_description: str | None = None
-    grain_columns: list[str] = field(default_factory=list)
-    # DAT-565: all event-time axes — [{"column", "aspect", "note"}, ...].
-    time_columns: list[dict[str, Any]] = field(default_factory=list)
-    # DAT-565: recurring identities (would-be FKs) — [{"column", "note"}, ...].
-    identity_columns: list[dict[str, Any]] = field(default_factory=list)
-
-    # Columns
-    columns: list[ColumnContext] = field(default_factory=list)
-
-
-@dataclass
-class RelationshipContext:
-    """One FK edge, served from the graph's ``refs`` relation (og_references).
-
-    Conformed-dimension fact↔fact pairs are excluded by the element view's own
-    typing (DAT-756) — they surface as :class:`ConformedDimensionContext`
-    instead, never as an FK.
-    """
-
-    from_table: str
-    from_column: str
-    to_table: str
-    to_column: str
-    relationship_type: str
-    cardinality: str | None = None
-    confidence: float = 0.0
-    # The relationships confirmation vocabulary (unconfirmed | judge | user |
-    # keeper) — the agent's fall-loud gate for membership-subquery blueprints.
-    confirmation_source: str | None = None
-
-    # DAT-616: joining on this edge fans out (one row matches many) → SUMming an
-    # additive measure across the join double-counts. The second silent-wrong vector.
-    introduces_duplicates: bool | None = None
-
-
-@dataclass
-class SliceContext:
-    """Available slice dimension for filtering/grouping."""
-
-    column_name: str
-    table_name: str
-    priority: int = 0  # Higher = more recommended for slicing
-    value_count: int = 0  # Number of distinct values
-    business_context: str | None = None  # e.g., "Regional breakdown"
-    distinct_values: list[str] = field(default_factory=list)  # Actual categorical values
-
-
-@dataclass
-class DriverContext:
-    """One measure's driver ranking, served to the GraphAgent (DAT-616).
-
-    The engine GraphAgent loaded NO drivers before this — the asymmetry the cockpit
-    answer agent never had (`<drivers>`, DAT-548). `interesting_slices` are the actual
-    dimension VALUES that move the measure (value + signed effect + support) — a
-    high-signal HINT for which values carry data, NOT the complete value-set (recall<1;
-    the value-set is `top_values`). `target_type` grounds the aggregation (flow→SUM,
-    stock→end-of-period, ratio). Mirrors the cockpit `projectDriverRanking`.
-
-    `status`/`abstain_reason` (DAT-859) carry the persisted abstention pair verbatim
-    (plain strings — the DB row's own vocabulary, not the drivers module's enum):
-    `_append_drivers` is the ONE read-side convention point that skips a non-
-    "measured" ranking, so it never renders as prompt content; this dataclass still
-    carries it (loaded from every row) for that check to read.
-    """
-
-    measure_label: str
-    target_type: str  # flow | stock | ratio; "" when abstained with no resolved type
-    grain: str  # row | entity
-    entity: str | None = None
-    status: str = "measured"  # measured | abstained (DAT-859)
-    abstain_reason: str | None = None
-    ranked_dimensions: list[dict[str, Any]] = field(default_factory=list)  # [{dimension, gain}]
-    interesting_slices: list[dict[str, Any]] = field(
-        default_factory=list
-    )  # [{dimension, value, effect, support}]
-    secondary_dimensions: list[dict[str, Any]] = field(default_factory=list)
-
-
-@dataclass
-class CycleStageContext:
-    """A stage within a business cycle."""
-
-    stage_name: str
-    stage_order: int
-    indicator_column: str | None = None
-    indicator_values: list[str] = field(default_factory=list)
-    completion_rate: float | None = None
-
-
-@dataclass
-class EntityFlowContext:
-    """An entity flowing through a business cycle."""
-
-    entity_type: str  # "customer", "vendor"
-    entity_column: str  # "customer_id"
-    entity_table: str  # "customers"
-    fact_table: str | None = None
-    relationship_type: str | None = None
-
-
-@dataclass
-class BusinessCycleContext:
-    """Detected business cycle with full metadata."""
-
-    cycle_name: str
-    cycle_type: str  # e.g., "order_to_cash", "procure_to_pay"
-    # Direction axis (DAT-856): the declared family + resolved direction. Both None for
-    # a non-family cycle; both set for a family cycle (a decided label, or 'undetermined'
-    # — the honest detected-but-undirected state, rendered as such, never a guessed label).
-    family: str | None = None
-    direction: str | None = None
-    tables_involved: list[str] = field(default_factory=list)
-    completion_rate: float | None = None  # What % of cycles complete
-    description: str | None = None
-    business_value: str = "medium"
-    confidence: float = 0.0
-    stages: list[CycleStageContext] = field(default_factory=list)
-    entity_flows: list[EntityFlowContext] = field(default_factory=list)
-    # Bare parts (DAT-733): the status column + its table kept SEPARATE, not
-    # pre-combined — the default validity-scope resolver renders a bare-column
-    # predicate over the grounding's relation, and the narrative re-qualifies it
-    # (``<status_table>.<status_column>``) for reading.
-    status_table: str | None = None
-    status_column: str | None = None
-    # The served value that marks a cycle complete (the scope's right-hand side).
-    completion_value: str | None = None
-
-    # Volume metrics (from DetectedBusinessCycle)
-    total_records: int | None = None
-    completed_cycles: int | None = None
-    evidence: list[str] = field(default_factory=list)
-
-
-@dataclass
-class ValidationContext:
-    """Result of a validation check."""
-
-    validation_id: str
-    status: str  # passed, failed, skipped, error
-    severity: str  # info, warning, error, critical
-    passed: bool
-    message: str
-    details: dict[str, Any] | None = None  # recomputed verdict: deviation/magnitude/tolerance
-
-
-@dataclass
-class EnrichedViewContext:
-    """A pre-built enriched view joining fact + dimension tables."""
-
-    view_name: str
-    fact_table: str
-    dimension_columns: list[str] = field(default_factory=list)
-    is_grain_verified: bool = False
-    # Base dimension TABLES the view derives from (og_derived_from, DAT-734) —
-    # the graph's derived_from edges served as structure alongside the joined
-    # column names above.
-    dimension_tables: list[str] = field(default_factory=list)
-
-
-# =============================================================================
-# Graph-served structure (DAT-734 — the operating-model property graph read)
-# =============================================================================
-
-
-@dataclass
-class GroundingUseContext:
-    """One column a grounding touches (the ``uses`` edge, provenance contract v2)."""
-
-    column_name: str
-    table_name: str
-    role: str  # 'measure' | 'filter'
-
-
-@dataclass
-class GroundingContext:
-    """One reified grounding commitment (a ``grounding_node``, DAT-727).
-
-    The N-ary fact served AS STRUCTURE: the relation it reads, the filter, the
-    value expression, and the columns it ``uses`` — never recovered from SQL
-    text. A retained failure is served discriminated (``failed`` + mode/reason):
-    "why is this concept ungrounded?" is part of the served knowledge.
-    """
-
-    snippet_id: str
-    concept: str
-    relation: str | None
-    select_expr: str | None
-    where: list[str] = field(default_factory=list)
-    statement: str | None = None
-    aggregation: str | None = None
-    description: str | None = None
-    failed: bool = False
-    failure_mode: str | None = None
-    failure_reason: str | None = None
-    uses: list[GroundingUseContext] = field(default_factory=list)
-
-
-@dataclass
-class ConceptReconciliation:
-    """One ``reconciles_with`` verdict on a concept (concept_edges).
-
-    The landed shape (owner-ruled) derives concept-grain SELF-LOOPS for
-    multi-grounding tie-out (``partner == concept``); seed/declared rows may
-    name a distinct partner concept.
-    """
-
-    partner: str
-    tolerance: float | None = None
-
-
-@dataclass
-class ConceptContext:
-    """One vocabulary concept with its graph neighbourhood (DAT-734).
-
-    The traversal core: definition (typed ``concepts`` row + ontology garnish),
-    ``part_of`` subconcepts/parents (+ bounded transitive ancestry),
-    ``disjoint_with``, ``reconciles_with``, and the concept's groundings
-    (``grounded_by`` → ``uses``) — multi-grounding served first-class.
-    """
-
-    name: str
-    kind: str | None = None
-    description: str | None = None
-    indicators: list[str] = field(default_factory=list)
-    exclude_patterns: list[str] = field(default_factory=list)
-    part_of_children: list[str] = field(default_factory=list)  # subconcepts (1-hop)
-    part_of_parents: list[str] = field(default_factory=list)  # 1-hop targets
-    part_of_ancestry: list[str] = field(default_factory=list)  # transitive, depth 2..4
-    disjoint_with: list[str] = field(default_factory=list)
-    reconciles_with: list[ConceptReconciliation] = field(default_factory=list)
-    groundings: list[GroundingContext] = field(default_factory=list)
-
-
-@dataclass
-class ConformedDimensionContext:
-    """Two facts sharing a dimension AXIS (og_conformed_dimension, DAT-756).
-
-    The alignable drill-across surface, served as structure: both facts expose
-    the same resolved (dimension table, attribute) identity. Unordered pair —
-    one row per axis-sharing pair, not per direction.
-    """
-
-    table_a: str
-    table_b: str
-    dimension_table: str
-    attribute: str | None = None
-
-
-@dataclass
-class GraphExecutionContext:
-    """Complete context for graph execution (DAT-734 — graph-shaped).
-
-    The GraphAgent's served knowledge: the physical relations, the
-    operating-model graph's structure (concepts + groundings, references,
-    conformed axes), and the typed knowledge sections with no graph element yet
-    (value sets ride the columns; drivers, business cycles, validation results
-    are their own rows; conventions ride their own prompt slot).
-    """
-
-    # Tables and their metadata (incl. per-column value sets + readiness flags)
-    tables: list[TableContext] = field(default_factory=list)
-
-    # FK edges from the graph's refs relation (og_references — conformed pairs
-    # excluded by the element view's typing, DAT-756).
-    relationships: list[RelationshipContext] = field(default_factory=list)
-
-    # Available slice dimensions (from slicing analysis)
-    available_slices: list[SliceContext] = field(default_factory=list)
-
-    # Driver rankings per measure (DAT-616): which dims/values move each measure +
-    # target_type. The engine GraphAgent served none before — the cockpit/engine
-    # asymmetry this closes.
-    drivers: list[DriverContext] = field(default_factory=list)
-
-    # Business cycles (from cycles analysis)
-    business_cycles: list[BusinessCycleContext] = field(default_factory=list)
-
-    # Cycle health (from cycles health computation)
-    cycle_health: HealthReport | None = None
-
-    # Validation results (from validation analysis)
-    validations: list[ValidationContext] = field(default_factory=list)
-
-    # DAT-853 abstention at the SECTION grain: "operating-model run absent —
-    # cycles/validations never analyzed" and "graph unreachable — refs not
-    # readable" must stay distinguishable from genuinely-empty results.
-    # format_served_context renders an explicit not-analyzed stub for the False
-    # cases instead of omitting the section (a served document that looks
-    # byte-identical either way is the silent-substitute defect). Defaults are
-    # False — absence is assumed until the builder proves otherwise.
-    operating_model_analyzed: bool = False
-    graph_readable: bool = False
-
-    # Enriched views (pre-joined fact + dimension tables)
-    enriched_views: list[EnrichedViewContext] = field(default_factory=list)
-
-    # The traversal core (DAT-734): each vocabulary concept with its part_of /
-    # disjoint_with / reconciles_with neighbourhood and its groundings
-    # (grounded_by → uses), read from the operating-model property graph.
-    concepts: list[ConceptContext] = field(default_factory=list)
-
-    # Conformed dimension axes (og_conformed_dimension, DAT-756) — served as
-    # structure: which facts drill across on which shared (dim table, attribute).
-    conformed_dimensions: list[ConformedDimensionContext] = field(default_factory=list)
-
-    # Column meaning feed (meaning + measurement facts, DAT-769) for metrics
-    field_mappings: list[ColumnMeaning] = field(default_factory=list)
-
-    # Vertical conventions for the extraction consumer (DAT-645): verbatim,
-    # LLM-facing domain guidance (e.g. the sign/natural-balance rule) the SQL
-    # agent applies when authoring a measure. Opaque to the engine — see
-    # OntologyConvention. Empty string when the vertical declares none.
-    conventions: str = ""
-
 
 # =============================================================================
 # Context Builder
@@ -478,8 +98,9 @@ def build_execution_context(
     from dataraum.analysis.correlation.db_models import DerivedColumn
     from dataraum.analysis.cycles.db_models import DetectedBusinessCycle
     from dataraum.analysis.semantic.db_models import SemanticAnnotation, TableEntity
+    from dataraum.analysis.served_columns import served_columns
+    from dataraum.analysis.slicing.curation import curated_slices
     from dataraum.analysis.slicing.db_models import SliceDefinition
-    from dataraum.analysis.slicing.models import CURATED_SLICE_BUDGET
     from dataraum.analysis.statistics.db_models import (
         StatisticalProfile,
     )
@@ -506,9 +127,15 @@ def build_execution_context(
     tables = session.execute(tables_stmt).scalars().all()
     table_map = {t.table_id: t for t in tables}
 
-    # 2. Load all columns for these tables
+    # 2. Load all columns for these tables. Mint-owned surrogate join keys
+    # (``_sk__*``, DAT-277) are excluded — they are not business columns and
+    # must not reach the grounding prompt's column list/value-set rendering
+    # (DAT-878). Relationship rendering is unaffected: ``_read_references``
+    # resolves endpoint names through its OWN vertex map (``_load_graph_reads``
+    # / ``og_columns``), a separate read from this one — a surrogate pair still
+    # surfaces there as the join evidence it legitimately is.
     columns_stmt = select(Column).where(Column.table_id.in_(table_ids))
-    columns = session.execute(columns_stmt).scalars().all()
+    columns = served_columns(session.execute(columns_stmt).scalars().all())
     columns_by_table: dict[str, list[Column]] = {}
     for col in columns:
         if col.table_id not in columns_by_table:
@@ -627,22 +254,18 @@ def build_execution_context(
     # promoted catalog run (the begin_session run that derived them). With no
     # resolved catalog run this fails CLOSED (a cross-run read would mix in
     # superseded definitions — the DAT-429 isolation discipline). CURATED read
-    # (DAT-725): the catalog is the full deterministic inventory, so this
-    # LLM-facing context takes the top-priority budget in DB order — ascending,
-    # 1 = most interesting (the old in-Python ``reverse=True`` sort put the
-    # LEAST interesting first; harmless while the catalog was elected-only,
-    # load-bearing wrong once floor-priority structural rows exist).
+    # (DAT-879): fetch the whole run-scoped inventory and let ``curated_slices``
+    # decide — judged rows, ordered by measured relevance, with the count of
+    # what was left out carried alongside so the formatter can SAY it. The old
+    # ``LIMIT CURATED_SLICE_BUDGET`` cut here silently, and past the judged rows
+    # it cut alphabetically.
     slice_contexts: list[SliceContext] = []
-    slice_stmt = (
-        select(SliceDefinition)
-        .where(SliceDefinition.table_id.in_(table_ids))
-        .order_by(SliceDefinition.slice_priority, SliceDefinition.column_name)
-        .limit(CURATED_SLICE_BUDGET)
-    )
+    slice_stmt = select(SliceDefinition).where(SliceDefinition.table_id.in_(table_ids))
     if run_id is not None:
         slice_stmt = slice_stmt.where(SliceDefinition.run_id == run_id)
-    slice_defs = [] if run_id is None else session.execute(slice_stmt).scalars().all()
-    for slice_def in slice_defs:
+    slice_defs = [] if run_id is None else list(session.execute(slice_stmt).scalars().all())
+    curated = curated_slices(slice_defs)
+    for slice_def in curated.served:
         slice_col = next((c for c in columns if c.column_id == slice_def.column_id), None)
         slice_tbl = table_map.get(slice_def.table_id)
         if slice_col and slice_tbl:
@@ -650,12 +273,14 @@ def build_execution_context(
                 SliceContext(
                     column_name=slice_def.column_name or slice_col.column_name,
                     table_name=slice_tbl.table_name,
-                    priority=slice_def.slice_priority,
+                    interest=slice_def.slice_interest,
+                    relevance=slice_def.slice_relevance,
                     value_count=slice_def.value_count or 0,
                     business_context=slice_def.business_context,
                     distinct_values=slice_def.distinct_values or [],
                 )
             )
+    slice_catalog_note = curated.note
 
     # 10c. Load driver rankings (DAT-616) — begin_session value-layer artifact
     # (DAT-546), run-versioned; same fail-closed catalog-run scoping as the slices.
@@ -781,7 +406,14 @@ def build_execution_context(
     from dataraum.analysis.validation.db_models import ValidationResultRecord
     from dataraum.analysis.validation.evaluate import evaluate_validation
 
-    val_specs = load_all_validation_specs(vertical, session) if vertical else {}
+    # Specs are read at the SAME run as the results below (DAT-877): the results are
+    # scoped to ``om_run_id``, so reading the vocabulary head-free would join this
+    # run's results against the PREVIOUS generation's specs — a newly-induced
+    # validation_id silently drops at the spec lookup, and an id present in both
+    # generations with a drifted tolerance/severity gets evaluated against the stale
+    # one. Unconditional is safe post-promote: the promoted run's staged set IS the
+    # materialized vocabulary.
+    val_specs = load_all_validation_specs(vertical, session, run_id=om_run_id) if vertical else {}
     validation_contexts: list[ValidationContext] = []
     # No specs (no vertical) ⇒ every row would be skipped at the spec lookup, so
     # skip the read entirely rather than scan validation_results for nothing.
@@ -1006,6 +638,11 @@ def build_execution_context(
                     anchor_time_axis=(
                         graph_reads.anchor_by_column.get(col.column_id) if graph_reads else None
                     ),
+                    stored_sign=(
+                        graph_reads.stored_sign_by_column.get(col.column_id)
+                        if graph_reads
+                        else None
+                    ),
                     null_ratio=null_ratio,
                     cardinality_ratio=cardinality_ratio,
                     distinct_count=distinct_count,
@@ -1061,8 +698,10 @@ def build_execution_context(
 
     return GraphExecutionContext(
         tables=table_contexts,
+        reporting_calendar=_reporting_calendar(session, workspace_id),
         relationships=relationships,
         available_slices=slice_contexts,
+        slice_catalog_note=slice_catalog_note,
         drivers=driver_contexts,
         business_cycles=business_cycle_contexts,
         cycle_health=cycle_health_report,
@@ -1104,7 +743,43 @@ class _GraphReads:
     conformed_dimensions: list[ConformedDimensionContext] = field(default_factory=list)
     materialization_by_column: dict[str, str] = field(default_factory=dict)
     anchor_by_column: dict[str, str] = field(default_factory=dict)
+    stored_sign_by_column: dict[str, str] = field(default_factory=dict)
     dimension_tables_by_view: dict[str, list[str]] = field(default_factory=dict)
+
+
+def _reporting_calendar(
+    session: Session, workspace_id: str | None
+) -> ReportingCalendarContext | None:
+    """The workspace's reporting calendar for the served context (DAT-887).
+
+    ONE home for the calendar read: ``boundary_resolver`` owns it (it is the module
+    that binds against it), and this serves the same values to the author so the
+    prompt's instruction to leave the period axis alone names a window the author
+    can actually see. ``None`` — served as absence, never as a fabricated calendar
+    year — when there is no read surface or no calendar on it.
+    """
+    read_schema = _graph_read_schema(session, workspace_id)
+    if read_schema is None:
+        return None
+    from dataraum.graphs.boundary_resolver import read_reporting_calendar
+
+    # Same degrade-to-None guard the graph reads carry: a read schema materialized
+    # before DAT-730 has no og_period_grain, and an UndefinedTable raised here would
+    # abort the transaction and kill the ENTIRE context build for every table — not
+    # just this one section. Serving no calendar is the correct degraded state; the
+    # binding then abstains loudly rather than assuming a calendar year.
+    try:
+        calendar = read_reporting_calendar(session, read_schema)
+    except Exception as exc:  # noqa: BLE001 - degrade-to-absent IS the contract
+        logger.warning("reporting_calendar_unreadable", error=str(exc))
+        session.rollback()
+        return None
+    if calendar is None:
+        return None
+    return ReportingCalendarContext(
+        fiscal_year_start_month=calendar.fiscal_year_start_month,
+        source=calendar.source,
+    )
 
 
 def _graph_read_schema(session: Session, workspace_id: str | None) -> str | None:
@@ -1140,7 +815,8 @@ def _read_og_columns(session: Session, read_schema: str) -> dict[str, Any]:
     """Vertex map ``column_id → row`` from ``og_columns`` (name, table, semantics)."""
     rows = session.execute(
         text(
-            f"SELECT column_id, table_id, column_name, materialization, anchor_time_axis\n"  # noqa: S608
+            f"SELECT column_id, table_id, column_name, materialization, anchor_time_axis,"  # noqa: S608
+            f" stored_sign\n"
             f'FROM "{read_schema}".og_columns'
         )
     ).all()
@@ -1172,6 +848,77 @@ def _read_concept_edges(session: Session, read_schema: str) -> list[Any]:
             )
         ).all()
     )
+
+
+def _read_reconciliation_rows(session: Session, read_schema: str) -> dict[tuple[str, str], Any]:
+    """The last promoted run's evaluated tie-out, folded per ``(concept, partner)``.
+
+    Read from ``current_concept_reconciliation``, so this is what the last
+    PROMOTED operating_model run observed — the in-run metrics phase assembles
+    its context before it writes this run's own rows, and a run in flight is
+    never readable as the current head anyway (ADR-0008/0010).
+
+    Folded here rather than in the assembly because the fold is a property of
+    the rows: an assertion covering several grounding pairs reports how many
+    were comparable and the WIDEST divergence among them, which is the pair that
+    puts the tie-out most in question. When nothing was comparable, the shared
+    abstention reason is carried only if every pair agreed on it — the per-pair
+    detail stays in the table rather than being guessed at here.
+    """
+    rows = session.execute(
+        text(  # noqa: S608 - read_schema is an internal identifier, not user input
+            "SELECT from_concept, to_concept, status, verdict, abstain_reason,"
+            " delta, relative_delta\n"
+            f'FROM "{read_schema}".current_concept_reconciliation\n'
+            # The widest-divergence pick below breaks ties on FIRST seen, so an
+            # unordered read lets two pairs with equal relative deltas and
+            # opposite signs swap the served number between runs on identical
+            # data. Physical row order is not a tie-break.
+            "ORDER BY from_concept, to_concept, pair_key"
+        )
+    ).all()
+
+    folded: dict[tuple[str, str], dict[str, Any]] = {}
+    for r in rows:
+        key = (str(r.from_concept), str(r.to_concept))
+        acc = folded.setdefault(
+            key,
+            {
+                "pairs": 0,
+                "evaluated_pairs": 0,
+                "status": None,
+                "verdict": None,
+                "abstain_reason": None,
+                "delta": None,
+                "relative_delta": None,
+                "reasons": set(),
+            },
+        )
+        acc["pairs"] += 1
+        if r.status != "evaluated":
+            acc["reasons"].add(r.abstain_reason)
+            continue
+        acc["evaluated_pairs"] += 1
+        acc["status"] = "evaluated"
+        widest = acc["relative_delta"]
+        current = float(r.relative_delta) if r.relative_delta is not None else 0.0
+        if widest is None or current > widest:
+            acc["relative_delta"] = current
+            acc["delta"] = float(r.delta) if r.delta is not None else None
+            acc["verdict"] = r.verdict
+
+    for acc in folded.values():
+        reasons = acc.pop("reasons")
+        if acc["status"] is None:
+            acc["status"] = "abstained"
+            acc["abstain_reason"] = next(iter(reasons)) if len(reasons) == 1 else None
+
+    # A partner assertion is stored as TWO mirrored edges but evaluated once,
+    # under the name-ordered endpoints. Register the mirror key so whichever
+    # direction an edge row reads from finds the one evaluation.
+    for (frm, to), acc in list(folded.items()):
+        folded.setdefault((to, frm), acc)
+    return folded
 
 
 def _read_part_of_ancestry(session: Session, read_schema: str) -> dict[str, list[str]]:
@@ -1334,15 +1081,21 @@ def _read_conformed(
     rows = session.execute(
         text(
             f"SELECT DISTINCT from_table_id, to_table_id, dimension_table_id,\n"  # noqa: S608
-            f"       dimension_attribute\n"
+            f"       dimension_attribute, conformed_group, confirmation_source,\n"
+            f"       from_role, to_role\n"
             f'FROM "{read_schema}".og_conformed_dimension'
         )
     ).all()
-    seen: set[tuple[str, str, str, str | None]] = set()
+    seen: set[tuple[str, str, str, str | None, str | None]] = set()
     out: list[ConformedDimensionContext] = []
     for r in rows:
         a_id, b_id = sorted((str(r.from_table_id), str(r.to_table_id)))
-        key = (a_id, b_id, str(r.dimension_table_id), r.dimension_attribute)
+        # The pair is normalized by sorting the ids, so the roles must follow that
+        # swap — otherwise each fact would be shown joining on the OTHER's column.
+        role_a, role_b = (
+            (r.from_role, r.to_role) if a_id == str(r.from_table_id) else (r.to_role, r.from_role)
+        )
+        key = (a_id, b_id, str(r.dimension_table_id), r.dimension_attribute, r.conformed_group)
         if key in seen:
             continue
         seen.add(key)
@@ -1357,10 +1110,25 @@ def _read_conformed(
             continue
         out.append(
             ConformedDimensionContext(
-                table_a=a[0], table_b=b[0], dimension_table=dim[0], attribute=r.dimension_attribute
+                table_a=a[0],
+                table_b=b[0],
+                dimension_table=dim[0],
+                attribute=r.dimension_attribute,
+                conformed_group=r.conformed_group,
+                confirmation_source=r.confirmation_source,
+                role_a=role_a,
+                role_b=role_b,
             )
         )
-    out.sort(key=lambda c: (c.table_a, c.table_b, c.dimension_table, c.attribute or ""))
+    out.sort(
+        key=lambda c: (
+            c.table_a,
+            c.table_b,
+            c.dimension_table,
+            c.attribute or "",
+            c.conformed_group or "",
+        )
+    )
     return out
 
 
@@ -1398,6 +1166,7 @@ def _assemble_concept_contexts(
     use_rows: list[Any],
     provenance: dict[str, Any],
     tables: dict[str, tuple[str, str | None]],
+    reconciliations: dict[tuple[str, str], Any],
 ) -> list[ConceptContext]:
     """Fold the traversal reads into per-concept contexts (deterministic order).
 
@@ -1494,10 +1263,20 @@ def _assemble_concept_contexts(
             # Self-loop (from == to) = the derived multi-grounding tie-out; a
             # cross pair (seed/declared, both directions stored) reads from the
             # from-side. Either way one row per (concept, partner).
+            # The evaluated state rides the assertion it belongs to. Absent =
+            # never evaluated, which the renderer must not report as agreement.
+            observed = reconciliations.get((frm, to), {})
             reconciles.setdefault(frm, []).append(
                 ConceptReconciliation(
                     partner=to,
                     tolerance=float(e.tolerance) if e.tolerance is not None else None,
+                    status=observed.get("status"),
+                    verdict=observed.get("verdict"),
+                    abstain_reason=observed.get("abstain_reason"),
+                    observed_delta=observed.get("delta"),
+                    relative_delta=observed.get("relative_delta"),
+                    pairs=observed.get("pairs", 0),
+                    evaluated_pairs=observed.get("evaluated_pairs", 0),
                 )
             )
 
@@ -1550,11 +1329,19 @@ def _load_graph_reads(
         grounding_rows = _read_grounding_rows(session, read_schema)
         use_rows = _read_use_rows(session, read_schema)
         provenance = _read_grounding_provenance(session, read_schema)
+        reconciliations = _read_reconciliation_rows(session, read_schema)
         references = _read_references(session, read_schema, tables, columns, table_ids)
         conformed = _read_conformed(session, read_schema, tables)
         derived = _read_derived_from(session, read_schema, tables)
         concepts = _assemble_concept_contexts(
-            concept_rows, edge_rows, ancestry, grounding_rows, use_rows, provenance, tables
+            concept_rows,
+            edge_rows,
+            ancestry,
+            grounding_rows,
+            use_rows,
+            provenance,
+            tables,
+            reconciliations,
         )
         return _GraphReads(
             concepts=concepts,
@@ -1565,6 +1352,9 @@ def _load_graph_reads(
             },
             anchor_by_column={
                 cid: str(r.anchor_time_axis) for cid, r in columns.items() if r.anchor_time_axis
+            },
+            stored_sign_by_column={
+                cid: str(r.stored_sign) for cid, r in columns.items() if r.stored_sign
             },
             dimension_tables_by_view=derived,
         )
@@ -1651,361 +1441,6 @@ def _column_readiness_to_dict(result: Any) -> dict[str, Any]:
     }
 
 
-# =============================================================================
-# Served-Context Formatter (DAT-734 — the graph-shaped grounding document)
-# =============================================================================
-
-
-def format_served_context(
-    context: GraphExecutionContext,
-    source_name: str = "dataset",
-) -> str:
-    """Render the served context for the grounding prompt (``{rich_context}``).
-
-    Graph structure served AS STRUCTURE — the concept graph (definitions,
-    part_of/disjoint/reconciles edges, groundings with their used columns), FK
-    references, conformed axes, materialization — plus the typed knowledge
-    sections with no graph element yet: value sets, drivers, business
-    processes, validation results (conventions ride their own prompt slot).
-
-    Args:
-        context: GraphExecutionContext from build_execution_context()
-        source_name: Human-readable name for the data source
-
-    Returns:
-        Formatted markdown metadata document
-    """
-    lines: list[str] = []
-
-    # --- Overview ---
-    lines.append(f"# Data Catalog: {source_name}")
-    lines.append("")
-    total_columns = sum(t.column_count for t in context.tables)
-    lines.append(f"{len(context.tables)} tables, {total_columns} columns.")
-    lines.append("")
-
-    # --- Business Concepts (the traversal core, DAT-734) ---
-    _append_concepts(lines, context)
-
-    # --- Tables ---
-    lines.append("## Tables")
-
-    for table in context.tables:
-        table_type = table.table_role.upper() if table.table_role else ""
-
-        display_name = table.duckdb_name or table.table_name
-        type_label = f" ({table_type})" if table_type else ""
-        lines.append(f"\n### {display_name}{type_label}")
-
-        # Entity + description — independent fields; a table can carry a description
-        # without an entity_type (don't nest one under the other, or the description
-        # is dropped whenever entity_type is absent).
-        if table.entity_type or table.table_description:
-            desc_parts = []
-            if table.entity_type:
-                desc_parts.append(f"**Entity**: {table.entity_type}")
-            if table.table_description:
-                desc_parts.append(table.table_description)
-            lines.append(" — ".join(desc_parts))
-
-        # Grain, rows, time column
-        meta_parts = []
-        if table.grain_columns:
-            meta_parts.append(f"**Grain**: {', '.join(table.grain_columns)}.")
-        if table.row_count:
-            meta_parts.append(f"**Rows**: {table.row_count:,}.")
-        # Event-time axes (DAT-565): the answer agent picks the lens per question,
-        # so render each with its granularity/range and one-line note. EVENT-role
-        # only (DAT-780) — an attribute date (role='attribute') is a normal column
-        # in the table below, never presented here as a trend/time lens.
-        for tc in table.time_columns:
-            name = tc.get("column")
-            if not name or tc.get("role") != "event":
-                continue
-            time_col = next((c for c in table.columns if c.column_name == name), None)
-            label = f"by {tc['aspect']}" if tc.get("aspect") else None
-            time_info = f"**Time column**: {name}" + (f" ({label})" if label else "")
-            if time_col:
-                time_parts = []
-                if time_col.detected_granularity:
-                    time_parts.append(time_col.detected_granularity)
-                if time_col.min_timestamp and time_col.max_timestamp:
-                    time_parts.append(f"{time_col.min_timestamp} to {time_col.max_timestamp}")
-                if time_col.span_days is not None:
-                    time_parts.append(f"{time_col.span_days:.0f}d span")
-                # Flag a discontinuous axis: a large worst-gap warns the agent the
-                # series isn't a clean continuum for period-over-period work.
-                if time_col.largest_gap_days:
-                    time_parts.append(f"largest gap {time_col.largest_gap_days:.0f}d")
-                if time_parts:
-                    time_info += f" — {', '.join(time_parts)}"
-            if tc.get("note"):
-                time_info += f". {tc['note']}"
-            meta_parts.append(time_info.rstrip(".") + ".")
-        # Recurring identities (DAT-565): would-be foreign keys / cluster keys —
-        # the agent uses these for "per <entity>" grouping when writing queries.
-        identity_parts = []
-        for ic in table.identity_columns:
-            name = ic.get("column")
-            if not name:
-                continue
-            entry = name
-            if ic.get("note"):
-                entry += f" ({ic['note'].rstrip('.')})"
-            identity_parts.append(entry)
-        if identity_parts:
-            meta_parts.append(f"**Identity columns**: {', '.join(identity_parts)}.")
-        if meta_parts:
-            lines.append(" ".join(meta_parts))
-
-        # Column table. Business meaning is NOT here — its one home is the
-        # COLUMN MEANINGS block (field_mappings, DAT-769). Materialization is
-        # the graph-resolved stock/flow verdict (og_columns, DAT-734).
-        lines.append("")
-        lines.append("| Column | Type | Role | Materialization | Notes |")
-        lines.append("|--------|------|------|-----------------|-------|")
-        for col in table.columns:
-            col_type = col.data_type or ""
-            col_role = col.semantic_role or ""
-            col_mat = col.materialization or ""
-            col_notes = _build_column_notes(col)
-            lines.append(
-                f"| {col.column_name} | {col_type} | {col_role} | {col_mat} | {col_notes} |"
-            )
-
-        # Value sets (DAT-616): complete enumeration of low-card categoricals, so the
-        # agent grounds metric predicates in real values rather than guessing a filter.
-        value_sets = _build_value_sets(table)
-        if value_sets:
-            lines.append("")
-            lines.append("**Value sets** (categorical columns — `value (count)`):")
-            lines.extend(value_sets)
-
-    # --- Drivers (DAT-616) ---
-    _append_drivers(lines, context)
-
-    # --- Relationships (the graph's refs edges) ---
-    if not context.relationships and not context.graph_readable:
-        # Unreadable graph ≠ zero relationships — state the absence (DAT-853).
-        lines.append("")
-        lines.append("## Relationships")
-        lines.append("")
-        lines.append("(not analyzed — the operating-model graph is not readable for this run)")
-    if context.relationships:
-        lines.append("")
-        lines.append("## Relationships")
-        lines.append("")
-        lines.append("| From | To | Cardinality | Confidence | Confirmed |")
-        lines.append("|------|----|-------------|------------|-----------|")
-        for rel in context.relationships:
-            warning = ""
-            # DAT-616 fan-trap: joining here multiplies rows → SUMming an additive
-            # measure across this join double-counts. Tell the agent to aggregate
-            # before the join (or COUNT DISTINCT), not after. Reads the engine's
-            # introduces_duplicates flag — measuring it is the writers' job, not this
-            # renderer's: the LLM-synthesis path (DAT-628), the surrogate mint, and
-            # the manual-add materialize seam (DAT-790) all measure it empirically.
-            # NULL = the probe was unavailable/failed — the caution is then silently
-            # absent (unmeasured), never "verified safe".
-            if rel.introduces_duplicates:
-                warning = " ⚠ fan-out: SUM across this join double-counts (pre-aggregate)"
-            lines.append(
-                f"| {rel.from_table}.{rel.from_column} | {rel.to_table}.{rel.to_column} "
-                f"| {rel.cardinality or '?'} | {rel.confidence:.2f} "
-                f"| {rel.confirmation_source or 'unconfirmed'}{warning} |"
-            )
-
-    # --- Conformed dimensions (og_conformed_dimension, DAT-756) ---
-    if context.conformed_dimensions:
-        lines.append("")
-        lines.append("## Conformed Dimensions")
-        lines.append("")
-        lines.append(
-            "Facts sharing a dimension AXIS (same dimension table + attribute) — the "
-            "alignable drill-across surfaces. Comparing two facts goes through a shared "
-            "axis, never a direct fact-to-fact join."
-        )
-        for cd in context.conformed_dimensions:
-            attr = f".{cd.attribute}" if cd.attribute else ""
-            lines.append(f"- {cd.table_a} ↔ {cd.table_b} share {cd.dimension_table}{attr}")
-
-    # --- Enriched Views ---
-    if context.enriched_views:
-        lines.append("")
-        lines.append("## Enriched Views")
-
-        slices_by_table: dict[str, list[SliceContext]] = {}
-        for s in context.available_slices:
-            slices_by_table.setdefault(s.table_name, []).append(s)
-
-        for ev in context.enriched_views:
-            verified = " (grain verified)" if ev.is_grain_verified else ""
-            lines.append(f"\n### {ev.view_name}{verified}")
-            fact_line = f"Fact table: {ev.fact_table}."
-            # derived_from bases (og_derived_from) — which dimension TABLES the
-            # view already joins, so the agent knows what it need not join again.
-            if ev.dimension_tables:
-                fact_line += f" Joins dimensions: {', '.join(ev.dimension_tables)}."
-            lines.append(fact_line)
-            dims = ", ".join(ev.dimension_columns) if ev.dimension_columns else "none"
-            lines.append(f"Joined columns: {dims}.")
-
-            # DAT-621: list the slice dimension NAMES only — their value-sets are served
-            # COMPLETE (or size-stated) in the per-table Value sets block, so re-rendering a
-            # capped [:10] sample here was redundant duplication + a partial sample.
-            view_slices = slices_by_table.get(ev.fact_table, [])
-            if view_slices:
-                names = ", ".join(f"{s.column_name} ({s.value_count} values)" for s in view_slices)
-                lines.append(f"Slice dimensions: {names} — see Value sets for the values.")
-
-    # --- Business Processes ---
-    if not context.business_cycles and not context.operating_model_analyzed:
-        # No promoted operating-model run: cycles were never analyzed. Omitting
-        # the section would be byte-identical to "analyzed, none detected" —
-        # the LLM must be able to tell the two apart (DAT-853).
-        lines.append("")
-        lines.append("## Business Processes")
-        lines.append("")
-        lines.append("(not yet analyzed — no operating-model run for this workspace)")
-    if context.business_cycles:
-        lines.append("")
-        lines.append("## Business Processes")
-        _append_business_processes(lines, context)
-
-    # --- Validation Results ---
-    if not context.validations and not context.operating_model_analyzed:
-        lines.append("")
-        lines.append("## Validation Results")
-        lines.append("")
-        lines.append("(not yet analyzed — no operating-model run for this workspace)")
-    if context.validations:
-        lines.append("")
-        lines.append("## Validation Results")
-        lines.append("")
-        # Bucket by STATUS, not the passed bool (DAT-439): error = the
-        # evaluation was inconclusive and skipped = never executed — labeling
-        # either as FAILED would tell the LLM the data failed a check it was
-        # never actually judged by.
-        passed = [v for v in context.validations if v.passed]
-        failed = [v for v in context.validations if v.status == "failed"]
-        unjudged = [v for v in context.validations if v.status in ("error", "skipped")]
-        lines.append(f"PASSED: {len(passed)} | FAILED: {len(failed)} | UNJUDGED: {len(unjudged)}")
-        if failed:
-            lines.append("")
-            lines.append("Failed:")
-            for v in failed:
-                lines.append(f"- [{v.severity.upper()}] {v.validation_id}: {v.message}")
-                if v.details:
-                    summary = v.details.get("summary", "")
-                    if summary:
-                        lines.append(f"  Details: {summary}")
-        if unjudged:
-            lines.append("")
-            lines.append("Unjudged (inconclusive or not executed — NOT data failures):")
-            for v in unjudged:
-                lines.append(f"- [{v.status}] {v.validation_id}: {v.message}")
-
-    return "\n".join(lines)
-
-
-def _append_concepts(lines: list[str], context: GraphExecutionContext) -> None:
-    """Append the concept graph (DAT-734): definitions + edges + groundings.
-
-    The traversal core served as structure. Definition surface (description /
-    indicators / excludes — the DAT-616 value-grounding aid, incl. traps like
-    ``Cost Recovery Income`` being revenue despite "cost") rides each concept;
-    the graph neighbourhood (part_of / disjoint_with / reconciles_with) and the
-    concept's PRIOR GROUNDINGS (relation + filter + value expression + used
-    columns; failures discriminated with the reason) follow as data lines.
-    """
-    if not context.concepts:
-        return
-
-    lines.append("## Business Concepts")
-    lines.append("")
-    lines.append(
-        "Vertical vocabulary with its operating-model graph. Ground each metric concept "
-        "in specific column values from the **Value sets** below — match by meaning, "
-        "honoring `exclude` patterns; do not improvise a substring filter. A `grounded by` "
-        "entry is a PRIOR COMMITTED grounding of that concept — reuse its columns/filters "
-        "for the same concept unless the served evidence says it is wrong; a concept with "
-        "several groundings is measured on several relations, and `reconciles` means those "
-        "computations must tie out."
-    )
-    lines.append("")
-    for concept in context.concepts:
-        line = f"- **{concept.name}**"
-        if concept.kind:
-            line += f" ({concept.kind})"
-        if concept.description:
-            line += f": {concept.description}"
-        lines.append(line)
-        if concept.indicators:
-            lines.append(f"  - indicators: {', '.join(concept.indicators)}")
-        if concept.exclude_patterns:
-            # exclude_patterns are column-NAME match exclusions consumed HERE (the
-            # grounding prompt tells the model to honor them when matching a concept
-            # to a column, and NOT to improvise a substring row filter). DAT-733
-            # evaluated them as a second source for the canonical validity SCOPE and
-            # rejected it: they are not row predicates, so no faithful (column_id,
-            # operator, value) triple exists and fabricating one is forbidden. The
-            # validity scope sources solely from a measured cycle's completion status.
-            lines.append(f"  - exclude: {', '.join(concept.exclude_patterns)}")
-        if concept.part_of_parents:
-            part_of = ", ".join(concept.part_of_parents)
-            if concept.part_of_ancestry:
-                part_of += f" (→ {' → '.join(concept.part_of_ancestry)})"
-            lines.append(f"  - part of: {part_of}")
-        if concept.part_of_children:
-            lines.append(f"  - subconcepts: {', '.join(concept.part_of_children)}")
-        if concept.disjoint_with:
-            lines.append(f"  - disjoint with: {', '.join(concept.disjoint_with)}")
-        for rec in concept.reconciles_with:
-            tol = f" (tolerance {rec.tolerance:g})" if rec.tolerance is not None else ""
-            if rec.partner == concept.name:
-                lines.append(f"  - reconciles: across its own groundings{tol} — must tie out")
-            else:
-                lines.append(f"  - reconciles with: {rec.partner}{tol}")
-        healthy = [g for g in concept.groundings if not g.failed]
-        failed = [g for g in concept.groundings if g.failed]
-        if healthy:
-            lines.append("  - grounded by:")
-            for g in healthy:
-                lines.append(f"    - {_format_grounding(g)}")
-                if g.uses:
-                    uses = ", ".join(f"{u.column_name} ({u.role})" for u in g.uses)
-                    lines.append(f"      uses: {uses}")
-        for g in failed:
-            mode = g.failure_mode or "failed"
-            reason = g.failure_reason or "(no reason recorded)"
-            lines.append(f"  - failed attempt [{mode}]: {reason}")
-    lines.append("")
-
-
-def _format_grounding(g: GroundingContext) -> str:
-    """One healthy grounding as ``statement @ relation: select_expr WHERE ...``."""
-    label = f"{g.statement} @ {g.relation}" if g.statement else str(g.relation)
-    rendered = f"{label}: {g.select_expr}"
-    if g.where:
-        rendered += " WHERE " + " AND ".join(g.where)
-    return rendered
-
-
-# The "reasonable top" (DAT-621): a categorical dimension at/below this distinct count is
-# enumerated COMPLETELY (via a live DISTINCT at context-build, since the profiler only stores
-# the top-K); above it the column is not an aggregation partition (free-text / high-card id)
-# and is served size+sample, never enumerated. Set from the measured dimension distribution
-# (median 27, then a 40k tail; the number is insensitive in [100,500]).
-_VALUE_SET_COMPLETE_MAX = 200
-# A column whose single most-frequent value covers more than this fraction is near-constant
-# — not a discriminator (e.g. a 99.6%-true `sale` boolean). Grounding a concept on it is
-# silently wrong, so it's flagged, never served as a groundable value-set.
-_NEAR_CONSTANT_FRAC = 0.9
-# Roles whose values are never a metric-grounding predicate (keys fan out; measures are
-# aggregated, not filtered; time axes are handled by the temporal blueprints).
-_NON_CATEGORICAL_ROLES = {"key", "measure", "timestamp", "time", "identifier"}
-
-
 def _fetch_complete_value_set(
     duckdb_conn: duckdb.DuckDBPyConnection,
     duckdb_path: str,
@@ -2032,318 +1467,6 @@ def _fetch_complete_value_set(
         return None
 
 
-def _build_value_sets(table: TableContext) -> list[str]:
-    """Render the value enumeration for a table's categorical columns (DAT-621).
-
-    The agent grounds a concept in the discriminator VALUES from here, never a guessed
-    ILIKE:
-    - low-card (≤ reasonable-top) + non-degenerate → the COMPLETE value-set inline (the
-      assembler fetched it live);
-    - high-card (> reasonable-top) → size + a frequency sample + the ``search_values``
-      hint (DAT-699). The GraphAgent can now drill: it resolves the exact values by
-      bounded substring search and grounds the IN-list on the results. The old
-      render-nothing rule made a present-but-unenumerated concept structurally
-      ungroundable — concepts present by name in a several-hundred-value column
-      were unreachable and the agent emitted SELECT NULL for them;
-    - degenerate (one value dominates) → flagged "near-constant", NO value-set — grounding
-      on a ~constant flag (e.g. a 99%-true boolean) is silently wrong.
-    Only key/measure/time roles are skipped (never partitions).
-    """
-    out: list[str] = []
-    for col in table.columns:
-        if not col.top_values:
-            continue
-        if col.semantic_role and col.semantic_role.lower() in _NON_CATEGORICAL_ROLES:
-            continue
-        served = len(col.top_values)
-        dc = col.distinct_count
-        # High-card / incomplete-fetch → size + sample + the drill hint; the
-        # values NEVER render as an (incomplete) enumeration the agent might
-        # mistake for the complete set.
-        if dc is not None and dc > served:
-            sample = ", ".join(
-                str(tv.get("value")) for tv in col.top_values[:8] if tv.get("value") is not None
-            )
-            out.append(
-                f"- **{col.column_name}**: {dc} distinct values — NOT enumerated; "
-                f"resolve exact values with the search_values tool before filtering. "
-                f"Most frequent: {sample}"
-            )
-            continue
-        # Degenerate / near-constant → not a discriminator; flag, don't serve as groundable
-        # (grounding a concept on a ~constant flag is silently wrong).
-        counts = [tv.get("count") or 0 for tv in col.top_values]
-        total = sum(counts)
-        if total and max(counts) / total > _NEAR_CONSTANT_FRAC:
-            out.append(
-                f"- **{col.column_name}**: near-constant ({dc} distinct, one value ≥90%) — "
-                "NOT a discriminator, do not filter on it"
-            )
-            continue
-        rendered = ", ".join(
-            f"{tv.get('value')} ({tv.get('count')})"
-            for tv in col.top_values
-            if tv.get("value") is not None
-        )
-        if not rendered:
-            continue
-        out.append(
-            f"- **{col.column_name}** (complete, {dc if dc is not None else served} distinct): {rendered}"
-        )
-    return out
-
-
-def _build_column_notes(col: ColumnContext) -> str:
-    """Build column notes: range/sign, anchor axis, derivation, readiness, flags.
-
-    Business meaning / unit-source prose is NOT here — the column-meanings feed
-    (``field_mappings``) is its one home (DAT-769).
-    """
-    notes = []
-
-    # DAT-616: measure range/sign — a negative min flags a signed measure (debit/credit),
-    # where a bare SUM may not be the intended metric (a signed/net expression might be).
-    if col.semantic_role == "measure" and col.numeric_min is not None:
-        rng = f"Range: {col.numeric_min:g}..{col.numeric_max:g}."
-        if col.numeric_min < 0:
-            rng += " Signed (has negatives) — SUM nets positive and negative values."
-        notes.append(rng)
-
-    # The measure's resolved anchor event-time axis (og_columns, DAT-780) — the
-    # axis it trends/accumulates by.
-    if col.semantic_role == "measure" and col.anchor_time_axis:
-        notes.append(f"Anchor axis: {col.anchor_time_axis}.")
-
-    if col.is_derived and col.derived_formula:
-        notes.append(f"Derived: {col.derived_formula}.")
-
-    # Entropy readiness indicator. DAT-853 abstention: a column the detectors never
-    # measured must NOT render like one measured clean — its readiness band is
-    # vacuous, so it is withheld and the absence stated; a partially-measured
-    # column keeps its band but says what it rests on.
-    if col.entropy_scores:
-        coverage = col.entropy_scores.get("coverage")
-        readiness = col.entropy_scores.get("readiness", "ready")
-        if coverage == "unmeasured":
-            notes.append("◌ unmeasured — no quality measurements exist for this column.")
-        else:
-            if readiness == "blocked":
-                notes.append("⛔ blocked.")
-            elif readiness == "investigate":
-                notes.append("⚠ investigate.")
-            if coverage == "partial":
-                notes.append("◌ partially measured.")
-
-    if col.flags:
-        notes.append(f"Flags: {', '.join(col.flags)}.")
-
-    return " ".join(notes)
-
-
-def _append_drivers(lines: list[str], context: GraphExecutionContext) -> None:
-    """Append the per-measure driver rankings (DAT-616).
-
-    Grounds the aggregation choice (`target_type`) and tells the agent which
-    dimensions/values move each measure. `interesting_slices` carry the actual
-    dimension VALUES with signed effect + support — a HINT for which values carry
-    data, never the complete value-set (that's the per-column Value sets).
-
-    The ONE read-side convention (DAT-859): gate on `status == "measured"` ONLY —
-    an abstained ranking (temporal_behavior undetermined, no enriched view, too few
-    candidates, no usable measure value) never surfaces as a driver, full stop.
-    This must NOT also gate on content, or "measured" behavior changes: a measured
-    ranking that found nothing (no ranked dims/slices/secondaries — a real "no
-    significant driver" answer) still renders its heading, with an explicit
-    absence line — "analyzed, nothing significant" is a visible grounding signal
-    in its own right, distinct from both abstention (never analyzed for a known
-    reason) and non-analysis (`context.drivers` empty altogether, DAT-853's
-    absence-falls-loud principle applied here). The raw artifact stays honest
-    either way — this is prompt-rendering only.
-    """
-    measured = [d for d in context.drivers if d.status == "measured"]
-    if not measured:
-        return
-
-    lines.append("")
-    lines.append("## Drivers")
-    lines.append("")
-    lines.append(
-        "Per-measure drivers (statistical, FDR-gated on this data). `target_type` grounds the "
-        "aggregation: flow→SUM across periods, stock→latest-period only, ratio→Σnum/Σden. "
-        "`interesting_slices` are values that MOVE the measure — a hint, NOT the value-set."
-    )
-    for d in measured:
-        grain_note = f", grain {d.grain}" + (f"/{d.entity}" if d.entity else "")
-        lines.append(f"\n### {d.measure_label} ({d.target_type}{grain_note})")
-        if not (d.ranked_dimensions or d.interesting_slices or d.secondary_dimensions):
-            lines.append("- No significant driver found.")
-            continue
-        if d.ranked_dimensions:
-            dims = ", ".join(
-                f"{r.get('dimension')} ({r.get('gain'):.2f})"
-                if isinstance(r.get("gain"), (int, float))
-                else str(r.get("dimension"))
-                for r in d.ranked_dimensions
-            )
-            lines.append(f"- **Top dimensions**: {dims}")
-        if d.interesting_slices:
-            slices = "; ".join(
-                f"{s.get('dimension')}={s.get('value')} "
-                f"(effect {s.get('effect'):+.2f}, support {s.get('support')})"
-                if isinstance(s.get("effect"), (int, float))
-                else f"{s.get('dimension')}={s.get('value')}"
-                for s in d.interesting_slices
-            )
-            lines.append(f"- **Notable slices** (hint, not the set): {slices}")
-        if d.secondary_dimensions:
-            sec = ", ".join(
-                f"{s.get('dimension')} ({s.get('grain')})" for s in d.secondary_dimensions
-            )
-            lines.append(f"- **Secondary** (other grain): {sec}")
-
-
-def _append_business_processes(lines: list[str], context: GraphExecutionContext) -> None:
-    """Append business processes section."""
-    # Build health lookup
-    health_lookup: dict[str, Any] = {}
-    if context.cycle_health:
-        for cs in context.cycle_health.cycle_scores:
-            if cs.canonical_type:
-                health_lookup[cs.canonical_type] = cs
-
-    for cycle in context.business_cycles:
-        # Determine verification status
-        health_score = health_lookup.get(cycle.cycle_type)
-        if health_score:
-            score = health_score.composite_score
-            if score is not None and score >= 0.8:
-                status = "VERIFIED"
-            elif score is not None and score >= 0.5:
-                status = "PARTIAL"
-            else:
-                status = "UNVERIFIED"
-            val_info = (
-                f"({health_score.validations_passed}/{health_score.validations_run} validations)"
-            )
-        else:
-            status = "UNVERIFIED"
-            val_info = ""
-
-        # A family cycle names its direction honestly (DAT-856): a decided direction
-        # reads as e.g. "accounts_payable, direction outgoing"; an undirected one reads
-        # as "settlement, direction undetermined" — the detected-but-undirected state
-        # served as exactly that, never a guessed label. A non-family cycle is unchanged.
-        type_label = cycle.cycle_type
-        if cycle.direction is not None:
-            type_label = f"{cycle.cycle_type}, direction {cycle.direction}"
-        lines.append(f"\n### {cycle.cycle_name} ({type_label}) — {status} {val_info}")
-        lines.append("")
-
-        if cycle.description:
-            lines.append(cycle.description)
-
-        # Volume
-        volume_parts = []
-        if cycle.total_records is not None:
-            volume_parts.append(f"{cycle.total_records:,} records")
-        if cycle.completed_cycles is not None:
-            volume_parts.append(f"{cycle.completed_cycles:,} completed")
-        if cycle.completion_rate is not None:
-            volume_parts.append(f"{cycle.completion_rate:.0%} completion rate")
-        if volume_parts:
-            lines.append(f"Volume: {', '.join(volume_parts)}.")
-
-        # Evidence
-        if cycle.evidence:
-            # DAT-621: no silent [:3] cut — evidence is a short narrative list; serve all.
-            evidence_str = "; ".join(cycle.evidence)
-            lines.append(f"Evidence: {evidence_str}")
-
-        # Stages
-        if cycle.stages:
-            lines.append("")
-            lines.append("Stages:")
-            for stage in sorted(cycle.stages, key=lambda s: s.stage_order):
-                vals = ", ".join(stage.indicator_values) if stage.indicator_values else ""
-                ind_col = f" {stage.indicator_column}" if stage.indicator_column else ""
-                indicator = f" →{ind_col} in [{vals}]" if vals else ""
-                progress = (
-                    f" ({stage.completion_rate:.0%})" if stage.completion_rate is not None else ""
-                )
-                lines.append(f"  {stage.stage_order}. {stage.stage_name}{indicator}{progress}")
-
-        # Completion tracking (narrative — status_column is bare since DAT-733, so
-        # re-qualify with its table for a precise, readable reference).
-        if cycle.status_column and cycle.completion_value:
-            status_ref = (
-                f"{cycle.status_table}.{cycle.status_column}"
-                if cycle.status_table
-                else cycle.status_column
-            )
-            lines.append(
-                f'Completion: {status_ref} = "{cycle.completion_value}"'
-                + (
-                    f", {cycle.completion_rate:.0%} complete"
-                    if cycle.completion_rate is not None
-                    else ""
-                )
-                + "."
-            )
-
-        # Concept bindings (DAT-616): the lifecycle/status concepts this cycle defines
-        # as an EXPLICIT, IN-list-ready concept → (column, value-set) map — the one
-        # detection-confirmed value→concept binding the engine already has (≈ the cut
-        # DAT-620 binding shape). The narrative above is for reading; THIS is for
-        # grounding a filter. Covers lifecycle/status concepts, not P&L partitions.
-        #
-        # DAT-733: the status_column = completion_value binding is DELIBERATELY NOT
-        # emitted here anymore. That IS the canonical validity scope, and the engine
-        # now composes it deterministically by default (graphs/agent grounding path).
-        # With the imperative binding present, the LLM would author the predicate on
-        # every grounding, the engine's defer-on-existing-constraint bypass would
-        # always fire, and the typed default would never be the actual mechanism.
-        # Withholding it makes the deterministic guarantee the real path and a
-        # LLM-authored status constraint a GENUINE judgment (→ a visible bypass
-        # assumption). The stage bindings below are legitimate per-concept filters,
-        # not the validity scope, so they stay.
-        binding_lines: list[str] = []
-        for stage in sorted(cycle.stages, key=lambda s: s.stage_order):
-            if stage.indicator_column and stage.indicator_values:
-                vals = ", ".join(f"'{v}'" for v in stage.indicator_values)
-                binding_lines.append(
-                    f'  - "{stage.stage_name}" = WHERE {stage.indicator_column} IN ({vals})'
-                )
-        if binding_lines:
-            lines.append("Concept bindings (confirmed — use as the filter, do not improvise):")
-            lines.extend(binding_lines)
-
-        # Entity flows
-        if cycle.entity_flows:
-            for ef in cycle.entity_flows:
-                lines.append(
-                    f"Entity flow: {ef.entity_type} "
-                    f"({ef.entity_table}.{ef.entity_column}) → {ef.fact_table}."
-                )
-
-    return
-
-
 __all__ = [
-    "ColumnContext",
-    "TableContext",
-    "RelationshipContext",
-    "SliceContext",
-    "CycleStageContext",
-    "EntityFlowContext",
-    "BusinessCycleContext",
-    "ValidationContext",
-    "EnrichedViewContext",
-    "ConceptContext",
-    "ConceptReconciliation",
-    "ConformedDimensionContext",
-    "GroundingContext",
-    "GroundingUseContext",
-    "GraphExecutionContext",
     "build_execution_context",
-    "format_served_context",
 ]

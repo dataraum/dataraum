@@ -26,6 +26,7 @@ from sqlalchemy import func, select
 from temporalio.exceptions import ApplicationError
 
 from dataraum.analysis.semantic.concept_store import require_active_vertical
+from dataraum.analysis.validation.validation_store import materialize_induced_validations
 from dataraum.core.config import load_phase_config, load_pipeline_config
 from dataraum.core.logging import get_logger
 from dataraum.entropy.engine import run_detector_post_step
@@ -240,6 +241,11 @@ def run_phase(
         phase=phase_name,
         status=result.status.value,
         duration=result.duration_seconds,
+        # A phase's non-fatal disclosures (e.g. the DAT-889 column_annotation
+        # runaway/omission retry guard) ride PhaseResult.warnings — surfaced
+        # here so they reach a log reader for EVERY phase, not just the ones
+        # a caller thinks to check PhaseRun.summary for.
+        warnings=result.warnings,
     )
     return PhaseRun(
         status=result.status.value,
@@ -455,6 +461,9 @@ def run_session_phase(
         phase=phase_name,
         status=result.status.value,
         duration=result.duration_seconds,
+        # See the sibling run_phase's identical addition (DAT-889): a phase's
+        # non-fatal disclosures ride PhaseResult.warnings.
+        warnings=result.warnings,
     )
     return PhaseRun(
         status=result.status.value,
@@ -490,7 +499,11 @@ def run_detectors(
     in the loaders let a concurrent promote tear reads mid-run.
     """
     from dataraum.entropy.detectors.loaders import resolve_base_runs
-    from dataraum.entropy.resolve import resolve_null_tokens, resolve_temporal_behavior
+    from dataraum.entropy.resolve import (
+        resolve_null_tokens,
+        resolve_stored_sign,
+        resolve_temporal_behavior,
+    )
 
     detector_ids = declared_detector_ids(detector_phases)
     if not detector_ids:
@@ -531,9 +544,11 @@ def run_detectors(
         # onto the semantic rows semantic_per_column already wrote — null_semantics
         # → SemanticAnnotation.null_tokens, temporal_behavior → the adjudicated
         # stock/flow verdict (DAT-445; the parallel contested flag was dropped
-        # DAT-786). No-op when no adjudication ran.
+        # DAT-786), stored_sign → the adjudicated storage convention (DAT-875).
+        # No-op when no adjudication ran.
         resolved = resolve_null_tokens(session, run_id)
         resolved_tb = resolve_temporal_behavior(session, run_id)
+        resolved_ss = resolve_stored_sign(session, run_id)
         readiness_rows = persist_readiness(session, table_ids, run_id=run_id)
         logger.info(
             "terminal_detect_done",
@@ -542,6 +557,7 @@ def run_detectors(
             readiness_rows=readiness_rows,
             resolved_annotations=resolved,
             resolved_temporal_behavior=resolved_tb,
+            resolved_stored_sign=resolved_ss,
         )
     return total
 
@@ -786,6 +802,12 @@ def promote_operating_model_run(manager: ConnectionManager, run: RunRef) -> int:
         )
 
     with manager.session_scope() as session:
+        # Land this run's staged induction in the SAME transaction as the head flip
+        # (DAT-877): the validation vocabulary, the executed results and the detected
+        # cycles must become current at one instant. Induction stages run-versioned
+        # precisely so an unpromoted run never publishes a generation whose evidence
+        # does not exist — a run that dies before here leaves the vocabulary untouched.
+        materialized = materialize_induced_validations(session, run_id)
         _upsert_head(
             session,
             catalog_head_target(),
@@ -794,7 +816,7 @@ def promote_operating_model_run(manager: ConnectionManager, run: RunRef) -> int:
             datetime.now(UTC),
         )
 
-    logger.info("operating_model_promote_done", run_id=run_id)
+    logger.info("operating_model_promote_done", run_id=run_id, validations=materialized)
     return 1
 
 

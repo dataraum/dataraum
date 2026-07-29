@@ -116,14 +116,16 @@ class TestOverlayAwareLoading:
         assert "double_entry_balance" in specs
 
     def test_overlay_row_replaces_seeded_spec_by_id(self, session: Session):
-        """A teach row's legacy ``parameters.tolerance`` normalizes onto the typed field."""
+        """A teach row's typed ``tolerance`` replaces the seeded one. Both cockpit
+        writers — hand-authored ``teach_validation`` and frame induction — emit
+        this shape since DAT-880's close-out retyped the induction schema."""
         session.add(_seed_row("double_entry_balance", tolerance=0.01))
         session.flush()
         set_overlay_resolver(
             lambda: [
                 OverlayRow(
                     type="validation",
-                    payload=_spec_payload("double_entry_balance", parameters={"tolerance": 5.0}),
+                    payload=_spec_payload("double_entry_balance", tolerance=5.0),
                 )
             ]
         )
@@ -145,6 +147,29 @@ class TestOverlayAwareLoading:
         specs = load_all_validation_specs("framed_v", session)
 
         assert list(specs) == ["framed_check"]
+
+    def test_malformed_row_is_skipped_not_fatal(self, session: Session):
+        """DAT-880 review correction: per-row fault isolation, mirroring
+        ``ensure_validations_seeded``'s per-doc pattern. A row failing the
+        ``check_type``/``expected_formula`` pairing invariant is skipped —
+        logged, never raised — so it cannot take the whole vocabulary load (and
+        the phase reading through it) down with it. A sibling valid row still
+        loads."""
+        set_overlay_resolver(
+            lambda: [
+                OverlayRow(
+                    type="validation",
+                    # expected_formula check_type with NO declaration — fails
+                    # ValidationSpec's pairing validator.
+                    payload=_spec_payload("malformed_check", check_type="expected_formula"),
+                ),
+                OverlayRow(type="validation", payload=_spec_payload("valid_check")),
+            ]
+        )
+        specs = load_all_validation_specs(VERTICAL, session)
+
+        assert "malformed_check" not in specs
+        assert "valid_check" in specs
 
     def test_rows_for_other_verticals_ignored(self, session: Session):
         set_overlay_resolver(

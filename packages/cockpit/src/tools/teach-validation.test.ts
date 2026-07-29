@@ -91,6 +91,22 @@ describe("ValidationSpecSchema (DAT-441 / DAT-725)", () => {
 		expect(parsed.relevant_cycles).toEqual(["journal_entry_cycle"]);
 	});
 
+	it("REJECTS a negative tolerance, mirroring the engine's ge=0", () => {
+		// A negative tolerance is unsatisfiable under ADR-0017, which is precisely
+		// why frame induction can use -1 as its "not declared" sentinel
+		// (validation-induction.ts). The sentinel is safe BECAUSE unsatisfiable, so
+		// no VALUE boundary may accept it: it dies in `toProposedValidation`, and
+		// this schema plus `ValidationSpec`'s `ge=0` are the two that refuse it.
+		// Reaching the evaluator, it would grade a perfect result as failed.
+		expect(() =>
+			ValidationSpecSchema.parse({ ...MINIMAL, tolerance: -1 }),
+		).toThrow();
+		// 0 is a real claim (exact agreement), not a sentinel — it must pass.
+		expect(
+			ValidationSpecSchema.parse({ ...MINIMAL, tolerance: 0 }).tolerance,
+		).toBe(0);
+	});
+
 	it("REJECTS the legacy parameters/sql_hints shape (no such fields anymore)", () => {
 		// Zod's plain z.object ignores unknown keys by default (not .strict()) —
 		// what matters is that `tolerance`/`guidance` are the ONLY way to carry

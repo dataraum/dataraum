@@ -13,7 +13,10 @@ verdict of a multi-grounded concept appear in the served text.
 
 from __future__ import annotations
 
-from dataraum.graphs.context import (
+from dataraum.graphs.context_format import (
+    format_served_context,
+)
+from dataraum.graphs.context_models import (
     BusinessCycleContext,
     ColumnContext,
     ConceptContext,
@@ -26,10 +29,10 @@ from dataraum.graphs.context import (
     GroundingContext,
     GroundingUseContext,
     RelationshipContext,
+    ReportingCalendarContext,
     SliceContext,
     TableContext,
     ValidationContext,
-    format_served_context,
 )
 
 
@@ -70,6 +73,55 @@ class TestOverview:
     def test_empty_context_renders(self) -> None:
         out = format_served_context(GraphExecutionContext())
         assert out.startswith("# Data Catalog: dataset")
+
+
+class TestReportingCalendar:
+    """DAT-887: the author must SEE the window a stock extract's value will be as-of.
+
+    The instruction not to pin the period axis is only honest if the calendar behind
+    the binding is served — including whether it was declared or merely assumed.
+    """
+
+    def test_declared_calendar_names_its_month_and_basis(self) -> None:
+        ctx = GraphExecutionContext(
+            reporting_calendar=ReportingCalendarContext(
+                fiscal_year_start_month=4, source="declared"
+            )
+        )
+        out = format_served_context(ctx)
+        assert "## Reporting calendar" in out
+        assert "Fiscal year starts in April (declared by this workspace)." in out
+        assert "a period-labelled row carries the level at the END of its own period" in out
+
+    def test_calendar_section_carries_no_authoring_instruction(self) -> None:
+        """FACT only — this document is SHARED with the validation authors.
+
+        An imperative aimed at the grounding author ("leave the period axis out") would
+        silently become a rule for prompts the binding does not apply to. Its one home
+        is graph_sql_generation.yaml.
+        """
+        out = format_served_context(
+            GraphExecutionContext(
+                reporting_calendar=ReportingCalendarContext(
+                    fiscal_year_start_month=1, source="default"
+                )
+            )
+        )
+        assert "do not filter" not in out.lower()
+        assert "leave the period axis" not in out.lower()
+
+    def test_defaulted_calendar_says_it_is_assumed(self) -> None:
+        """A stamped default must never read as a declaration (DAT-730's discipline)."""
+        ctx = GraphExecutionContext(
+            reporting_calendar=ReportingCalendarContext(fiscal_year_start_month=1, source="default")
+        )
+        out = format_served_context(ctx)
+        assert "Fiscal year starts in January (not declared" in out
+        assert "the calendar-year default is assumed" in out
+
+    def test_absent_calendar_renders_no_section(self) -> None:
+        """No calendar on the read surface ⇒ absence, never a fabricated calendar year."""
+        assert "Reporting calendar" not in format_served_context(GraphExecutionContext())
 
 
 class TestAbsenceFallsLoud:
@@ -145,7 +197,12 @@ class TestConceptGraph:
             "WHERE account_type IN ('asset','liability')" in out
         )
         assert "balance_sheet @ enriched_journal: SUM(amount)" in out
-        assert "reconciles: across its own groundings (tolerance 0.01) — must tie out" in out
+        # Asserted but never executed — the served text says so rather than
+        # letting silence read as agreement (DAT-739).
+        assert (
+            "reconciles: across its own groundings (tolerance 0.01) "
+            "— must tie out (not yet evaluated)" in out
+        )
         assert "uses: amount (measure), account_type (filter)" in out
 
     def test_definition_edges_and_hierarchy(self) -> None:
@@ -192,6 +249,119 @@ class TestConceptGraph:
         )
         out = format_served_context(GraphExecutionContext(concepts=[concept]))
         assert "reconciles with: deferred_revenue" in out
+
+    def test_evaluated_tie_out_is_served_as_a_measurement(self) -> None:
+        """A delta with no declared band is reported, and explicitly not graded."""
+        concept = ConceptContext(
+            name="accounts_payable",
+            reconciles_with=[
+                ConceptReconciliation(
+                    partner="accounts_payable",
+                    status="evaluated",
+                    verdict="no_tolerance_declared",
+                    observed_delta=-920000.0,
+                    relative_delta=0.294,
+                    pairs=1,
+                    evaluated_pairs=1,
+                )
+            ],
+        )
+        out = format_served_context(GraphExecutionContext(concepts=[concept]))
+        assert "evaluated: observed delta -920000 (0.294 relative)" in out
+        assert "no tolerance is declared, so this is a measurement, not a failure" in out
+
+    def test_an_exact_tie_out_is_served_as_agreement(self) -> None:
+        concept = ConceptContext(
+            name="accounts_payable",
+            reconciles_with=[
+                ConceptReconciliation(
+                    partner="accounts_payable",
+                    status="evaluated",
+                    verdict="no_tolerance_declared",
+                    observed_delta=0.0,
+                    relative_delta=0.0,
+                    pairs=1,
+                    evaluated_pairs=1,
+                )
+            ],
+        )
+        out = format_served_context(GraphExecutionContext(concepts=[concept]))
+        assert "evaluated: the groundings tie out exactly" in out
+
+    def test_a_breached_band_is_served_as_exceeding_it(self) -> None:
+        concept = ConceptContext(
+            name="accounts_payable",
+            reconciles_with=[
+                ConceptReconciliation(
+                    partner="accounts_payable",
+                    tolerance=0.01,
+                    status="evaluated",
+                    verdict="beyond_tolerance",
+                    observed_delta=-920000.0,
+                    relative_delta=0.294,
+                    pairs=1,
+                    evaluated_pairs=1,
+                )
+            ],
+        )
+        out = format_served_context(GraphExecutionContext(concepts=[concept]))
+        assert "evaluated: 0.294 relative divergence exceeds the tolerance" in out
+
+    def test_a_non_comparable_assertion_says_why(self) -> None:
+        """Different fiscal instants: not compared, and the reason is served."""
+        concept = ConceptContext(
+            name="cash",
+            reconciles_with=[
+                ConceptReconciliation(
+                    partner="cash",
+                    status="abstained",
+                    abstain_reason="different_reporting_instants",
+                    pairs=1,
+                )
+            ],
+        )
+        out = format_served_context(GraphExecutionContext(concepts=[concept]))
+        assert (
+            "must tie out; not compared because the groundings are bound to "
+            "different reporting instants" in out
+        )
+
+    def test_a_partial_evaluation_never_reads_as_a_whole_one(self) -> None:
+        """3 of 5 pairs uncompared must not render as plain agreement (DAT-739)."""
+        concept = ConceptContext(
+            name="accounts_payable",
+            reconciles_with=[
+                ConceptReconciliation(
+                    partner="accounts_payable",
+                    status="evaluated",
+                    verdict="no_tolerance_declared",
+                    observed_delta=0.0,
+                    relative_delta=0.0,
+                    pairs=5,
+                    evaluated_pairs=2,
+                )
+            ],
+        )
+        out = format_served_context(GraphExecutionContext(concepts=[concept]))
+        assert "the groundings tie out exactly" in out
+        # …but never as verification of the whole assertion.
+        assert "3 of 5 pairs not comparable" in out
+
+    def test_the_witness_only_assertion_says_it_has_no_second_angle(self) -> None:
+        """DAT-739's own honest bound, served rather than left silent."""
+        concept = ConceptContext(
+            name="revenue",
+            reconciles_with=[
+                ConceptReconciliation(
+                    partner="revenue",
+                    status="abstained",
+                    abstain_reason="no_evaluable_pair",
+                    pairs=1,
+                )
+            ],
+        )
+        out = format_served_context(GraphExecutionContext(concepts=[concept]))
+        assert "not compared because only one grounding exists to measure" in out
 
     def test_no_section_without_concepts(self) -> None:
         assert "## Business Concepts" not in format_served_context(GraphExecutionContext())
@@ -511,7 +681,7 @@ class TestColumnFlagsBenfordSuppression:
     """DAT-843: only a MEASURED Benford violation flags to the agent."""
 
     def _flags(self, benford_status):
-        from dataraum.graphs.context import _generate_column_flags
+        from dataraum.graphs.context_reads import _generate_column_flags
 
         return _generate_column_flags(
             null_ratio=None,

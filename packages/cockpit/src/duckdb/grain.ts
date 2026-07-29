@@ -105,6 +105,59 @@ export function grainPresets(
 	});
 }
 
+/** Coarseness order of the grain units, finest first — the comparison the
+ *  bucket floor needs. `q` is 3 months and `y` 12, so the calendar ladder is
+ *  strictly ordered. */
+const UNIT_COARSENESS: Record<GrainUnit, number> = {
+	s: 0,
+	m: 1,
+	h: 2,
+	d: 3,
+	w: 4,
+	M: 5,
+	q: 6,
+	y: 7,
+};
+
+/** The engine's `bucket_grain` vocabulary (the `og_period_grain` ladder) as a
+ *  grain unit. */
+const BUCKET_GRAIN_UNIT: Record<string, GrainUnit> = {
+	day: "d",
+	month: "M",
+	quarter: "q",
+	year: "y",
+};
+
+/**
+ * The preset menu for a column, floored at the axis's observed cadence
+ * (DAT-857/730).
+ *
+ * A measure observed monthly has nothing to say at day resolution: bucketing it
+ * by day yields one sparse row per month-start and 27-30 empty ones. Now that a
+ * non-additive measure is OFFERED a bucketing at all, offering it at a grain
+ * finer than the data supports would be a new way to mislead — so the floor
+ * comes off the served verdict, not from a guess here.
+ *
+ * `undefined` floor = no claim (the engine could not determine the cadence, or
+ * this axis was never refined) → the full preset list stands.
+ */
+export function grainPresetsFrom(
+	kind: TemporalKind,
+	bucketGrain: string | undefined,
+): { token: string; label: string }[] {
+	const presets = grainPresets(kind);
+	const floorUnit = bucketGrain ? BUCKET_GRAIN_UNIT[bucketGrain] : undefined;
+	if (!floorUnit) return presets;
+	const floor = UNIT_COARSENESS[floorUnit];
+	const kept = presets.filter((p) => {
+		const grain = parseGrainToken(p.token);
+		return grain !== null && UNIT_COARSENESS[grain.unit] >= floor;
+	});
+	// Never empty the menu: a cadence coarser than every preset (or an unknown
+	// vocabulary term) leaves the presets alone rather than removing the control.
+	return kept.length > 0 ? kept : presets;
+}
+
 /** Map a catalog `resolved_type` to a temporal kind — null for everything
  *  non-temporal. Type-based on purpose: never a column-NAME heuristic. */
 export function temporalKindOfType(

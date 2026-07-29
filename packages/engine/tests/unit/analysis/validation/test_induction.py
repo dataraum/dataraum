@@ -20,13 +20,15 @@ from dataraum.analysis.validation.induction import (
     _is_clean,
     _render_conventions,
     _render_existence_universe,
+    _render_temporal_form,
     _to_spec,
     membership_violations,
     served_membership,
 )
 from dataraum.analysis.validation.models import ValidationSeverity
 from dataraum.core.models.base import Result
-from dataraum.graphs.context import (
+from dataraum.graphs.context_format import format_served_context
+from dataraum.graphs.context_models import (
     ColumnContext,
     ConceptContext,
     GraphExecutionContext,
@@ -204,6 +206,106 @@ def test_existence_universe_fires_when_role_unclassified() -> None:
     assert "No served table has role=dimension" in _render_existence_universe(ctx)
 
 
+def _measure(name: str, materialization: str | None, role: str | None = "measure") -> ColumnContext:
+    return ColumnContext(
+        column_id=f"c_{name}",
+        column_name=name,
+        table_name="tbl",
+        semantic_role=role,
+        materialization=materialization,
+    )
+
+
+def _measures_table(*columns: ColumnContext, duckdb_name: str = "src__tbl") -> TableContext:
+    return TableContext(
+        table_id="t1", table_name="tbl", duckdb_name=duckdb_name, columns=list(columns)
+    )
+
+
+def test_temporal_form_states_both_verdicts() -> None:
+    """The resolved stock/flow verdicts are restated ADJACENT to the task (DAT-874).
+
+    The shared assembler carries them only as a ``Materialization`` cell in a wide
+    per-table column table; DAT-870 measured at the binder that facts held that far
+    from the prose lose to a confident hint. This is the induction-side counterweight.
+    """
+    ctx = GraphExecutionContext(
+        tables=[_measures_table(_measure("movement", "flow"), _measure("level", "stock"))]
+    )
+    rendered = _render_temporal_form(ctx)
+    assert "## Temporal form of the measures" in rendered
+    assert "a per-period movement, additive across periods): movement" in rendered
+    assert "a level as of its period, never summed across periods): level" in rendered
+    # Named by the SAME display name the catalog section uses, so the two agree.
+    assert "- src__tbl:" in rendered
+
+
+def test_temporal_form_states_undetermined_measures_positively() -> None:
+    """A measure with NO verdict is NAMED as undetermined (DAT-874/DAT-876 doctrine).
+
+    ``format_served_context`` renders a missing verdict as an EMPTY CELL, which the
+    prompt would have to read absence off. Absence falls loud or it does not land.
+    """
+    ctx = GraphExecutionContext(
+        tables=[_measures_table(_measure("movement", "flow"), _measure("unknown_measure", None))]
+    )
+    rendered = _render_temporal_form(ctx)
+    assert "NO temporal-form verdict — UNDETERMINED" in rendered
+    assert "unknown_measure" in rendered
+    assert "a stated absence, not 'flow'" in rendered
+    assert "grounds no cross-measure comparison at all" in rendered
+
+
+def test_shared_assembler_leaves_a_missing_verdict_blank() -> None:
+    """WHY this renderer exists (DAT-874): the shared catalog states a missing
+    verdict as an EMPTY CELL, so the absence is legible only as an omission.
+
+    Pins the premise, not just the remedy. If ``format_served_context`` ever starts
+    stating the absence itself, this fails loud — and the signal then is to DELETE
+    the undetermined half of ``_render_temporal_form`` rather than serve one fact
+    from two homes.
+    """
+    ctx = GraphExecutionContext(tables=[_measures_table(_measure("unknown_measure", None))])
+    catalog = format_served_context(ctx)
+
+    row = next(line for line in catalog.splitlines() if line.startswith("| unknown_measure |"))
+    # | Column | Type | Role | Materialization | Notes | — cell 4 is the verdict.
+    assert row.split("|")[4].strip() == ""
+    assert "UNDETERMINED" not in catalog
+
+    # The induction-owned block names the same column instead of blanking it.
+    served = _render_temporal_form(ctx)
+    assert "NO temporal-form verdict — UNDETERMINED" in served
+    assert "unknown_measure" in served
+
+
+def test_temporal_form_ignores_unverdicted_non_measures() -> None:
+    """The UNDETERMINED list is measure-scoped: a dimension/key column without a
+    verdict is not a decision gap, and listing every such column would bury the
+    measures that are one."""
+    ctx = GraphExecutionContext(
+        tables=[_measures_table(_measure("movement", "flow"), _measure("account_key", None, "key"))]
+    )
+    rendered = _render_temporal_form(ctx)
+    assert "account_key" not in rendered
+    # The header's standing sentence still names the class; no table LINE claims one.
+    assert "NO temporal-form verdict" not in rendered
+
+
+def test_temporal_form_states_a_verdict_without_a_role_label() -> None:
+    """A served verdict is never hidden by a missing semantic_role — the fact was
+    measured, so it is stated; only the ABSENCE half needs the measure label."""
+    ctx = GraphExecutionContext(tables=[_measures_table(_measure("level", "stock", None))])
+    assert "level" in _render_temporal_form(ctx)
+
+
+def test_temporal_form_silent_when_nothing_to_state() -> None:
+    """No verdicts and no unverdicted measures ⇒ no section (empty, not a header)."""
+    ctx = GraphExecutionContext(tables=[_measures_table(_measure("account_key", None, "key"))])
+    assert _render_temporal_form(ctx) == ""
+    assert _render_temporal_form(GraphExecutionContext(tables=[])) == ""
+
+
 def test_contract_is_constrained_decoding_safe() -> None:
     """DAT-807 budget: every field required, no open maps, enums (not unions)."""
     schema = InducedValidation.model_json_schema()
@@ -366,6 +468,67 @@ def test_induce_canonicalizes_declared_convention_variants() -> None:
 # --- served-graph enrichment: metric DAG + additivity (DAT-735 owner ruling) ------
 
 
+def test_induce_serves_the_form_facts_and_does_not_veto_a_mixed_form_proposal() -> None:
+    """The DAT-874 shape stays PROPOSABLE — the guard is the served fact, not a veto.
+
+    Reconstructs the defect's shape on a neutral graph: a snapshot table whose level
+    column is ``stock``, a detail table whose movement columns are ``flow``, and a
+    proposed check referencing both sides. Two halves, both deliberate:
+
+    * The proposal survives ``induce()`` untouched. Membership (``_is_clean``) judges
+      FABRICATION — an objective property — and nothing else; no seam inspects the
+      shape. That is the locked call, not an oversight: a mixed-form reference set is
+      not itself wrong (a movement vs the CHANGE in a level, and a cumulated movement
+      vs a level, are both coherent and both mixed), so a reference-set rule would
+      reject correct checks, and reading the shape out of the guidance or the bound
+      SQL would be exactly the deterministic override the design forbids.
+    * The temporal-form facts for that same graph NAME both sides' forms. The model
+      choosing the shape has the deciding fact adjacent to the task — which is the
+      whole remedy, and is what the column-table cell alone did not deliver.
+    """
+    ctx = GraphExecutionContext(
+        tables=[
+            TableContext(
+                table_id="t_snap",
+                table_name="period_snapshot",
+                duckdb_name="src__period_snapshot",
+                columns=[_measure("closing_level", "stock")],
+            ),
+            TableContext(
+                table_id="t_detail",
+                table_name="movement_detail",
+                duckdb_name="src__movement_detail",
+                columns=[_measure("increase", "flow"), _measure("decrease", "flow")],
+            ),
+        ]
+    )
+    facts = _render_temporal_form(ctx)
+    assert "closing_level" in facts and "increase" in facts
+    assert "a level as of its period, never summed across periods): closing_level" in facts
+    assert "a per-period movement, additive across periods): increase, decrease" in facts
+
+    mixed = _induced(
+        "level_ties_to_movements",
+        check_type="balance",
+        tolerance=0.0,
+        guidance="net the per-period movements and compare to the period's closing level",
+        referenced_tables=["period_snapshot", "movement_detail"],
+        referenced_columns=[
+            "period_snapshot.closing_level",
+            "movement_detail.increase",
+            "movement_detail.decrease",
+        ],
+    )
+    provider = _FakeProvider(InducedValidations(validations=[mixed]))
+    result = _agent(provider).induce(facts, "conv", served_membership(ctx))
+
+    assert result.success
+    specs = result.unwrap()
+    assert [s.validation_id for s in specs] == ["level_ties_to_movements"]
+    assert specs[0].guidance == mixed.guidance  # persisted verbatim, never rewritten
+    assert provider.calls == 1  # clean on membership ⇒ no repair turn
+
+
 def test_render_metric_dag_serves_declared_metrics(session) -> None:
     """The metric DAG section names each metric, its derives_from concepts + params."""
     from dataraum.analysis.validation.induction import _render_metric_dag
@@ -409,19 +572,32 @@ def test_render_metric_dag_serves_declared_metrics(session) -> None:
 
 
 def test_render_additivity_serves_verdicts_at_head(session) -> None:
-    """The additivity section renders the verdicts + reasons at the promoted head."""
+    """The additivity section renders the class verdicts at the promoted head."""
     from dataraum.analysis.validation.induction import _render_additivity
-    from dataraum.graphs.additivity_db_models import MetricAdditivity
+    from dataraum.graphs.additivity_db_models import AXIS_KEY_ALL, MetricAxisAdditivity
 
-    session.add(
-        MetricAdditivity(
-            run_id="om-run-1",
-            target_kind="metric",
-            target_key="current_liabilities",
-            categorical_additive=True,
-            time_additive=False,
-            time_reason="stock",
-        )
+    session.add_all(
+        [
+            MetricAxisAdditivity(
+                run_id="om-run-1",
+                target_kind="metric",
+                target_key="current_liabilities",
+                axis_kind="categorical",
+                axis_key=AXIS_KEY_ALL,
+                status="classified",
+                verdict="additive",
+            ),
+            MetricAxisAdditivity(
+                run_id="om-run-1",
+                target_kind="metric",
+                target_key="current_liabilities",
+                axis_kind="time",
+                axis_key=AXIS_KEY_ALL,
+                status="classified",
+                verdict="semi_additive",
+                reason="stock",
+            ),
+        ]
     )
     session.flush()
 
@@ -429,7 +605,66 @@ def test_render_additivity_serves_verdicts_at_head(session) -> None:
     assert "## Additivity Verdicts" in rendered
     assert "current_liabilities" in rendered
     assert "categorical:additive" in rendered
-    assert "time:NON-additive (stock)" in rendered
+    assert "time:semi_additive (stock)" in rendered
+    # The induction must be told that only `additive` licenses a balance check.
+    assert "Only `additive` licenses a sum-of-parts" in rendered
+
+
+def test_render_additivity_names_an_abstention_as_unjudged(session) -> None:
+    """An abstained axis is UNJUDGED, never rendered as if it were non-additive."""
+    from dataraum.analysis.validation.induction import _render_additivity
+    from dataraum.graphs.additivity_db_models import AXIS_KEY_ALL, MetricAxisAdditivity
+
+    session.add(
+        MetricAxisAdditivity(
+            run_id="om-run-2",
+            target_kind="measure",
+            target_key="unclassified_measure",
+            axis_kind="time",
+            axis_key=AXIS_KEY_ALL,
+            status="abstained",
+            abstain_reason="unknown_temporal",
+        )
+    )
+    session.flush()
+
+    rendered = _render_additivity(session, "om-run-2")
+    assert "time:UNJUDGED (unknown_temporal)" in rendered
+
+
+def test_render_additivity_reads_only_the_class_rows(session) -> None:
+    """A per-axis refinement row must not duplicate its target in the rendering."""
+    from dataraum.analysis.validation.induction import _render_additivity
+    from dataraum.graphs.additivity_db_models import AXIS_KEY_ALL, MetricAxisAdditivity
+
+    session.add_all(
+        [
+            MetricAxisAdditivity(
+                run_id="om-run-3",
+                target_kind="measure",
+                target_key="revenue",
+                axis_kind="time",
+                axis_key=AXIS_KEY_ALL,
+                status="classified",
+                verdict="additive",
+            ),
+            MetricAxisAdditivity(
+                run_id="om-run-3",
+                target_kind="measure",
+                target_key="revenue",
+                axis_kind="time",
+                axis_key="booked_on",
+                status="classified",
+                verdict="additive",
+                bucket_grain="day",
+            ),
+        ]
+    )
+    session.flush()
+
+    rendered = _render_additivity(session, "om-run-3")
+    assert rendered.count("measure revenue") == 1
+    assert "booked_on" not in rendered
 
 
 def test_render_additivity_empty_on_first_run(session) -> None:

@@ -1,6 +1,6 @@
 name: "graph_sql_generation"
-version: "10.0"
-description: "Ground ONE business concept to an executable DuckDB extract. The LLM grounds; it is fed deterministic evidence (ADR-0016). Formula composition is a separate prompt. v6.0 (DAT-603): single-extract output — no steps[]/step_id/final_sql. v6.1: adaptive thinking on; grounding commitment emitted before sql; floors compacted, reasoning invited. v7.0 (DAT-671, parts-at-source): the output is CLAUSE PARTS (relation + where predicates + select_expr), never a fused statement — the system renders the SQL once and composes every drill variant from the parts; join-to-dimension becomes an IN-subquery predicate (equivalent under the no-fan-out floor); the window blueprint retired (no vertical declares a window-shaped concept — grows back deliberately when one does). v7.1 (DAT-792): the graph spec serves the step's declared validations — catalogue-declared expectations on the executed value the grounding should be consistent with; enforced post-hoc by the verifier, never a filter to inject. v8.0 (DAT-727, provenance contract v2): column_mappings_basis enumerates EVERY relation column the parts touch, by role (measure_columns / filter_columns) — validated against the served schema and cross-checked against the SQL parts at save; the v1 free-form keys (column, resolution) are gone. v9.0 (DAT-734, graph-shaped context): <dataset_context> is assembled by traversal over the operating-model property graph — Business Concepts serves each concept's graph neighbourhood (part_of/disjoint/reconciles) AND its prior committed groundings (relation + filter + value expression + used columns, failures with reasons); relationships carry a Confirmed column; conformed dimension axes served as structure; the column table serves the graph-resolved Materialization (flow/stock, replacing the temporal_behavior wording) with business meaning single-homed in COLUMN MEANINGS. v10.0 (DAT-787): column_mappings_basis also types filter_members — one {column, value} per value the where predicates SELECT (the value side of filter_columns); validated against the served value sets and cross-checked against the predicates, and the substrate the operating-model graph's filtered_by edge un-nests into DimMember vertices."
+version: "10.3"
+description: "Ground ONE business concept to an executable DuckDB extract. The LLM grounds; it is fed deterministic evidence (ADR-0016). Formula composition is a separate prompt. v6.0 (DAT-603): single-extract output — no steps[]/step_id/final_sql. v6.1: adaptive thinking on; grounding commitment emitted before sql; floors compacted, reasoning invited. v7.0 (DAT-671, parts-at-source): the output is CLAUSE PARTS (relation + where predicates + select_expr), never a fused statement — the system renders the SQL once and composes every drill variant from the parts; join-to-dimension becomes an IN-subquery predicate (equivalent under the no-fan-out floor); the window blueprint retired (no vertical declares a window-shaped concept — grows back deliberately when one does). v7.1 (DAT-792): the graph spec serves the step's declared validations — catalogue-declared expectations on the executed value the grounding should be consistent with; enforced post-hoc by the verifier, never a filter to inject. v8.0 (DAT-727, provenance contract v2): column_mappings_basis enumerates EVERY relation column the parts touch, by role (measure_columns / filter_columns) — validated against the served schema and cross-checked against the SQL parts at save; the v1 free-form keys (column, resolution) are gone. v9.0 (DAT-734, graph-shaped context): <dataset_context> is assembled by traversal over the operating-model property graph — Business Concepts serves each concept's graph neighbourhood (part_of/disjoint/reconciles) AND its prior committed groundings (relation + filter + value expression + used columns, failures with reasons); relationships carry a Confirmed column; conformed dimension axes served as structure; the column table serves the graph-resolved Materialization (flow/stock, replacing the temporal_behavior wording) with business meaning single-homed in COLUMN MEANINGS. v10.0 (DAT-787): column_mappings_basis also types filter_members — one {column, value} per value the where predicates SELECT (the value side of filter_columns); validated against the served value sets and cross-checked against the predicates, and the substrate the operating-model graph's filtered_by edge un-nests into DimMember vertices. v10.1 (DAT-709): disjointness is a grounding FLOOR, not advice — two concepts declared disjoint may not resolve to the same extract; a sibling's committed grounding shows the style, never the predicate. Enforced ACROSS concepts after the authoring pass (one call per concept can never see it), which re-grounds a collision once with the partner named and then abstains typed. v10.3 (DAT-887): the period axis of a point-in-time (stock) extract is no longer authored — the system binds the reporting instant (the last fiscal close the data reaches, per the served Reporting calendar) as an additional where predicate at composition and records which period it resolved to; CONDITIONAL: branch (a) — Materialization=stock AND a Reporting calendar is served — leaves the period axis to the system (a model-authored pin is never overridden: composition DEFERS to the authored SQL and records the deferral, so the value stays on the model's period instead of the reporting instant); branch (b) — no materialization or no calendar — keeps the standing MAX(period) pin, so a stock is never left unfiltered across periods. A known stock the system cannot resolve an instant for ABSTAINS (fall-loud shape + a sub-floor disclosure) rather than composing a predicate-free extract."
 temperature: 0.0
 
 # System prompt — defines the single job: ground ONE concept to one extract.
@@ -63,9 +63,9 @@ system_prompt: |
     computations must tie out), and `grounded by` — PRIOR COMMITTED groundings (relation +
     filter + value expression + the columns they use). Ground the SAME concept consistently
     with its prior groundings unless the served evidence says one is wrong; a sibling
-    concept's grounding shows which discriminator column and value style this dataset grounds
-    through. A `failed attempt` entry tells you what was already tried and why it was
-    rejected — do not repeat it unchanged.
+    concept's grounding shows which discriminator column and value STYLE this dataset grounds
+    through — the style, never the predicate to copy. A `failed attempt` entry tells you what
+    was already tried and why it was rejected — do not repeat it unchanged.
 
   Weigh the surfaces rather than following a script: a column whose meaning and measured
   facts carry the concept is usually the direct answer for wide data; long-format
@@ -92,6 +92,14 @@ system_prompt: |
     a joined dimension's column). Choosing a subset of listed values by meaning is your
     judgment; adding one unlisted "expected" name — even mixed in with valid ones — is
     invention, and invented literals silently undercount.
+  - Two concepts marked `disjoint with` each other may NOT resolve to the same extract. Their
+    value-sets must not overlap, and identical parts select identical rows — that is the
+    overlap at its maximum, and it makes every ratio between the two compute 1.0 while looking
+    perfectly grounded. If the only grounding you can justify would select the same rows as a
+    concept this one is `disjoint with`, you have not distinguished them yet: find the
+    evidence that separates them (a different discriminator value set, a different measure
+    column, the vertical's sign/side convention) or fall loud below. Never reuse a disjoint
+    concept's committed grounding as your own.
   - No substring/`ILIKE` membership guessing (ILIKE only for case-insensitivity on a known
     served value). No filters on `near-constant` columns. A column marked "NOT enumerated"
     (high-cardinality) is EXPLORABLE, not forbidden: call the `search_values` tool with the
@@ -166,12 +174,22 @@ system_prompt: |
   - "count_distinct": COUNT(DISTINCT <the grounded column>) — the number of DISTINCT values of
     the concept (e.g. distinct accounts transacted, distinct customers). Emit exactly
     `COUNT(DISTINCT "<column>")`, never a plain COUNT.
-  - "end_of_period": point-in-time snapshot — take the value from the LATEST period only; DO NOT
-    SUM across periods (these are stock measures: balances, levels at a moment).
-    Pattern: a where predicate `"<period>" = (SELECT MAX("<period>") FROM <view>)` alongside
-    the aggregate select_expr (see the end-of-period blueprint).
-    The rule: filter to ONE period, then aggregate within it. Apply this to EVERY end_of_period
-    step — a balance summed across all periods double-counts every snapshot.
+  - "end_of_period": point-in-time snapshot — a stock measure (a balance, a level at a moment),
+    which must NOT be summed across periods; a balance summed across all periods double-counts
+    every snapshot. A stock is NEVER left unfiltered across periods. WHO picks the period
+    depends on the evidence:
+    (a) the measure's `Materialization` is `stock` AND a **Reporting calendar** section is
+        present → DO NOT author the period filter. The system BINDS the reporting instant (the
+        last fiscal close the data reaches) as an additional where predicate at composition, and
+        RECORDS which period it resolved to. Emit the aggregate select_expr and any NON-period
+        predicates only; leave the period axis out of `where` entirely.
+        If you author a period pin here anyway, the system will NOT rewrite it — it defers to
+        your SQL and records that the value is not bound to the reporting instant. Leave the
+        axis out so the binding can land.
+    (b) otherwise (no `Materialization` served for this measure, or no Reporting calendar in the
+        evidence) → pin ONE period yourself, the standing fallback:
+        `"<period>" = (SELECT MAX("<period>") FROM <view>)`, then aggregate within it.
+    See the two end-of-period blueprints.
   </aggregation_types>
 
   <temporal_signals>
@@ -187,10 +205,11 @@ system_prompt: |
     data reconciled as flow, the periodic rows are per-period MOVEMENTS, and summing them across
     periods is exactly what yields the running total or level.
   - `stock` → a level that must NOT be summed across time (semi-additive): use the
-    `end_of_period` pattern (filter to the latest period, then aggregate within it).
+    `end_of_period` pattern — branch (a) when a Reporting calendar is served (leave the period
+    axis to the system's binding), branch (b) when none is (pin one period yourself).
   - `ratio` → Σnumerator / Σdenominator (per the driver guidance).
   A measure's `Anchor axis` note names the event-time axis it trends/accumulates by — the period
-  column for end_of_period filters. Only when neither `Materialization` nor `target_type` is
+  column the system binds a stock extract on. Only when neither `Materialization` nor `target_type` is
   present for a measure, fall back to the step's declared `aggregation`. Whenever you follow the
   reconciled verdict over a conflicting declared aggregation or name, note it in assumptions.
   </temporal_signals>
@@ -239,7 +258,12 @@ system_prompt: |
 
   - Simple aggregate (concept = values of a discriminator on the fact):
     relation: `<view>` · where: [`"<dim>" IN ('<v1>','<v2>')`] · select_expr: `SUM("<measure>")`
-  - End-of-period (stock materialization — latest period only):
+  - End-of-period (a) — `Materialization: stock` AND a Reporting calendar is served: the system
+    binds the reporting instant, so the period axis does NOT appear in `where` (non-period
+    predicates still do):
+    relation: `<view>` · where: [] · select_expr: `SUM("<measure>")`
+  - End-of-period (b) — no `Materialization` for the measure, or no Reporting calendar: pin one
+    period yourself:
     relation: `<view>` · where: [`"<period>" = (SELECT MAX("<period>") FROM <view>)`]
     · select_expr: `SUM("<measure>")`
   - Multi-column conjunction (one predicate per grounded column — the system ANDs the list):

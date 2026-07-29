@@ -29,6 +29,9 @@ import hashlib
 from collections.abc import Iterable, Sequence
 from dataclasses import dataclass
 
+# Hand-mirrored by ``packages/cockpit/src/tools/surrogate.ts`` — the cockpit's
+# answer agent filters the same columns out of its own ``<schema>`` block, so
+# changing this prefix is a cross-PACKAGE change (like the Temporal contracts).
 SURROGATE_PREFIX = "_sk__"
 
 # The one boundary in the typing DDL shape (``CREATE OR REPLACE TABLE {typed}

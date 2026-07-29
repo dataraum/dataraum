@@ -12,7 +12,7 @@ import pytest
 from sqlalchemy import create_engine, event
 from sqlalchemy.orm import Session, sessionmaker
 
-from dataraum.graphs.context import build_execution_context
+from dataraum.graphs.context_reads import build_execution_context
 from dataraum.storage import init_database
 
 
@@ -394,25 +394,27 @@ class TestBuilderOmRunIdOverride:
 
 
 class TestBuilderCuratedSliceRead:
-    """DAT-725: ``available_slices`` is the top-priority BUDGET, ascending."""
+    """DAT-879: ``available_slices`` is the JUDGED set, ordered by measurement."""
 
-    def test_slice_budget_and_ascending_priority(self, session: Session) -> None:
+    def test_serves_judged_axes_by_measured_relevance_and_reports_drops(
+        self, session: Session
+    ) -> None:
         """The catalog is the full deterministic inventory; this LLM-facing read
-        takes LIMIT CURATED_SLICE_BUDGET in ascending priority (1 = most
-        interesting FIRST, column_name tiebreak). Regression pin for the
-        pre-rescope in-Python ``reverse=True`` sort, which put the least
-        interesting first — load-bearing wrong once floor-priority structural
-        rows exist (they would have led every list)."""
+        serves the axes the cataloguing agent judged, ordered by measured
+        relevance, and carries a note stating how many it did not serve.
+
+        Replaces the DAT-725 budget pin. That test asserted the leftover budget
+        was filled in alphabetical order — correct for the code as written, and
+        exactly the behaviour DAT-879 removes: alphabetical is not a relevance
+        order, and nothing told the model the list was cut at all.
+        """
         from dataraum.analysis.slicing.db_models import SliceDefinition
-        from dataraum.analysis.slicing.models import (
-            CURATED_SLICE_BUDGET,
-            UNRANKED_SLICE_PRIORITY,
-        )
         from dataraum.storage import Column
         from dataraum.storage.snapshot_head import MetadataSnapshotHead, catalog_head_target
 
         _source_id, table_id, _column_id = _insert_source_table_column(session)
-        for i in range(CURATED_SLICE_BUDGET + 3):
+        n_total, n_judged = 15, 2
+        for i in range(n_total):
             cid = _id()
             session.add(
                 Column(
@@ -422,7 +424,7 @@ class TestBuilderCuratedSliceRead:
                     column_position=10 + i,
                 )
             )
-            # Two ranked rows (priorities 1 and 2), the rest structural floor.
+            judged = i < n_judged
             session.add(
                 SliceDefinition(
                     slice_id=_id(),
@@ -430,9 +432,14 @@ class TestBuilderCuratedSliceRead:
                     table_id=table_id,
                     column_id=cid,
                     column_name=f"dim_{i:02d}",
-                    slice_priority=i + 1 if i < 2 else UNRANKED_SLICE_PRIORITY,
+                    # dim_00 is judged but measures worse than dim_01, and the
+                    # un-judged rows measure best of all: served order must
+                    # follow measurement WITHIN the judged set, and an un-judged
+                    # row must not be served however well it measures.
+                    slice_interest="primary" if judged else None,
+                    slice_relevance=(0.4 if i == 0 else 0.8) if judged else 0.99,
                     distinct_values=["a", "b"],
-                    detection_source="llm" if i < 2 else "structural",
+                    detection_source="llm" if judged else "structural",
                 )
             )
         session.add(
@@ -444,11 +451,39 @@ class TestBuilderCuratedSliceRead:
 
         ctx = build_execution_context(session, [table_id])
 
-        assert len(ctx.available_slices) == CURATED_SLICE_BUDGET
-        priorities = [s.priority for s in ctx.available_slices]
-        assert priorities == sorted(priorities), "ascending — most interesting first"
-        assert ctx.available_slices[0].column_name == "dim_00"
-        floor_names = [
-            s.column_name for s in ctx.available_slices if s.priority == UNRANKED_SLICE_PRIORITY
-        ]
-        assert floor_names == sorted(floor_names), "deterministic tiebreak on the floor"
+        assert [s.column_name for s in ctx.available_slices] == ["dim_01", "dim_00"]
+        assert [s.relevance for s in ctx.available_slices] == [0.8, 0.4]
+        assert "2 of 15" in ctx.slice_catalog_note
+        assert "13" in ctx.slice_catalog_note
+
+
+class TestBuilderExcludesSurrogateColumns:
+    """Mint-owned surrogate join keys never reach the grounding prompt (DAT-878).
+
+    ``_sk__*`` columns (``pipeline/phases/surrogate_mint_phase.py``,
+    ``analysis/relationships/surrogate.py``) are engine-internal join keys, not
+    business columns — they must not appear in ``TableContext.columns`` (the
+    grounding prompt's rendered column list / value-set enumeration). The
+    relationship-evidence path is a SEPARATE read (``_read_references`` over its
+    own vertex map) and is unaffected by this exclusion.
+    """
+
+    def test_surrogate_column_absent_from_context(self, session: Session) -> None:
+        from dataraum.storage import Column
+
+        _source_id, table_id, _column_id = _insert_source_table_column(session)
+        session.add(
+            Column(
+                column_id=_id(),
+                table_id=table_id,
+                column_name="_sk__customer_id__order_date",
+                column_position=1,
+            )
+        )
+        session.flush()
+
+        ctx = build_execution_context(session, [table_id])
+
+        names = {c.column_name for c in ctx.tables[0].columns}
+        assert names == {"amount"}
+        assert ctx.tables[0].column_count == 1

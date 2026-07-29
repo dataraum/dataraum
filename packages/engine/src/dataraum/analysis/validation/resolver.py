@@ -25,8 +25,9 @@ from dataraum.analysis.semantic.db_models import (
     TableEntity,
 )
 from dataraum.analysis.semantic.utils import load_column_concepts
+from dataraum.analysis.served_columns import served_columns
+from dataraum.analysis.slicing.curation import curated_slices
 from dataraum.analysis.slicing.db_models import SliceDefinition
-from dataraum.analysis.slicing.models import CURATED_SLICE_BUDGET
 from dataraum.analysis.temporal.db_models import TemporalColumnProfile
 from dataraum.analysis.views.db_models import EnrichedView
 from dataraum.core.logging import get_logger
@@ -209,19 +210,16 @@ def get_multi_table_schema_for_llm(
     # Run-versioned (DAT-448), sealed at begin_session's session grain — scoped by
     # the SAME pin as the relationships above; unpinned reads EMPTY, never
     # cross-run. CURATED read (DAT-725): the catalog is the full deterministic
-    # inventory, so only the top-priority budget decorates the schemas with
-    # value distributions (1 = most interesting; column_name tiebreak keeps the
-    # cut deterministic across floor-priority structural rows).
-    slices = (
+    # inventory, so only the JUDGED axes decorate the schemas with value
+    # distributions (DAT-879), ordered by measured relevance. What that left
+    # out is stated on the schema block below rather than silently dropped.
+    curated = curated_slices(
         list(
             session.execute(
-                select(SliceDefinition)
-                .where(
+                select(SliceDefinition).where(
                     SliceDefinition.table_id.in_(table_ids),
                     SliceDefinition.run_id == run_id,
                 )
-                .order_by(SliceDefinition.slice_priority, SliceDefinition.column_name)
-                .limit(CURATED_SLICE_BUDGET)
             )
             .scalars()
             .all()
@@ -229,6 +227,7 @@ def get_multi_table_schema_for_llm(
         if run_id is not None
         else []
     )
+    slices = curated.served
 
     # Build column_id → distinct_values lookup
     column_slices: dict[str, list[str]] = {}
@@ -276,6 +275,11 @@ def get_multi_table_schema_for_llm(
         "tables": table_schemas,
         "relationships": formatted_rels,
         "enriched_views": formatted_views,
+        # What the value-distribution decoration left out (DAT-879/DAT-622).
+        # A column that carries no ``distinct_values`` here may be a column
+        # with no values worth listing OR one the catalogue agent never judged
+        # — this note is what lets the consumer tell those apart.
+        "slice_catalog_note": curated.note,
     }
 
 
@@ -408,7 +412,11 @@ def _format_table_schema(
         time_facts = {tc["column"]: tc for tc in entity.time_columns if tc.get("column")}
 
     columns = []
-    for col in table.columns:
+    # Mint-owned surrogate join keys are machinery, not columns a validation rule
+    # can be written about (DAT-878). The relationship endpoints rendered elsewhere
+    # in this prompt keep resolving through `column_id_to_info`, which is a separate
+    # unfiltered read — a surrogate pair still shows up there as the join it is.
+    for col in served_columns(table.columns):
         col_info: dict[str, Any] = {
             "column_name": col.column_name,
             "data_type": col.resolved_type or col.raw_type,
@@ -424,6 +432,7 @@ def _format_table_schema(
                 "business_description": ann.business_description if ann else None,
                 "meaning": concept.meaning if concept else None,
                 "temporal_behavior": concept.temporal_behavior if concept else None,
+                "stored_sign": concept.stored_sign if concept else None,
             }
 
         tf = time_facts.get(col.column_name)
@@ -521,6 +530,8 @@ def format_multi_table_schema_for_prompt(schema: dict[str, Any]) -> str:
                     col_line += f' meaning="{_attr(sem["meaning"])}"'
                 if sem.get("temporal_behavior"):
                     col_line += f' temporal_behavior="{sem["temporal_behavior"]}"'
+                if sem.get("stored_sign"):
+                    col_line += f' stored_sign="{sem["stored_sign"]}"'
                 if sem.get("business_description"):
                     desc = _attr(sem["business_description"][:500])
                     col_line += f' description="{desc}"'
@@ -552,6 +563,19 @@ def format_multi_table_schema_for_prompt(schema: dict[str, Any]) -> str:
         lines.append("")
 
     lines.append("</tables>")
+
+    # What the value-distribution decoration above left out (DAT-879/DAT-622).
+    # Only SOME columns carry <distinct_values>, and without this the model
+    # cannot tell "this column has no value-set worth listing" from "this column's
+    # axis was never judged, so nobody attached one" — it reads absence as
+    # evidence and stops considering the column. Rendered here rather than only
+    # stored on the schema dict: a note nothing prints is not a disclosure.
+    note = schema.get("slice_catalog_note", "")
+    if note:
+        lines.append("")
+        lines.append("<dimension_catalog_note>")
+        lines.append(note)
+        lines.append("</dimension_catalog_note>")
 
     # Add relationships section
     relationships = schema.get("relationships", [])

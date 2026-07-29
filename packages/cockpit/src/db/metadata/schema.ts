@@ -5,6 +5,7 @@ import {
 	integer,
 	json,
 	jsonb,
+	numeric,
 	pgView,
 	text,
 	timestamp,
@@ -127,12 +128,15 @@ export const currentColumnConcepts = pgView("current_column_concepts", {
 	unitSourceColumn: varchar("unit_source_column"),
 	derivedFormulaHypothesis: varchar("derived_formula_hypothesis"),
 	derivedFormulaConfidence: doublePrecision("derived_formula_confidence"),
+	storedSignClaim: varchar("stored_sign_claim"),
+	storedSignClaimConfidence: doublePrecision("stored_sign_claim_confidence"),
+	storedSign: varchar("stored_sign"),
 	annotationSource: varchar("annotation_source"),
 	annotatedAt: timestamp("annotated_at"),
 	annotatedBy: varchar("annotated_by"),
 	confidence: doublePrecision(),
 }).as(
-	sql`SELECT concept_id, column_id, run_id, meaning, meaning_status, temporal_behavior, unit_source_column, derived_formula_hypothesis, derived_formula_confidence, annotation_source, annotated_at, annotated_by, confidence FROM engine.column_concepts r WHERE (EXISTS ( SELECT 1 FROM engine.metadata_snapshot_head h WHERE h.target::text = 'catalog'::text AND h.stage::text = 'catalog'::text AND h.run_id::text = r.run_id::text))`,
+	sql`SELECT concept_id, column_id, run_id, meaning, meaning_status, temporal_behavior, unit_source_column, derived_formula_hypothesis, derived_formula_confidence, stored_sign_claim, stored_sign_claim_confidence, stored_sign, annotation_source, annotated_at, annotated_by, confidence FROM engine.column_concepts r WHERE (EXISTS ( SELECT 1 FROM engine.metadata_snapshot_head h WHERE h.target::text = 'catalog'::text AND h.stage::text = 'catalog'::text AND h.run_id::text = r.run_id::text))`,
 );
 
 export const currentColumnEligibility = pgView("current_column_eligibility", {
@@ -166,6 +170,35 @@ export const currentColumns = pgView("current_columns", {
 	sourceColumnId: varchar("source_column_id"),
 }).as(
 	sql`SELECT column_id, table_id, column_name, original_name, column_position, raw_type, resolved_type, origin, source_column_id FROM engine.columns c WHERE (EXISTS ( SELECT 1 FROM engine.tables t JOIN engine.metadata_snapshot_head h ON h.target::text = ('table:'::text || t.table_id::text) AND h.stage::text = 'generation'::text WHERE t.table_id::text = c.table_id::text AND t.layer::text = 'typed'::text))`,
+);
+
+export const currentConceptReconciliation = pgView(
+	"current_concept_reconciliation",
+	{
+		reconciliationId: varchar("reconciliation_id"),
+		runId: varchar("run_id"),
+		vertical: varchar(),
+		fromConcept: varchar("from_concept"),
+		toConcept: varchar("to_concept"),
+		pairKey: varchar("pair_key"),
+		leftSnippetId: varchar("left_snippet_id"),
+		rightSnippetId: varchar("right_snippet_id"),
+		leftRelation: varchar("left_relation"),
+		rightRelation: varchar("right_relation"),
+		leftAsOf: varchar("left_as_of"),
+		rightAsOf: varchar("right_as_of"),
+		leftValue: numeric("left_value"),
+		rightValue: numeric("right_value"),
+		delta: numeric(),
+		relativeDelta: numeric("relative_delta"),
+		tolerance: doublePrecision(),
+		status: varchar(),
+		verdict: varchar(),
+		abstainReason: varchar("abstain_reason"),
+		createdAt: timestamp("created_at", { withTimezone: true }),
+	},
+).as(
+	sql`SELECT reconciliation_id, run_id, vertical, from_concept, to_concept, pair_key, left_snippet_id, right_snippet_id, left_relation, right_relation, left_as_of, right_as_of, left_value, right_value, delta, relative_delta, tolerance, status, verdict, abstain_reason, created_at FROM engine.concept_reconciliation r WHERE (EXISTS ( SELECT 1 FROM engine.metadata_snapshot_head h WHERE h.target::text = 'catalog'::text AND h.stage::text = 'operating_model'::text AND h.run_id::text = r.run_id::text))`,
 );
 
 export const currentDerivedColumns = pgView("current_derived_columns", {
@@ -341,6 +374,9 @@ export const currentGroundings = pgView("current_groundings", {
 	relation: text(),
 	selectExpr: text("select_expr"),
 	wherePredicates: text("where_predicates"),
+	resolvedPeriod: text("resolved_period"),
+	reportingWindowClose: text("reporting_window_close"),
+	calendarSource: text("calendar_source"),
 	description: text(),
 	sql: text(),
 	parts: json(),
@@ -351,7 +387,39 @@ export const currentGroundings = pgView("current_groundings", {
 	createdAt: timestamp("created_at"),
 	updatedAt: timestamp("updated_at"),
 }).as(
-	sql`SELECT snippet_id, standard_field AS concept, statement, aggregation, (parts -> 'from'::text) ->> 0 AS relation, ((parts -> 'select'::text) -> 0) ->> 'expr'::text AS select_expr, (parts -> 'where'::text)::text AS where_predicates, description, sql, parts, provenance, failure_count > 0 AS failed, schema_mapping_id, workspace_id, created_at, updated_at FROM engine.sql_snippets s WHERE snippet_type::text = 'extract'::text AND source::text ~~ 'graph:%'::text`,
+	sql`SELECT snippet_id, standard_field AS concept, statement, aggregation, (parts -> 'from'::text) ->> 0 AS relation, ((parts -> 'select'::text) -> 0) ->> 'expr'::text AS select_expr, (parts -> 'where'::text)::text AS where_predicates, (parts -> 'period_binding'::text) ->> 'as_of'::text AS resolved_period, (parts -> 'period_binding'::text) ->> 'window_close'::text AS reporting_window_close, (parts -> 'period_binding'::text) ->> 'calendar_source'::text AS calendar_source, description, sql, parts, provenance, failure_count > 0 AS failed, schema_mapping_id, workspace_id, created_at, updated_at FROM engine.sql_snippets s WHERE snippet_type::text = 'extract'::text AND source::text ~~ 'graph:%'::text`,
+);
+
+export const currentInducedValidations = pgView("current_induced_validations", {
+	rowId: varchar("row_id"),
+	runId: varchar("run_id"),
+	vertical: varchar(),
+	validationId: varchar("validation_id"),
+	name: varchar(),
+	description: text(),
+	category: varchar(),
+	severity: varchar(),
+	checkType: varchar("check_type"),
+	tolerance: doublePrecision(),
+	guidance: text(),
+	expectedOutcome: text("expected_outcome"),
+	relevantCycles: json("relevant_cycles"),
+	relevantConventions: json("relevant_conventions"),
+	tags: json(),
+	version: varchar(),
+	createdAt: timestamp("created_at"),
+}).as(
+	sql`SELECT row_id, run_id, vertical, validation_id, name, description, category, severity, check_type, tolerance, guidance, expected_outcome, relevant_cycles, relevant_conventions, tags, version, created_at FROM engine.induced_validations r WHERE (EXISTS ( SELECT 1 FROM engine.metadata_snapshot_head h WHERE h.target::text = 'catalog'::text AND h.stage::text = 'operating_model'::text AND h.run_id::text = r.run_id::text))`,
+);
+
+export const currentInductionRuns = pgView("current_induction_runs", {
+	rowId: varchar("row_id"),
+	runId: varchar("run_id"),
+	vertical: varchar(),
+	proposed: integer(),
+	createdAt: timestamp("created_at"),
+}).as(
+	sql`SELECT row_id, run_id, vertical, proposed, created_at FROM engine.induction_runs r WHERE (EXISTS ( SELECT 1 FROM engine.metadata_snapshot_head h WHERE h.target::text = 'catalog'::text AND h.stage::text = 'operating_model'::text AND h.run_id::text = r.run_id::text))`,
 );
 
 export const currentLifecycleArtifacts = pgView("current_lifecycle_artifacts", {
@@ -411,24 +479,48 @@ export const currentMeasureAggregationLineage = pgView(
 		rStockMedian: doublePrecision("r_stock_median"),
 		nEntities: integer("n_entities"),
 		nEntitiesFired: integer("n_entities_fired"),
+		signFiredPrimary: integer("sign_fired_primary"),
+		signFiredMirror: integer("sign_fired_mirror"),
+		signFiredBoth: integer("sign_fired_both"),
 		createdAt: timestamp("created_at", { withTimezone: true }),
 	},
 ).as(
-	sql`SELECT lineage_id, run_id, measure_table_id, measure_column_id, event_table_id, measure_time_axis_column, measure_time_axis_column_id, event_time_axis_column, event_time_axis_column_id, measure_slice_column_id, event_slice_column_id, slice_dimension, convention_sql, period_grain, pattern, match_rate, r_flow_median, r_stock_median, n_entities, n_entities_fired, created_at FROM engine.measure_aggregation_lineage r WHERE (EXISTS ( SELECT 1 FROM engine.metadata_snapshot_head h WHERE h.target::text = 'catalog'::text AND h.stage::text = 'catalog'::text AND h.run_id::text = r.run_id::text))`,
+	sql`SELECT lineage_id, run_id, measure_table_id, measure_column_id, event_table_id, measure_time_axis_column, measure_time_axis_column_id, event_time_axis_column, event_time_axis_column_id, measure_slice_column_id, event_slice_column_id, slice_dimension, convention_sql, period_grain, pattern, match_rate, r_flow_median, r_stock_median, n_entities, n_entities_fired, sign_fired_primary, sign_fired_mirror, sign_fired_both, created_at FROM engine.measure_aggregation_lineage r WHERE (EXISTS ( SELECT 1 FROM engine.metadata_snapshot_head h WHERE h.target::text = 'catalog'::text AND h.stage::text = 'catalog'::text AND h.run_id::text = r.run_id::text))`,
 );
 
-export const currentMetricAdditivity = pgView("current_metric_additivity", {
-	additivityId: varchar("additivity_id"),
+export const currentMetricAxisAdditivity = pgView(
+	"current_metric_axis_additivity",
+	{
+		additivityId: varchar("additivity_id"),
+		runId: varchar("run_id"),
+		targetKind: varchar("target_kind"),
+		targetKey: varchar("target_key"),
+		axisKind: varchar("axis_kind"),
+		axisKey: varchar("axis_key"),
+		status: varchar(),
+		verdict: varchar(),
+		reason: varchar(),
+		abstainReason: varchar("abstain_reason"),
+		bucketGrain: varchar("bucket_grain"),
+		createdAt: timestamp("created_at", { withTimezone: true }),
+	},
+).as(
+	sql`SELECT additivity_id, run_id, target_kind, target_key, axis_kind, axis_key, status, verdict, reason, abstain_reason, bucket_grain, created_at FROM engine.metric_axis_additivity r WHERE (EXISTS ( SELECT 1 FROM engine.metadata_snapshot_head h WHERE h.target::text = 'catalog'::text AND h.stage::text = 'operating_model'::text AND h.run_id::text = r.run_id::text))`,
+);
+
+export const currentMetricUnitGrain = pgView("current_metric_unit_grain", {
+	unitGrainId: varchar("unit_grain_id"),
 	runId: varchar("run_id"),
 	targetKind: varchar("target_kind"),
 	targetKey: varchar("target_key"),
-	categoricalAdditive: boolean("categorical_additive"),
-	timeAdditive: boolean("time_additive"),
-	categoricalReason: varchar("categorical_reason"),
-	timeReason: varchar("time_reason"),
+	axis: varchar(),
+	entityValue: varchar("entity_value"),
+	value: numeric(),
+	reconciles: boolean(),
+	recompute: boolean(),
 	createdAt: timestamp("created_at", { withTimezone: true }),
 }).as(
-	sql`SELECT additivity_id, run_id, target_kind, target_key, categorical_additive, time_additive, categorical_reason, time_reason, created_at FROM engine.metric_additivity r WHERE (EXISTS ( SELECT 1 FROM engine.metadata_snapshot_head h WHERE h.target::text = 'catalog'::text AND h.stage::text = 'operating_model'::text AND h.run_id::text = r.run_id::text))`,
+	sql`SELECT unit_grain_id, run_id, target_kind, target_key, axis, entity_value, value, reconciles, recompute, created_at FROM engine.metric_unit_grain r WHERE (EXISTS ( SELECT 1 FROM engine.metadata_snapshot_head h WHERE h.target::text = 'catalog'::text AND h.stage::text = 'operating_model'::text AND h.run_id::text = r.run_id::text))`,
 );
 
 export const currentRelationships = pgView("current_relationships", {
@@ -483,7 +575,8 @@ export const currentSliceDefinitions = pgView("current_slice_definitions", {
 	dimensionTableId: varchar("dimension_table_id"),
 	dimensionAttribute: varchar("dimension_attribute"),
 	fkRole: varchar("fk_role"),
-	slicePriority: integer("slice_priority"),
+	sliceRelevance: doublePrecision("slice_relevance"),
+	sliceInterest: varchar("slice_interest"),
 	sliceType: varchar("slice_type"),
 	distinctValues: json("distinct_values"),
 	valueCount: integer("value_count"),
@@ -493,7 +586,7 @@ export const currentSliceDefinitions = pgView("current_slice_definitions", {
 	detectionSource: varchar("detection_source"),
 	createdAt: timestamp("created_at"),
 }).as(
-	sql`SELECT slice_id, run_id, table_id, column_id, column_name, dimension_table_id, dimension_attribute, fk_role, slice_priority, slice_type, distinct_values, value_count, reasoning, business_context, confidence, detection_source, created_at FROM engine.slice_definitions r WHERE (EXISTS ( SELECT 1 FROM engine.metadata_snapshot_head h WHERE h.target::text = 'catalog'::text AND h.stage::text = 'catalog'::text AND h.run_id::text = r.run_id::text))`,
+	sql`SELECT slice_id, run_id, table_id, column_id, column_name, dimension_table_id, dimension_attribute, fk_role, slice_relevance, slice_interest, slice_type, distinct_values, value_count, reasoning, business_context, confidence, detection_source, created_at FROM engine.slice_definitions r WHERE (EXISTS ( SELECT 1 FROM engine.metadata_snapshot_head h WHERE h.target::text = 'catalog'::text AND h.stage::text = 'catalog'::text AND h.run_id::text = r.run_id::text))`,
 );
 
 export const currentStatisticalProfiles = pgView(
@@ -665,6 +758,23 @@ export const cycleFamilies = pgView("cycle_families", {
 	sql`SELECT family_id, vertical, family, directions, source, created_at, superseded_at FROM engine.cycle_families WHERE vertical::text = COALESCE(( SELECT workspace_settings.active_vertical FROM engine.workspace_settings), '_adhoc'::character varying)::text`,
 );
 
+export const cycleTypes = pgView("cycle_types", {
+	cycleTypeId: varchar("cycle_type_id"),
+	vertical: varchar(),
+	name: varchar(),
+	description: text(),
+	businessValue: varchar("business_value"),
+	aliases: json(),
+	typicalStages: json("typical_stages"),
+	completionIndicators: json("completion_indicators"),
+	feedsInto: json("feeds_into"),
+	source: varchar(),
+	createdAt: timestamp("created_at"),
+	supersededAt: timestamp("superseded_at"),
+}).as(
+	sql`SELECT cycle_type_id, vertical, name, description, business_value, aliases, typical_stages, completion_indicators, feeds_into, source, created_at, superseded_at FROM engine.cycle_types WHERE vertical::text = COALESCE(( SELECT workspace_settings.active_vertical FROM engine.workspace_settings), '_adhoc'::character varying)::text`,
+);
+
 export const metadataSnapshotHead = pgView("metadata_snapshot_head", {
 	headId: varchar("head_id"),
 	target: varchar(),
@@ -712,11 +822,14 @@ export const metrics = pgView("metrics", {
 	unit: varchar(),
 	outputType: varchar("output_type"),
 	version: varchar(),
+	description: text(),
+	output: json(),
+	dependencies: json(),
 	source: varchar(),
 	createdAt: timestamp("created_at"),
 	supersededAt: timestamp("superseded_at"),
 }).as(
-	sql`SELECT metric_id, vertical, graph_id, name, category, unit, output_type, version, source, created_at, superseded_at FROM engine.metrics WHERE vertical::text = COALESCE(( SELECT workspace_settings.active_vertical FROM engine.workspace_settings), '_adhoc'::character varying)::text`,
+	sql`SELECT metric_id, vertical, graph_id, name, category, unit, output_type, version, description, output, dependencies, source, created_at, superseded_at FROM engine.metrics WHERE vertical::text = COALESCE(( SELECT workspace_settings.active_vertical FROM engine.workspace_settings), '_adhoc'::character varying)::text`,
 );
 
 export const runTables = pgView("run_tables", {
@@ -746,6 +859,7 @@ export const sqlSnippets = pgView("sql_snippets", {
 	standardField: varchar("standard_field"),
 	statement: varchar(),
 	aggregation: varchar(),
+	predicate: varchar(),
 	schemaMappingId: varchar("schema_mapping_id"),
 	parameterValue: varchar("parameter_value"),
 	normalizedExpression: varchar("normalized_expression"),
@@ -760,7 +874,7 @@ export const sqlSnippets = pgView("sql_snippets", {
 	createdAt: timestamp("created_at"),
 	updatedAt: timestamp("updated_at"),
 }).as(
-	sql`SELECT snippet_id, workspace_id, snippet_type, standard_field, statement, aggregation, schema_mapping_id, parameter_value, normalized_expression, input_fields, sql, description, source, provenance, parts, execution_count, failure_count, created_at, updated_at FROM engine.sql_snippets`,
+	sql`SELECT snippet_id, workspace_id, snippet_type, standard_field, statement, aggregation, predicate, schema_mapping_id, parameter_value, normalized_expression, input_fields, sql, description, source, provenance, parts, execution_count, failure_count, created_at, updated_at FROM engine.sql_snippets`,
 );
 
 export const tables = pgView("tables", {
@@ -797,6 +911,19 @@ export const validations = pgView("validations", {
 	supersededAt: timestamp("superseded_at"),
 }).as(
 	sql`SELECT row_id, vertical, validation_id, name, description, category, severity, check_type, tolerance, guidance, expected_outcome, relevant_cycles, relevant_conventions, tags, version, source, created_at, superseded_at FROM engine.validations WHERE vertical::text = COALESCE(( SELECT workspace_settings.active_vertical FROM engine.workspace_settings), '_adhoc'::character varying)::text`,
+);
+
+export const verticalEnvelopes = pgView("vertical_envelopes", {
+	envelopeId: varchar("envelope_id"),
+	vertical: varchar(),
+	name: varchar(),
+	version: varchar(),
+	description: text(),
+	source: varchar(),
+	createdAt: timestamp("created_at"),
+	supersededAt: timestamp("superseded_at"),
+}).as(
+	sql`SELECT envelope_id, vertical, name, version, description, source, created_at, superseded_at FROM engine.vertical_envelopes WHERE vertical::text = COALESCE(( SELECT workspace_settings.active_vertical FROM engine.workspace_settings), '_adhoc'::character varying)::text`,
 );
 
 export const workspaceCalendar = pgView("workspace_calendar", {

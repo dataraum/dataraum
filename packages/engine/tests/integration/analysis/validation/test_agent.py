@@ -142,14 +142,13 @@ def table_with_data(session, duckdb_conn):
     return table
 
 
-def _eval_spec(check_type: str, **parameters) -> ValidationSpec:
+def _eval_spec(check_type: str) -> ValidationSpec:
     return ValidationSpec(
         validation_id="test",
         name="Test",
         description="Test",
         category="test",
         check_type=check_type,
-        parameters=parameters,
     )
 
 
@@ -164,7 +163,7 @@ class TestValidationAgentGenerateSQL:
             description="A test validation",
             category="test",
             check_type="balance",
-            sql_hints="Sum debits and credits",
+            guidance="Sum debits and credits",
         )
 
         schema = {
@@ -223,6 +222,138 @@ class TestValidationAgentGenerateSQL:
 
         rendered_context = validation_agent.renderer.render_split.call_args.args[1]
         assert rendered_context["conventions"] == "CREDIT-NORMAL = credit - debit"
+
+    def test_generate_sql_renders_expected_formula_into_sql_hints(
+        self, validation_agent, mock_provider
+    ):
+        """DAT-880: the typed expected_formula declaration (no longer folded into
+        guidance at load) is rendered into the sql_hints prompt slot explicitly, so
+        the binder still sees the column-identity claim it needs to ground SQL."""
+        spec = ValidationSpec(
+            validation_id="expected_formula:orders.total",
+            name="Expected formula for orders.total",
+            description="total should equal subtotal + tax",
+            category="business_rule",
+            check_type="expected_formula",
+            expected_formula={"table": "orders", "column": "total", "formula": "subtotal + tax"},
+        )
+        schema = {
+            "table_name": "orders",
+            "duckdb_path": "typed_orders",
+            "columns": [{"column_name": "total", "data_type": "DECIMAL"}],
+        }
+        mock_provider.converse.return_value = Result.ok(
+            _make_output_response(
+                {
+                    "sql": "SELECT 1 AS deviation, 1 AS magnitude",
+                    "columns_used": [],
+                    "can_validate": True,
+                    "skip_reason": "",
+                }
+            )
+        )
+
+        validation_agent._generate_sql(spec, schema)
+
+        rendered_context = validation_agent.renderer.render_split.call_args.args[1]
+        assert "orders.total" in rendered_context["sql_hints"]
+        assert "subtotal + tax" in rendered_context["sql_hints"]
+
+    def test_generate_sql_combines_guidance_and_expected_formula_in_sql_hints(
+        self, validation_agent, mock_provider
+    ):
+        """Both an advisory guidance prose AND a typed declaration can be present —
+        neither displaces the other in the rendered hint text."""
+        spec = ValidationSpec(
+            validation_id="expected_formula:orders.total",
+            name="Expected formula for orders.total",
+            description="total should equal subtotal + tax",
+            category="business_rule",
+            check_type="expected_formula",
+            guidance="Join through the line_items table for subtotal.",
+            expected_formula={"table": "orders", "column": "total", "formula": "subtotal + tax"},
+        )
+        schema = {"table_name": "orders", "duckdb_path": "typed_orders", "columns": []}
+        mock_provider.converse.return_value = Result.ok(
+            _make_output_response(
+                {
+                    "sql": "SELECT 1 AS deviation, 1 AS magnitude",
+                    "columns_used": [],
+                    "can_validate": True,
+                    "skip_reason": "",
+                }
+            )
+        )
+
+        validation_agent._generate_sql(spec, schema)
+
+        rendered_context = validation_agent.renderer.render_split.call_args.args[1]
+        assert "line_items" in rendered_context["sql_hints"]
+        assert "subtotal + tax" in rendered_context["sql_hints"]
+
+    def test_generate_sql_renders_guidance_only_into_sql_hints(
+        self, validation_agent, mock_provider
+    ):
+        """A plain guidance-only spec (no expected_formula) renders sql_hints from
+        guidance alone — the ordinary case, closing the render matrix alongside the
+        expected_formula-only and both-present cases above."""
+        spec = ValidationSpec(
+            validation_id="balance_check",
+            name="Balance Check",
+            description="d",
+            category="financial",
+            check_type="balance",
+            guidance="Sum debits and credits per account.",
+        )
+        schema = {"table_name": "t", "duckdb_path": "t", "columns": []}
+        mock_provider.converse.return_value = Result.ok(
+            _make_output_response(
+                {
+                    "sql": "SELECT 1 AS deviation, 1 AS magnitude",
+                    "columns_used": [],
+                    "can_validate": True,
+                    "skip_reason": "",
+                }
+            )
+        )
+
+        validation_agent._generate_sql(spec, schema)
+
+        rendered_context = validation_agent.renderer.render_split.call_args.args[1]
+        assert rendered_context["sql_hints"] == (
+            "<sql_hints>Sum debits and credits per account.</sql_hints>"
+        )
+
+    def test_generate_sql_neither_guidance_nor_expected_formula_yields_empty_sql_hints(
+        self, validation_agent, mock_provider
+    ):
+        """Neither guidance nor an expected_formula declaration → sql_hints is the
+        exact empty string, not an empty `<sql_hints></sql_hints>` element — the
+        prompt template's `{sql_hints}` slot is itself optional (validation_sql.yaml),
+        so an empty element would be a hollow-but-present tag."""
+        spec = ValidationSpec(
+            validation_id="constraint_check",
+            name="Constraint Check",
+            description="d",
+            category="data_quality",
+            check_type="constraint",
+        )
+        schema = {"table_name": "t", "duckdb_path": "t", "columns": []}
+        mock_provider.converse.return_value = Result.ok(
+            _make_output_response(
+                {
+                    "sql": "SELECT 1 AS deviation, 1 AS magnitude",
+                    "columns_used": [],
+                    "can_validate": True,
+                    "skip_reason": "",
+                }
+            )
+        )
+
+        validation_agent._generate_sql(spec, schema)
+
+        rendered_context = validation_agent.renderer.render_split.call_args.args[1]
+        assert rendered_context["sql_hints"] == ""
 
     def test_generate_sql_cannot_validate(self, validation_agent, mock_provider):
         """Test when LLM indicates validation cannot be performed."""
@@ -371,7 +502,7 @@ class TestValidationAgentBindExecute:
             category="financial",
             check_type="balance",
             severity=ValidationSeverity.CRITICAL,
-            parameters={"tolerance": 0.01},
+            tolerance=0.01,
         )
 
         # Get multi-table schema
@@ -617,7 +748,22 @@ class TestGrainFacts:
                         {
                             "column_name": "level",
                             "data_type": "DECIMAL",
-                            "semantic": {"temporal_behavior": "point_in_time"},
+                            "semantic": {
+                                "temporal_behavior": "point_in_time",
+                                "stored_sign": "ledger_signed",
+                            },
+                        },
+                        {
+                            "column_name": "natural_level",
+                            "data_type": "DECIMAL",
+                            "semantic": {"stored_sign": "natural_balance"},
+                        },
+                        # Undetermined convention contributes nothing — the author
+                        # must see no fact rather than a guess.
+                        {
+                            "column_name": "unsigned",
+                            "data_type": "DECIMAL",
+                            "semantic": {"temporal_behavior": "additive"},
                         },
                     ],
                 },
@@ -638,6 +784,19 @@ class TestGrainFacts:
         assert "time granularity: period=month" in rendered
         assert "additive (per-period movement): movement" in rendered
         assert "point_in_time (level, never summed across periods): level" in rendered
+        # DAT-875: the measured storage convention, so sign_natural_balance can be
+        # applied to BOTH sides of a comparison instead of one.
+        assert "stored ledger_signed" in rendered
+        assert "credit-normal accounts read NEGATIVE" in rendered
+        assert "express BOTH sides of any comparison in one convention): level" in rendered
+        assert "stored natural_balance" in rendered
+        assert "natural_level" in rendered
+        # "unsigned" IS in the block (it carries a temporal fact) — it must be absent
+        # only from the two stored-sign segments, which is what an undetermined
+        # convention means. Scope the assertion instead of slicing at the first match.
+        sign_segments = [seg for seg in rendered.split("; ") if seg.startswith("stored ")]
+        assert len(sign_segments) == 2
+        assert all("unsigned" not in seg for seg in sign_segments)
         assert "bare" not in rendered
         # No dimension-role table is served ⇒ the existence-check universe fact fires
         # (DAT-876): existence checks are unbindable against a fact/snapshot-only graph.

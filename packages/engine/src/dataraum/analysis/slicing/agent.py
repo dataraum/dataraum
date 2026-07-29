@@ -198,9 +198,14 @@ class SlicingAgent(LLMFeature):
                 table_name=table_name,
                 column_id=col_info.get("column_id", ""),
                 column_name=column_name,
-                slice_priority=rec.priority,
+                slice_interest=rec.interest,
                 distinct_values=distinct_values,
-                value_count=len(distinct_values),
+                # The column's TRUE distinct count, from the profile — not
+                # ``len(distinct_values)``, which is the length of a bounded
+                # echo of values and was persisted as if it were the cardinality
+                # (DAT-879 / DAT-622). None when unprofiled; the writer falls
+                # back to the same profile field either way.
+                value_count=col_info.get("distinct_count"),
                 reasoning=rec.reasoning,
                 # The output model states every attribute (DAT-807), using "" for
                 # the not-applicable case; the domain model + its nullable column

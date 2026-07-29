@@ -53,6 +53,7 @@ class TestSnippetLibraryFindByKey:
             standard_field="revenue",
             statement="income_statement",
             aggregation="sum",
+            predicate="",
         )
         session.flush()
 
@@ -63,6 +64,7 @@ class TestSnippetLibraryFindByKey:
             standard_field="revenue",
             statement="income_statement",
             aggregation="sum",
+            predicate="",
         )
 
         assert match is not None
@@ -79,6 +81,7 @@ class TestSnippetLibraryFindByKey:
             snippet_type="extract",
             schema_mapping_id="schema_abc",
             standard_field="nonexistent",
+            predicate="",
         )
         assert match is None
 
@@ -95,6 +98,7 @@ class TestSnippetLibraryFindByKey:
             standard_field="revenue",
             statement="income_statement",
             aggregation="sum",
+            predicate="",
         )
         session.flush()
 
@@ -104,6 +108,7 @@ class TestSnippetLibraryFindByKey:
             standard_field="revenue",
             statement="income_statement",
             aggregation="sum",
+            predicate="",
         )
         assert match is None
 
@@ -119,6 +124,7 @@ class TestSnippetLibraryFindByKey:
             source="graph:dso",
             standard_field="days_in_period",
             parameter_value="30",
+            predicate="",
         )
         session.flush()
 
@@ -128,6 +134,7 @@ class TestSnippetLibraryFindByKey:
             schema_mapping_id="schema_abc",
             standard_field="days_in_period",
             parameter_value="30",
+            predicate="",
         )
         assert match is not None
         assert match.snippet.parameter_value == "30"
@@ -138,6 +145,7 @@ class TestSnippetLibraryFindByKey:
             schema_mapping_id="schema_abc",
             standard_field="days_in_period",
             parameter_value="365",
+            predicate="",
         )
         assert match2 is None
 
@@ -164,6 +172,7 @@ class TestSnippetLibraryFindByKey:
             schema_mapping_id="schema_abc",
             standard_field="total_assets",
             aggregation="sum",
+            predicate="",
         )
         assert match is not None
 
@@ -174,6 +183,7 @@ class TestSnippetLibraryFindByKey:
             standard_field="total_assets",
             statement="balance_sheet",
             aggregation="sum",
+            predicate="",
         )
         assert match2 is None
 
@@ -194,6 +204,7 @@ class TestSnippetLibrarySave:
             standard_field="revenue",
             statement="income_statement",
             aggregation="sum",
+            predicate="",
         )
         session.flush()
 
@@ -457,6 +468,7 @@ class TestSnippetLibraryFailedRetention:
                 standard_field="current_assets",
                 statement="balance_sheet",
                 aggregation="end_of_period",
+                predicate="",
             )
             is None
         )
@@ -467,6 +479,7 @@ class TestSnippetLibraryFailedRetention:
             standard_field="current_assets",
             statement="balance_sheet",
             aggregation="end_of_period",
+            predicate="",
         )
         assert rec is not None
         assert rec.failure_count == 1
@@ -499,14 +512,20 @@ class TestSnippetLibraryFailedRetention:
         session.flush()
 
         match = library.find_by_key(
-            snippet_type="extract", schema_mapping_id="s2", standard_field="revenue"
+            snippet_type="extract",
+            schema_mapping_id="s2",
+            standard_field="revenue",
+            predicate="",
         )
         assert match is not None
         assert match.snippet.sql == healthy_sql  # unchanged, still reusable
         assert match.snippet.failure_count == 0
         assert (
             library.retained_failure(
-                snippet_type="extract", schema_mapping_id="s2", standard_field="revenue"
+                snippet_type="extract",
+                schema_mapping_id="s2",
+                standard_field="revenue",
+                predicate="",
             )
             is None
         )
@@ -520,6 +539,7 @@ class TestSnippetLibraryFailedRetention:
             "standard_field": "accounts_payable",
             "statement": "balance_sheet",
             "aggregation": "end_of_period",
+            "predicate": "",
         }
         library.save_snippet(
             sql="BAD",

@@ -8,6 +8,8 @@ Includes tool-friendly models for LLM structured output via Anthropic tool use.
 
 from __future__ import annotations
 
+from collections.abc import Mapping
+from collections.abc import Set as AbstractSet
 from typing import Any, Literal
 
 from pydantic import BaseModel, Field, model_validator
@@ -341,6 +343,115 @@ class TableSynthesisOutput(BaseModel):
             "you detect that weren't in the candidates."
         ),
     )
+
+    def period_columns_by_dimension(
+        self, unique_columns: Mapping[str, AbstractSet[str]]
+    ) -> dict[str, set[str]]:
+        """Each period dimension's KEY columns — what a fact's period FK points at.
+
+        A period (calendar) dimension is structurally **one row per period**, and
+        the witness for that is CARDINALITY, not naming and not grain membership:
+        the dimension carries an EVENT date (DAT-780, applied on this side too)
+        that is unique across its rows. ``unique_columns`` is that witness —
+        ``distinct_count == total_count``, see
+        :meth:`~dataraum.analysis.semantic.agent.SemanticAgent._unique_columns`.
+
+        Grain membership was the wrong test: the standard warehouse calendar is
+        SURROGATE-keyed — ``dim_period(period_id PK, period_date DATE, ...)`` —
+        so its date is almost never in its own grain, and requiring that missed
+        the primary shape entirely. Keying on uniqueness instead admits the
+        surrogate-keyed calendar while ``dim_customer`` still fails: many
+        customers share a ``signup_date``, so the date does not identify a row
+        and the dimension is many rows per period. The soundness case is now
+        decided by the data rather than by the model's choice of grain.
+
+        A dimension with no such witness — unprofiled, or no unique event date —
+        is not treated as a period. The role only ever tightens a verdict, so an
+        absent witness must fail safe (→ ``FACT``).
+
+        The returned keys are the grain columns that are THEMSELVES unique, not
+        the whole grain: on a composite-grained dimension only some legs identify
+        a row, and handing back the rest lets a fact that FKs, say, the ENTITY leg
+        of ``dim_entity_period(entity_id, period_id)`` read as a snapshot and lose
+        its COUNT time axis. For the single-column calendar the narrowing is a
+        no-op (a single-column grain IS the unique key).
+
+        **Known limits.** Three under-claims (all resolve ``FACT``, the safe
+        direction, since the role only ever tightens a verdict) and one
+        over-claim that cannot be closed here:
+
+        - a calendar carrying NO date-typed column at all (only smart integers,
+          ``date_key = 20240131``) has no event ``TimeColumn`` to witness;
+        - a COMPOSITE-keyed calendar (``(fiscal_year, fiscal_period)``) has no
+          individually unique grain column — that is what makes the key
+          composite — so it never registers. Per-column profiles carry no JOINT
+          cardinality, so this is not fixable from this input;
+        - a dimension whose columns were never profiled (a run over the
+          ``limits.max_columns`` gate profiles a subset) has no witness, and
+          silently does not fire.
+        - **Over-claim:** the soundness case rests on the data PLUS an
+          assumption — that a non-calendar dimension's event dates COLLIDE. A
+          small dimension with a genuinely unique event date (``dim_product``
+          keyed by product with a distinct ``launch_date`` per row) satisfies the
+          witness and false-fires as a period. Narrowing the keys does not close
+          it: its grain column is unique too.
+
+        Closing the over-claim needs an LLM-CONTRACT change — the model naming
+        its period dimension, with this cardinality witness retained as the
+        soundness gate on that claim. Never a name or shape heuristic.
+        """
+        periods: dict[str, set[str]] = {}
+        for table in self.tables:
+            # A grainless dimension has no key to point an FK at; nothing to do.
+            if table.is_fact_table or not table.grain:
+                continue
+            unique = unique_columns.get(table.table_name, frozenset())
+            events = {tc.column for tc in table.time_columns if tc.role == "event"}
+            keys = set(table.grain) & set(unique)
+            if keys and events & unique:
+                periods[table.table_name] = keys
+        return periods
+
+    def period_axis_columns(
+        self, table: TableEntityOutput, period_dimensions: Mapping[str, AbstractSet[str]]
+    ) -> set[str]:
+        """Columns of ``table`` that can carry its reporting period.
+
+        Two shapes, because a fact can hold its period either way:
+
+        - a **date column** the model tagged ``role='event'`` — the period is the
+          row's own date. EVENT axes only (DAT-780): an attribute date such as
+          ``due_date`` landing in the grain must not flip a plain fact to
+          periodic_snapshot;
+        - a **period FK** — an integer/varchar key into a period dimension. It
+          holds no date, so it is never a ``TimeColumn``, and reading
+          time-in-grain off the date columns alone mis-roled the standard
+          warehouse snapshot (grain ``(account_id, period_id)``) as a plain FACT
+          (DAT-847). A reference counts as the period when it points at a key of
+          a one-row-per-period dimension — pass
+          :meth:`period_columns_by_dimension`'s result as ``period_dimensions``
+          (computed once per synthesis, not per table).
+
+        Hierarchy edges are self-referential parent/child, never a period bridge,
+        so only ``foreign_key`` relationships are followed, and only one hop: a
+        period reached through an intermediate table is that table's grain, not
+        this one's.
+
+        Only the anchor pair is examined, and the composite ``key_columns`` shape
+        is NOT walked. Composite-keyed calendars do exist — that is not the
+        reason. The reason is that a composite-keyed dimension has no
+        individually unique grain column, so it never registers in
+        ``period_dimensions`` at all; there would be nothing for the extra pairs
+        to resolve against. See that method's known limits.
+        """
+        names = {tc.column for tc in table.time_columns if tc.role == "event"}
+        for rel in self.relationships:
+            if rel.relationship_type != "foreign_key" or rel.from_table != table.table_name:
+                continue
+            keys = period_dimensions.get(rel.to_table)
+            if keys and rel.to_column in keys:
+                names.add(rel.from_column)
+        return names
 
 
 # =============================================================================

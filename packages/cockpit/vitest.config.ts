@@ -11,10 +11,20 @@
 //         containers, no network. Tools import a live postgres() client at module
 //         load, so any unit test that pulls a tool MUST mock `#/config` +
 //         `#/db/metadata/client` (see registry.test.ts / chat.test.ts).
-//       - `integration` (`bun run test:integration`, only with the compose stack
-//         up): the real-Postgres tests (`*.integration.test.*`). Each self-skips
-//         when METADATA_DATABASE_URL is unset, but keeping them in a separate
-//         project means the default run never loads them at all.
+//       - `integration` (`bun run test:integration`): the real-infrastructure
+//         tests (`*.integration.test.*`). Keeping them in a separate project
+//         means the default run never loads them at all. Two flavours live
+//         here:
+//           · fixture-backed — a throwaway Postgres carrying the ENGINE's
+//             generated schema, booted once per run by ./src/test/global-setup.ts.
+//             Needs only a docker daemon; skips loudly without one.
+//           · legacy stack-gated — older suites written against a seeded
+//             compose stack, gated on `providedByEnvironment(...)` and skipped
+//             unless the environment supplies real DSNs.
+//
+//         This project MUST run under `bun --bun` (see package.json): the
+//         engine metadata client imports `SQL` from "bun", which cannot load
+//         under Node at all.
 
 import { fileURLToPath } from "node:url";
 import viteReact from "@vitejs/plugin-react";
@@ -58,6 +68,14 @@ export default defineConfig({
 					name: "integration",
 					setupFiles,
 					include: [INTEGRATION_GLOB],
+					// Boots the fixture workspace once per run (a throwaway Postgres
+					// carrying the engine's generated schema) and provides its DSNs.
+					// Suites that don't need it are unaffected; suites that do skip
+					// loudly when docker is unavailable. See ./src/test/global-setup.ts.
+					globalSetup: ["./src/test/global-setup.ts"],
+					// The fixture boot + cockpit_db migrations dominate a cold run.
+					hookTimeout: 120_000,
+					testTimeout: 60_000,
 				},
 			},
 		],

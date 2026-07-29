@@ -70,7 +70,6 @@ class LLMFeatures(BaseModel):
     business_cycles: FeatureConfig | None = None
     entropy_query_interpretation: FeatureConfig | None = None
     enrichment_analysis: FeatureConfig | None = None
-    why_analysis: FeatureConfig | None = None
     # Metric grounding (GraphAgent._generate_sql) — tier + effort for the
     # pipeline's most central agent (DAT-603). None keeps the built-in defaults
     # (balanced tier, API-default effort).

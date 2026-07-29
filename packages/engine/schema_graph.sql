@@ -52,7 +52,8 @@ SELECT c.column_id::text AS column_id, c.table_id::text AS table_id, c.column_na
          CASE cc.temporal_behavior WHEN 'additive' THEN 'flow'
                                    WHEN 'point_in_time' THEN 'stock' END
        ) AS materialization,
-       COALESCE(mal.event_time_axis_column, declared_anchor.column_name) AS anchor_time_axis
+       COALESCE(mal.event_time_axis_column, declared_anchor.column_name) AS anchor_time_axis,
+       cc.stored_sign
 FROM __READ__.current_columns c
 LEFT JOIN __READ__.current_semantic_annotations sa ON sa.column_id = c.column_id
 LEFT JOIN __READ__.current_column_concepts cc ON cc.column_id = c.column_id
@@ -73,7 +74,8 @@ SELECT ec.column_id::text AS column_id, ec.table_id::text AS table_id, ec.column
          CASE cc.temporal_behavior WHEN 'additive' THEN 'flow'
                                    WHEN 'point_in_time' THEN 'stock' END
        ) AS materialization,
-       COALESCE(mal.event_time_axis_column, declared_anchor.column_name) AS anchor_time_axis
+       COALESCE(mal.event_time_axis_column, declared_anchor.column_name) AS anchor_time_axis,
+       cc.stored_sign
 FROM __READ__.current_enriched_columns ec
 LEFT JOIN __READ__.current_semantic_annotations sa ON sa.column_id = ec.source_column_id
 LEFT JOIN __READ__.current_column_concepts cc ON cc.column_id = ec.source_column_id
@@ -119,7 +121,8 @@ WHERE r.relationship_type IN ('foreign_key', 'hierarchy')
 
 CREATE VIEW __READ__.og_has_dimension AS
 SELECT slice_id::text AS slice_id, table_id::text AS table_id,
-       column_id::text AS column_id, column_name, slice_type, slice_priority,
+       column_id::text AS column_id, column_name, slice_type,
+       slice_relevance, slice_interest,
        dimension_table_id::text AS dimension_table_id,
        dimension_attribute, fk_role
 FROM __READ__.current_slice_definitions;
@@ -157,7 +160,11 @@ CREATE VIEW __READ__.og_conformed_dimension AS
 SELECT (s1.slice_id || '_' || s2.slice_id)::text AS edge_key,
        s1.table_id::text AS from_table_id, s2.table_id::text AS to_table_id,
        s1.dimension_table_id::text AS dimension_table_id,
-       s1.dimension_attribute AS dimension_attribute
+       s1.dimension_attribute AS dimension_attribute,
+       b1.conformed_group AS conformed_group,
+       b1.confirmation_source AS confirmation_source,
+       COALESCE(NULLIF(s1.fk_role, ''), s1.column_name) AS from_role,
+       COALESCE(NULLIF(s2.fk_role, ''), s2.column_name) AS to_role
 FROM __READ__.current_slice_definitions s1
 JOIN __READ__.current_bus_matrix b1
   ON b1.attachment = 'referenced'
@@ -176,7 +183,11 @@ JOIN __READ__.current_bus_matrix b2
  AND EXISTS (SELECT 1 FROM json_array_elements_text(b2.roles) AS r(role)
              WHERE r.role = COALESCE(NULLIF(s2.fk_role, ''), s2.column_name))
 WHERE s1.dimension_table_id IS NOT NULL
- AND b1.conformed_group = b2.conformed_group;
+ AND b1.conformed_group = b2.conformed_group
+ AND b1.confirmation_source <> 'unconfirmed'
+ AND b2.confirmation_source <> 'unconfirmed'
+ AND NOT b1.needs_confirmation
+ AND NOT b2.needs_confirmation;
 
 CREATE VIEW __READ__.og_grounded_by AS
 SELECT (c.concept_id || '_' || g.snippet_id)::text AS edge_key,
@@ -486,15 +497,16 @@ FROM (VALUES ('day', 'month'), ('month', 'quarter'), ('quarter', 'year'))
 
 CREATE VIEW __READ__.og_additivity AS
 SELECT additivity_id::text AS additivity_id, target_kind, target_key,
-       categorical_additive, time_additive, categorical_reason, time_reason
-FROM __READ__.current_metric_additivity;
+       axis_kind, axis_key, status, verdict, reason, abstain_reason,
+       bucket_grain
+FROM __READ__.current_metric_axis_additivity;
 
 CREATE VIEW __READ__.og_has_additivity AS
 SELECT (c.concept_id || '_' || a.additivity_id)::text AS edge_key,
        c.concept_id::text AS concept_id,
        a.additivity_id::text AS additivity_id,
        a.target_key
-FROM __READ__.current_metric_additivity a
+FROM __READ__.current_metric_axis_additivity a
 JOIN __READ__.concepts c
   ON c.name = a.target_key AND c.superseded_at IS NULL
 WHERE a.target_kind = 'measure';
@@ -558,7 +570,7 @@ CREATE PROPERTY GRAPH __READ__.operating_model
       PROPERTIES (table_id, table_name, layer, table_role, detected_entity_type),
     __READ__.og_columns KEY (column_id) LABEL column_node
       PROPERTIES (column_id, table_id, column_name, semantic_role, materialization,
-                  anchor_time_axis),
+                  anchor_time_axis, stored_sign),
     __READ__.og_concepts KEY (concept_id) LABEL concept_node
       PROPERTIES (concept_id, vertical, name, kind, ordering),
     __READ__.og_grounding KEY (snippet_id) LABEL grounding_node
@@ -567,8 +579,8 @@ CREATE PROPERTY GRAPH __READ__.operating_model
     __READ__.og_period_grain KEY (grain) LABEL period_grain
       PROPERTIES (grain, ordinal, fiscal_year_start_month, calendar_source),
     __READ__.og_additivity KEY (additivity_id) LABEL additivity_verdict
-      PROPERTIES (additivity_id, target_kind, target_key, categorical_additive,
-                  time_additive, categorical_reason, time_reason),
+      PROPERTIES (additivity_id, target_kind, target_key, axis_kind, axis_key,
+                  status, verdict, reason, abstain_reason, bucket_grain),
     __READ__.og_metrics KEY (graph_id) LABEL metric_node
       PROPERTIES (graph_id, vertical, name, category, unit, output_type),
     __READ__.og_metric_parameters KEY (parameter_id) LABEL parameter_node
@@ -590,7 +602,7 @@ CREATE PROPERTY GRAPH __READ__.operating_model
       SOURCE KEY (table_id) REFERENCES og_tables (table_id)
       DESTINATION KEY (column_id) REFERENCES og_columns (column_id)
       LABEL has_dimension
-      PROPERTIES (column_name, slice_type, slice_priority,
+      PROPERTIES (column_name, slice_type, slice_relevance, slice_interest,
                   dimension_table_id, dimension_attribute, fk_role),
     __READ__.og_derived_from KEY (edge_key)
       SOURCE KEY (view_table_id) REFERENCES og_tables (table_id)
@@ -606,7 +618,9 @@ CREATE PROPERTY GRAPH __READ__.operating_model
       SOURCE KEY (from_table_id) REFERENCES og_tables (table_id)
       DESTINATION KEY (to_table_id) REFERENCES og_tables (table_id)
       LABEL conformed_dimension
-      PROPERTIES (dimension_table_id, dimension_attribute),
+      PROPERTIES (dimension_table_id, dimension_attribute,
+                  conformed_group, confirmation_source,
+                  from_role, to_role),
     __READ__.og_grounded_by KEY (edge_key)
       SOURCE KEY (concept_id) REFERENCES og_concepts (concept_id)
       DESTINATION KEY (snippet_id) REFERENCES og_grounding (snippet_id)

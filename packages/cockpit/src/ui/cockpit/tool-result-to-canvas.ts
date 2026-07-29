@@ -12,6 +12,9 @@
 // Row types are type-only imports (erased — no server code in the client bundle).
 
 import type { UIMessage } from "@tanstack/ai-react";
+// Type-only (erased at compile time) — the projector narrows the answer tool's
+// drill handle without pulling its server module into the client bundle.
+import type { AnswerDrillSource } from "#/duckdb/answer-source";
 import { isAgentError } from "#/tools/agent-error";
 import type { AvailableSource } from "#/tools/list-sources";
 import type { InventoryTable } from "#/tools/list-tables";
@@ -74,6 +77,49 @@ function readAnswerConfidence(
 		assumptions: strings(result?.assumptions),
 		conceptsUsed: strings(result?.concepts_used),
 	};
+}
+
+/**
+ * Lift the answer's PROVEN parts-at-source handle onto the canvas (DAT-678) —
+ * the piece this boundary used to drop, and the reason a scalar answer could
+ * never be drilled: without it the canvas knows the answer's SQL but nothing
+ * about where its number came from, so the only available drill was tier A,
+ * which has no columns to group a scalar by.
+ *
+ * Read defensively like the confidence above — but STRICTLY, because this one
+ * becomes executable SQL downstream: every field must be exactly the expected
+ * type or the whole handle is dropped to null (→ tier A). A partially-narrowed
+ * source is not a degraded drill, it is a wrong one. The server already proved
+ * this handle reproduces the answer's value; this only guards the wire.
+ */
+function readDrillSource(
+	result: Record<string, unknown>,
+): AnswerDrillSource | null {
+	const raw = result.drill_source;
+	if (raw === null || typeof raw !== "object" || Array.isArray(raw))
+		return null;
+	const { sources, expression } = raw as Record<string, unknown>;
+	if (typeof expression !== "string" || expression.trim() === "") return null;
+	if (!Array.isArray(sources) || sources.length === 0) return null;
+
+	const out: AnswerDrillSource["sources"] = [];
+	for (const entry of sources) {
+		if (entry === null || typeof entry !== "object") return null;
+		const { name, parts } = entry as Record<string, unknown>;
+		if (typeof name !== "string" || name === "") return null;
+		if (parts === null || typeof parts !== "object") return null;
+		const { selectExpr, relation, where } = parts as Record<string, unknown>;
+		if (typeof selectExpr !== "string" || selectExpr === "") return null;
+		if (typeof relation !== "string" || relation === "") return null;
+		if (!Array.isArray(where) || where.some((w) => typeof w !== "string")) {
+			return null;
+		}
+		out.push({
+			name,
+			parts: { selectExpr, relation, where: where as string[] },
+		});
+	}
+	return { sources: out, expression };
 }
 
 /** A complete why_* result carries the boolean `found` discriminant — the SDK's
@@ -297,13 +343,20 @@ const PROJECTORS: Record<string, CanvasProjector> = {
 			// stale/blank canvas). The narrative is often empty here (the sub-agent gives
 			// up without writing one — the orchestrator explains it in chat instead), so
 			// the widget falls back to a default "couldn't compute that" message.
-			return { kind: "answer-result", sql: null, summary, confidence: null };
+			return {
+				kind: "answer-result",
+				sql: null,
+				summary,
+				confidence: null,
+				drillSource: null,
+			};
 		}
 		return {
 			kind: "answer-result",
 			sql: grid.sql,
 			summary,
 			confidence: readAnswerConfidence(r),
+			drillSource: readDrillSource(r),
 		};
 	},
 };

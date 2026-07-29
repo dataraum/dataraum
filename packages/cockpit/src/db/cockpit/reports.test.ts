@@ -37,6 +37,7 @@ vi.mock("#/db/cockpit/schema", () => ({
 		summary: "summary",
 		summaryFingerprint: "summary_fingerprint",
 		sql: "sql",
+		sqlParams: "sql_params",
 		confidence: "confidence",
 		createdAt: "created_at",
 		deletedAt: "deleted_at",
@@ -88,6 +89,7 @@ import type { AnswerConfidence } from "#/ui/cockpit/canvas-state";
 import {
 	createReport,
 	getReport,
+	getReportParentTitle,
 	listReports,
 	renameReport,
 	setReportFingerprint,
@@ -171,6 +173,51 @@ describe("createReport", () => {
 		});
 	});
 
+	it("stores a PINNED drill's bound params, defaulting to null (DAT-627)", async () => {
+		await createReport({
+			workspaceId: "ws-1",
+			title: "t",
+			summary: "s",
+			sql: "SELECT 1 WHERE region = $1",
+			sqlParams: ["EU"],
+			confidence: null,
+		});
+		expect(h.inserts[0].rows).toMatchObject({ sqlParams: ["EU"] });
+
+		h.inserts = [];
+		await createReport({
+			workspaceId: "ws-1",
+			title: "t",
+			summary: "s",
+			sql: "SELECT 1",
+			confidence,
+		});
+		expect(h.inserts[0].rows).toMatchObject({ sqlParams: null });
+	});
+
+	it("mints with a null confidence for a drilled view (DAT-627) — no fabricated band", async () => {
+		await createReport({
+			workspaceId: "ws-1",
+			title: "t",
+			summary: "s",
+			sql: "SELECT region, SUM(x) FROM t GROUP BY region",
+			confidence: null,
+		});
+		expect(h.inserts[0].rows).toMatchObject({ confidence: null });
+	});
+
+	it("mints a child report with a parentId lineage (DAT-627)", async () => {
+		await createReport({
+			workspaceId: "ws-1",
+			title: "t (sliced)",
+			summary: "s",
+			sql: "SELECT 1",
+			parentId: "parent-1",
+			confidence: null,
+		});
+		expect(h.inserts[0].rows).toMatchObject({ parentId: "parent-1" });
+	});
+
 	it("refuses a non-boot workspace born-loud (DAT-817)", async () => {
 		await expect(
 			createReport({
@@ -211,6 +258,24 @@ describe("getReport", () => {
 
 		h.selectResult = [];
 		expect(await getReport("missing")).toBeNull();
+	});
+});
+
+describe("getReportParentTitle", () => {
+	it("returns the parent's title when it resolves (DAT-627), scoped by id + workspace + live rows", async () => {
+		// SELECTS ONLY title (fold-in fix) — the fixture carries just that
+		// column, unlike getReport's full-row fixtures elsewhere in this file.
+		h.selectResult = [{ title: "Revenue by month" }];
+		expect(await getReportParentTitle("parent-1")).toBe("Revenue by month");
+		const where = JSON.stringify(h.whereArgs);
+		expect(where).toContain('"eq","id","parent-1"');
+		expect(where).toContain("workspace_id");
+		expect(where).toContain("deleted_at");
+	});
+
+	it("returns null when the parent id no longer resolves (soft-deleted or foreign)", async () => {
+		h.selectResult = [];
+		expect(await getReportParentTitle("gone")).toBeNull();
 	});
 });
 
@@ -255,5 +320,15 @@ describe("softDeleteReport", () => {
 		expect(upd?.set.deletedAt).toBeInstanceOf(Date);
 		expect(JSON.stringify(h.whereArgs)).toContain("deleted_at");
 		expect(JSON.stringify(h.whereArgs)).toContain("workspace_id");
+	});
+
+	it("leaves children intact — the update is scoped to the target's own id, never a child's parentId (DAT-627)", async () => {
+		await softDeleteReport("parent-1");
+		expect(h.updates).toHaveLength(1);
+		// The only mutation is `deletedAt` on the ONE matched row — no
+		// parentId write, no second query touching any other row. A child's
+		// parentId column is therefore untouched by construction, not by luck.
+		expect(h.updates[0].set).toEqual({ deletedAt: expect.any(Date) });
+		expect(JSON.stringify(h.whereArgs)).toContain('"eq","id","parent-1"');
 	});
 });

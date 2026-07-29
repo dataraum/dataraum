@@ -55,8 +55,25 @@ docker compose -f packages/infra/docker-compose.yml up -d --wait postgres seawee
 cp .env.example .env                 # host-dev defaults; fill ANTHROPIC_API_KEY (gitignored)
 bun install && bun --bun run dev     # → http://localhost:3000  (the --bun flag is required)
 bun run check                        # biome lint + format
-bun run test                         # vitest
+bun run test                         # vitest — unit project (pure, no DB)
+bun run test:integration             # vitest — integration project (needs docker)
 ```
+
+## Testing — read `src/test/README.md` before adding a test
+
+Two projects: `unit` (pure) and `integration` (a fixture workspace carrying the
+**engine's** generated schema + cockpit_db at its real migration head, booted
+once per run from a docker daemon; no compose stack, loud skip without docker).
+
+**The standing rule that harness establishes: boundary tests use
+production-shape fixtures, never idealized bare-name SQL.** Every high-value
+cockpit defect of the DAT-671 wave was invisible to unit tests, `tsc` and
+`build`, and each hid in the gap between a tidy fixture and the real shape —
+`lake.typed.current_orders_enriched` not `orders`, `SUM(x) AS revenue` not
+`SUM(x)`, `CASE WHEN COUNT(*)=0 THEN NULL ELSE SUM(x) END` not `SUM(x)`,
+`region_id__name` not `region`. Corollary: an **empty** result is a claim —
+assert the *reason*, since "no axes" and "checks lost in transit" both render
+as nothing.
 
 > **Worker code is NOT hot-reloaded.** The activity-only worker is a `globalThis`-pinned singleton created once at server boot (`src/worker/worker.ts`); HMR re-imports the module but reuses the running worker. So edits to **`src/worker/`** (the activities, the grounding-teach agent) do **not** take effect under `bun --bun run dev` — **restart the dev server** to load them. (The prod/container face is the deploy step under "Temporal" below.)
 
@@ -96,7 +113,7 @@ Derived from the 2026-06-05 React-idiom audit: these rules state what the codeba
 2. **Effects are for external systems only** — DOM sync, stream subscriptions with abort/cleanup. Two exist (chat scroll-pin, NDJSON fold); a third needs the same justification in a comment. [react.dev/learn/synchronizing-with-effects]
 3. **Server data goes through TanStack Query** — polling = `refetchInterval` callback returning `false` when done (measure-progress is the template). No `setInterval`, no hand-rolled `isLoading` for queries.
 4. **Mutations fired by user events live in event handlers** (optionally `useMutation`), never in effects.
-5. **Reset child state with a remount `key`, not a reset effect** (ResultGridWidget → StreamingGrid is the template).
+5. **Reset child state with a remount `key`, not a reset effect** (DrillableResultGridWidget → DrillableGrid → WindowedGrid is the template).
 6. **Memoize with a stated reason** — streaming makes the provider re-render per token, so `memo`/`useMemo` on that path is load-bearing (markdown, focus-canvas, context values); anywhere else it must earn its line. There is no React Compiler — don't assume auto-memoization, and don't blanket-memoize either.
 7. **Context splits by volatility:** reactive state and stable actions are separate contexts; action-only widgets read `useCockpitActions()` and never re-render while a turn streams. New cross-cutting state joins this split — no prop-drilling, no third merged context.
 8. **No refs read/written during render** (init excepted) — value-stabilize with `useMemo` over a serialized key instead. [react.dev/reference/react/useRef pitfall]

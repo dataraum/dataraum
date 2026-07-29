@@ -590,6 +590,44 @@ class TestFormatMultiTableSchemaForPrompt:
         assert 'role="measure"' in result
         assert 'business_name="Account Balance"' in result
 
+    def test_format_renders_the_slice_curation_note(self):
+        """DAT-879/DAT-622: only SOME columns carry <distinct_values>, because
+        only the JUDGED axes decorate the schema. Without this note the model
+        cannot tell "this column has no value-set worth listing" from "nobody
+        assessed this column's axis" — it reads absence as evidence.
+
+        Asserted on the FORMATTER OUTPUT, not the schema dict: the note was
+        first written onto the dict alone, which nothing rendered, so the read
+        had narrowed from 12 rows to judged-only with no disclosure at all.
+        """
+        schema = {
+            "tables": [],
+            "relationships": [],
+            "enriched_views": [],
+            "slice_catalog_note": (
+                "Showing 3 of 40 catalogued dimensions. The other 37 were "
+                "catalogued but NOT judged by the cataloguing agent."
+            ),
+        }
+
+        result = format_multi_table_schema_for_prompt(schema)
+
+        assert "<dimension_catalog_note>" in result
+        assert "Showing 3 of 40 catalogued dimensions" in result
+        assert "NOT judged" in result
+
+    def test_format_omits_the_note_when_nothing_was_withheld(self):
+        schema = {
+            "tables": [],
+            "relationships": [],
+            "enriched_views": [],
+            "slice_catalog_note": "",
+        }
+
+        result = format_multi_table_schema_for_prompt(schema)
+
+        assert "dimension_catalog_note" not in result
+
     def test_format_multi_table_with_error(self):
         """Test formatting an error schema."""
         schema = {"error": "No tables found"}
@@ -667,3 +705,40 @@ class TestFormatMultiTableSchemaForPrompt:
         level_line = next(line for line in result.splitlines() if 'name="level"' in line)
         assert "time_" not in level_line
         assert "granularity" not in level_line
+
+
+def test_surrogate_column_is_not_served_to_the_validation_prompt(session, table_with_columns):
+    """DAT-878: a mint-owned `_sk__*` is not something a validation rule is about.
+
+    Seeded with no SemanticAnnotation — the state a surrogate is actually in — so
+    nothing else on this path would drop it. The relationship endpoints rendered
+    elsewhere in the same schema keep their own unfiltered read, so a surrogate pair
+    still surfaces there as the join evidence it legitimately is.
+    """
+    from dataraum.analysis.relationships.surrogate import SURROGATE_PREFIX
+
+    table = table_with_columns
+    surrogate = f"{SURROGATE_PREFIX}account__business_id"
+    session.add(
+        Column(
+            table_id=table.table_id,
+            column_name=surrogate,
+            column_position=99,
+            raw_type="VARCHAR",
+            resolved_type="VARCHAR",
+        )
+    )
+    session.commit()
+
+    schema = get_multi_table_schema_for_llm(
+        session,
+        [table.table_id],
+        base_runs=BaseRunMap(semantic_runs={table.table_id: SEM_RUN}),
+    )
+
+    served = [c["column_name"] for c in schema["tables"][0]["columns"]]
+    assert surrogate not in served
+    assert "amount" in served
+
+    rendered = format_multi_table_schema_for_prompt(schema)
+    assert surrogate not in rendered

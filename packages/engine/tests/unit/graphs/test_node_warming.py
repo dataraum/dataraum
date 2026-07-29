@@ -27,11 +27,15 @@ from dataraum.graphs.node_warming import (
 )
 
 
-def _extract(step_id: str, standard_field: str, *, aggregation: str = "sum") -> GraphStep:
+def _extract(
+    step_id: str, standard_field: str, *, aggregation: str = "sum", predicate: str = ""
+) -> GraphStep:
     return GraphStep(
         step_id=step_id,
         step_type=StepType.EXTRACT,
-        source=StepSource(standard_field=standard_field, statement="income_statement"),
+        source=StepSource(
+            standard_field=standard_field, statement="income_statement", predicate=predicate
+        ),
         aggregation=aggregation,
     )
 
@@ -62,7 +66,54 @@ def _graph(graph_id: str, steps: dict[str, GraphStep], **kw: object) -> Transfor
 class TestNodeKey:
     def test_extract_key_mirrors_cache_key(self) -> None:
         g = _graph("m", {"e": _extract("e", "revenue", aggregation="sum")})
-        assert node_key(g.steps["e"], g) == ("extract", "revenue", "income_statement", "sum")
+        assert node_key(g.steps["e"], g) == ("extract", "revenue", "income_statement", "sum", "")
+
+    def test_declared_predicate_is_part_of_the_key(self) -> None:
+        """DAT-838's own example: same field, same aggregation, DIFFERENT rows.
+
+        ``bank_transaction_count`` counts every row; ``reconciled_count`` counts
+        the reconciled ones. They are two measurements, so they are two nodes.
+        Keyed without the predicate they collapsed into one — a single snippet
+        minted under ``predicate=""``, which the restricted step's own lookup
+        then correctly refused to reuse, leaving its metric with NO number.
+        """
+        unrestricted = _extract("all", "transaction_count", aggregation="count")
+        restricted = _extract(
+            "reconciled",
+            "transaction_count",
+            aggregation="count",
+            predicate="transactions that are reconciled",
+        )
+        assert node_key(unrestricted, _graph("m", {"all": unrestricted})) != node_key(
+            restricted, _graph("m", {"reconciled": restricted})
+        )
+
+    def test_two_restriction_siblings_warm_as_two_nodes(self) -> None:
+        """The pair reaches the warm DAG as two nodes, so both metrics compose."""
+        g = _graph(
+            "reconciled_rate",
+            {
+                "all": _extract("all", "transaction_count", aggregation="count"),
+                "reconciled": _extract(
+                    "reconciled",
+                    "transaction_count",
+                    aggregation="count",
+                    predicate="transactions that are reconciled",
+                ),
+                "rate": _formula("rate", "reconciled / all", ["reconciled", "all"]),
+            },
+        )
+        _, nodes = build_warm_dag({"reconciled_rate": g})
+        assert set(nodes) == {
+            ("extract", "transaction_count", "income_statement", "count", ""),
+            (
+                "extract",
+                "transaction_count",
+                "income_statement",
+                "count",
+                "transactions that are reconciled",
+            ),
+        }
 
     def test_formula_is_not_keyed(self) -> None:
         """A FORMULA is never warmed (DAT-646) — keying it by shape aliased metrics."""
@@ -98,8 +149,8 @@ class TestBuildWarmDag:
         )
         _, nodes = build_warm_dag({"gross_margin": gross})
         assert set(nodes) == {
-            ("extract", "revenue", "income_statement", "sum"),
-            ("extract", "cost_of_goods_sold", "income_statement", "sum"),
+            ("extract", "revenue", "income_statement", "sum", ""),
+            ("extract", "cost_of_goods_sold", "income_statement", "sum", ""),
         }
         assert all(k[0] == "extract" for k in nodes)
 
@@ -125,9 +176,9 @@ class TestBuildWarmDag:
         _, nodes = build_warm_dag({"gross_margin": gross, "net_income": net})
         # 3 distinct extract concepts, deduped across the two metrics; no formula nodes.
         assert set(nodes) == {
-            ("extract", "revenue", "income_statement", "sum"),
-            ("extract", "cost_of_goods_sold", "income_statement", "sum"),
-            ("extract", "operating_expense", "income_statement", "sum"),
+            ("extract", "revenue", "income_statement", "sum", ""),
+            ("extract", "cost_of_goods_sold", "income_statement", "sum", ""),
+            ("extract", "operating_expense", "income_statement", "sum", ""),
         }
 
     def test_extracts_are_leaves_no_edges_one_generation(self) -> None:
@@ -145,8 +196,8 @@ class TestBuildWarmDag:
         gens = warming_generations(dag)
         assert len(gens) == 1
         assert set(gens[0]) == {
-            ("extract", "revenue", "income_statement", "sum"),
-            ("extract", "cost_of_goods_sold", "income_statement", "sum"),
+            ("extract", "revenue", "income_statement", "sum", ""),
+            ("extract", "cost_of_goods_sold", "income_statement", "sum", ""),
         }
 
     def test_unkeyable_steps_are_skipped(self) -> None:
@@ -158,14 +209,14 @@ class TestBuildWarmDag:
             },
         )
         _, nodes = build_warm_dag({"m": g})
-        assert set(nodes) == {("extract", "revenue", "income_statement", "sum")}
+        assert set(nodes) == {("extract", "revenue", "income_statement", "sum", "")}
 
 
 class TestBuildMiniGraph:
     def test_extract_node_is_single_output_step(self) -> None:
         g = _graph("gross_margin", {"cogs": _extract("cogs", "cost_of_goods_sold")})
         _, nodes = build_warm_dag({"gross_margin": g})
-        node = nodes[("extract", "cost_of_goods_sold", "income_statement", "sum")]
+        node = nodes[("extract", "cost_of_goods_sold", "income_statement", "sum", "")]
 
         mini = build_mini_graph(node)
 
@@ -178,7 +229,7 @@ class TestBuildMiniGraph:
         rev = _extract("rev", "revenue")  # output_step defaults to False
         g = _graph("gross_margin", {"rev": rev})
         _, nodes = build_warm_dag({"gross_margin": g})
-        node = nodes[("extract", "revenue", "income_statement", "sum")]
+        node = nodes[("extract", "revenue", "income_statement", "sum", "")]
 
         mini = build_mini_graph(node)
 

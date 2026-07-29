@@ -833,8 +833,12 @@ class OperatingModelWorkflow:
         scoped = OperatingModelScopedInput(run=run, scope=scope, vertical=vertical)
 
         # Validation induction (DAT-735): generate validations over the served graph
-        # BEFORE the validation family declares — the validation phase then reads the
-        # typed home (seed ⊕ generated ⊕ teach). Its outcome is DELIBERATELY discarded:
+        # BEFORE the validation family declares — the validation phase then reads seed
+        # ⊕ THIS RUN'S STAGED induction ⊕ teach. The staged set reaches the typed home
+        # only at the terminal promote (DAT-877), so an operating_model run that never
+        # promotes leaves the workspace's live vocabulary untouched rather than
+        # publishing a generation with no results and no cycles behind it.
+        # Its outcome is DELIBERATELY discarded:
         # induction reports a `generated` count, never a `declared` one, so zero
         # generated validations on a thin graph cannot flip a workspace into
         # `nothing_declared` (the generated count and the declared count are different
@@ -1083,7 +1087,7 @@ async def _run_stage[StageResultT: (AddSourceResult, BeginSessionResult, Operati
                 kind=kind,
                 stage=stage,
                 workflowId=workflow_id,
-                runId=run_id,
+                runId=run_id,  # type: ignore[arg-type]  # first_execution_run_id: str | None; always set post-start
                 conversationId=conversation_id,
             ),
             task_queue=cockpit_task_queue,

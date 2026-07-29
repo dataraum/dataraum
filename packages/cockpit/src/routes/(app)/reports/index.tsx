@@ -53,12 +53,19 @@ function ReportsGallery() {
 									<Text fw={600} lineClamp={1}>
 										{r.title}
 									</Text>
-									<BandBadge band={r.confidence.band} />
+									{/* Null for a drilled/sliced child mint (DAT-627) — no confidence
+									    describes rows nobody computed one for; the honest card omits
+									    the badge rather than showing a stale or fabricated band. */}
+									{r.confidence && <BandBadge band={r.confidence.band} />}
 								</Group>
 								{/* Frozen chart over live data (DAT-626) — lazy per card so a big
 								    gallery doesn't fire a query + canvas for every report. */}
 								{r.chartConfig && (
-									<ReportChartThumbnail sql={r.sql} config={r.chartConfig} />
+									<ReportChartThumbnail
+										sql={r.sql}
+										params={r.sqlParams ?? undefined}
+										config={r.chartConfig}
+									/>
 								)}
 								<Text size="sm" c="dimmed" lineClamp={3}>
 									{r.summary}

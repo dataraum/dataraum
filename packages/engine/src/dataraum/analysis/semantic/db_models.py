@@ -5,7 +5,7 @@ Contains database models for semantic annotations and entity detection.
 
 from __future__ import annotations
 
-from collections.abc import Sequence
+from collections.abc import Collection, Sequence
 from datetime import UTC, datetime
 from enum import StrEnum
 from typing import TYPE_CHECKING, Any
@@ -27,7 +27,7 @@ from sqlalchemy import (
 )
 from sqlalchemy.orm import Mapped, mapped_column, relationship
 
-from dataraum.analysis.catalogue.models import MEANING_STATUSES
+from dataraum.analysis.catalogue.models import MEANING_STATUSES, STORED_SIGNS
 from dataraum.storage import Base
 
 if TYPE_CHECKING:
@@ -137,18 +137,27 @@ _DIMENSION_ORDERING_VALUES: tuple[str, ...] = tuple(sorted(v.value for v in Dime
 def derive_table_role(
     is_fact: bool,
     grain_columns: Sequence[str],
-    time_column_names: Sequence[str],
+    period_axis_columns: Collection[str],
 ) -> TableRole:
     """Classify a table's role from the LLM's fact/dimension bit + its grain.
 
     The LLM answers one question (fact vs dimension); the PeriodicSnapshot subtype
-    is structural, not asked: a fact whose grain contains a time column re-states
-    the same population each period. Non-fact → ``DIMENSION``; fact with a time
-    column in its grain → ``PERIODIC_SNAPSHOT``; otherwise ``FACT``.
+    is structural, not asked: a fact whose grain contains the reporting period
+    re-states the same population each period. Non-fact → ``DIMENSION``; fact with
+    a period in its grain → ``PERIODIC_SNAPSHOT``; otherwise ``FACT``.
+
+    Args:
+        is_fact: the LLM's fact/dimension answer for this table.
+        grain_columns: the column names that uniquely identify a row.
+        period_axis_columns: the table's columns that can CARRY the reporting
+            period. A period is not always a date column — the standard
+            warehouse snapshot keys it as an FK into a period dimension — so this
+            is a derived set, not the raw time columns
+            (:meth:`~dataraum.analysis.semantic.models.TableSynthesisOutput.period_axis_columns`).
     """
     if not is_fact:
         return TableRole.DIMENSION
-    if set(grain_columns) & set(time_column_names):
+    if set(grain_columns) & set(period_axis_columns):
         return TableRole.PERIODIC_SNAPSHOT
     return TableRole.FACT
 
@@ -424,6 +433,80 @@ class Convention(Base):
     superseded_at: Mapped[datetime | None] = mapped_column(DateTime)
 
 
+class VerticalEnvelope(Base):
+    """The vertical's own identity — name/version/description, typed (DAT-883).
+
+    The third config→DB home alongside :class:`Concept` (DAT-728) and
+    :class:`Convention` (DAT-789): ``load_workspace_concepts`` used to re-parse
+    ``ontology.yaml`` on every call just to read its envelope (name/version/
+    description), and fabricated ``version="1.0.0"`` for a framed vertical (no
+    on-disk YAML) rather than admitting it has none. This table is the typed home
+    that fixes both — a shipped vertical's YAML is the *seed* (one row, normalized
+    at connect, :func:`~dataraum.analysis.semantic.envelope_store.ensure_envelope_seeded`);
+    a framed vertical (declared via the cockpit ``frame`` stage, no on-disk file) has
+    NO seed source and so gets NO row — never a synthesized identity. This is the
+    lead's north star for vertical config (2026-07-29): a framed/agent-generated
+    vertical is the FIRST-CLASS envelope case, served with its honest (possibly
+    absent) provenance, not a hand-authored-YAML fallback value.
+
+    **Identity contract — NOT run-versioned, singleton per vertical (the DAT-728
+    pattern, simplified).** Unlike :class:`Concept`/:class:`Convention` (many active
+    rows per vertical, keyed ``(vertical, name)``), a vertical has exactly ONE
+    envelope — the active-row uniqueness is on ``vertical`` alone
+    (``uq_vertical_envelope_active``). ``envelope_id`` is a workspace-stable
+    surrogate minted once at seed, not a per-run uuid. Workspace identity IS the
+    ``ws_<id>`` schema (no ``workspace_id`` column), matching every sibling here.
+
+    ``version`` and ``description`` are NULLABLE — a source that genuinely lacks
+    them (a framed vertical has no envelope row at all; even a shipped YAML could
+    in principle omit ``description``) must serve NULL, never a fabricated
+    placeholder. ``name`` is NOT NULL: a seeded row always has one (the YAML
+    requires it), and the reader (``concept_store.load_workspace_concepts``) falls
+    back to the vertical's own key when no row exists — that key IS the vertical's
+    real identity, not an invention.
+    """
+
+    __tablename__ = "vertical_envelopes"
+    __table_args__ = (
+        # At most one ACTIVE row per vertical (singleton — one envelope per
+        # vertical, unlike the compound (vertical, name) keys on Concept/
+        # Convention). Superseded history rows are exempt.
+        Index(
+            "uq_vertical_envelope_active",
+            "vertical",
+            unique=True,
+            postgresql_where=text("superseded_at IS NULL"),
+            sqlite_where=text("superseded_at IS NULL"),
+        ),
+        # Lifecycle-source vocabulary (DAT-802 discipline): the ONE live writer today
+        # is 'seed' (``envelope_store.ensure_envelope_seeded``, engine, gated to
+        # shipped/placeholder verticals with an on-disk ontology.yaml). No frame-time
+        # envelope writer exists yet — a framed vertical seeds no row at all, per this
+        # table's docstring — so 'frame' is deliberately NOT in the CHECK (the DAT-802
+        # rule: never admit a value no writer produces). Widen this CHECK the day a
+        # frame/generation-time envelope writer lands (the lead's north star above).
+        CheckConstraint("source IN ('seed')", name="source"),
+    )
+
+    envelope_id: Mapped[str] = mapped_column(String, primary_key=True, default=lambda: str(uuid4()))
+    vertical: Mapped[str] = mapped_column(String, nullable=False)
+    name: Mapped[str] = mapped_column(String, nullable=False)
+    # Absent, never fabricated: NULL when the source genuinely has no version
+    # (there is no live writer that would leave this NULL today — the one seed
+    # writer only fires for a vertical whose YAML declares one — but the column
+    # stays nullable for the day a generated-vertical writer legitimately has none).
+    version: Mapped[str | None] = mapped_column(String)
+    description: Mapped[str | None] = mapped_column(Text)
+
+    # Lifecycle: workspace-persistent with supersession (NULL superseded_at = active).
+    # Closed vocab: see ck_vertical_envelopes_source — 'seed' is the one live writer.
+    source: Mapped[str] = mapped_column(String, nullable=False)
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime, nullable=False, default=lambda: datetime.now(UTC)
+    )
+    superseded_at: Mapped[datetime | None] = mapped_column(DateTime)
+
+
 class WorkspaceSettings(Base):
     """The workspace's bound active vertical — the one home DAT-848 was missing.
 
@@ -651,6 +734,22 @@ class ColumnConcept(Base):
             should obey — operands may span a JOINED table (the derived_value
             session detector grades it over enriched_views), so it is reasoned
             from the relationship catalogue, not one table.
+        stored_sign_claim / _confidence: the catalogue agent's INDEPENDENT read of
+            how a monetary balance's values are stored ('natural_balance' /
+            'ledger_signed' / 'unsure' — ``catalogue.models.StoredSignClaim``).
+            A name-and-marginal read by construction: the agent sees each column's
+            own value sample and range, never row-aligned tuples, so it cannot
+            observe sign CONDITIONED on account family. It is a prior, and the
+            data witness below overrules it on disagreement.
+        stored_sign: the resolved storage convention ('natural_balance' /
+            'ledger_signed'), written by the resolved-layer pass (DAT-875) from the
+            claim pooled against the data-grounded sign-partition witness the
+            ``aggregation_lineage`` phase measures. NULL = undetermined, and NULL is
+            written THROUGH (never skipped) so a stale label cannot outlive a run
+            that lost the witness. Served to SQL authors so the
+            ``sign_natural_balance`` convention can be applied to BOTH sides of a
+            comparison — the one-sided normalization it could not otherwise prevent,
+            because no instruction substitutes for a fact the model cannot see.
     """
 
     __tablename__ = "column_concepts"
@@ -676,6 +775,30 @@ class ColumnConcept(Base):
             + ")",
             name="meaning_status",
         ),
+        # Storage-convention vocabulary (DAT-875), same derivation from its single
+        # home ``catalogue.models.STORED_SIGNS``. The RESOLVED column is NULL-or-IN
+        # the two determinable values. 'unsure' cannot appear here because the
+        # MEASUREMENT cannot emit it: its claim space is the two determinable
+        # labels, and an undetermined pool resolves to None, which the resolve pass
+        # writes as NULL. Note this is NOT a persist-time normalization — on the
+        # CLAIM column below, 'unsure' is stored verbatim and is load-bearing (the
+        # detector reads claim presence to tell an agent that looked and abstained
+        # apart from a run with no catalogue grain at all).
+        CheckConstraint(
+            "stored_sign IS NULL OR stored_sign IN ("
+            + ", ".join(f"'{v}'" for v in sorted(STORED_SIGNS))
+            + ")",
+            name="stored_sign",
+        ),
+        # The claim keeps its own arm: 'unsure' is a legitimate stored value there
+        # (a mandatory field's abstention), and conflating the two vocabularies
+        # would let an abstention be read back as a determination.
+        CheckConstraint(
+            "stored_sign_claim IS NULL OR stored_sign_claim IN ("
+            + ", ".join(f"'{v}'" for v in sorted((*STORED_SIGNS, "unsure")))
+            + ")",
+            name="stored_sign_claim",
+        ),
     )
 
     concept_id: Mapped[str] = mapped_column(String, primary_key=True, default=lambda: str(uuid4()))
@@ -690,6 +813,14 @@ class ColumnConcept(Base):
     unit_source_column: Mapped[str | None] = mapped_column(String)
     derived_formula_hypothesis: Mapped[str | None] = mapped_column(String)
     derived_formula_confidence: Mapped[float | None] = mapped_column(Float)
+    # Closed vocab: see ck_column_concepts_stored_sign_claim (DAT-875). The agent's
+    # name-based prior, seeded by the catalogue INSERT.
+    stored_sign_claim: Mapped[str | None] = mapped_column(String)
+    stored_sign_claim_confidence: Mapped[float | None] = mapped_column(Float)
+    # Closed vocab: see ck_column_concepts_stored_sign (DAT-875). Left NULL at
+    # authoring like ``temporal_behavior`` — the storage convention is a data
+    # property, written only by the resolve pass (``entropy.resolve``).
+    stored_sign: Mapped[str | None] = mapped_column(String)
 
     # Provenance
     annotation_source: Mapped[str | None] = mapped_column(String)

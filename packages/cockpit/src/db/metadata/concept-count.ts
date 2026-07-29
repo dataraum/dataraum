@@ -6,10 +6,12 @@
 // `ontology.yaml`, so its concepts come ONLY from the rows the frame stage writes
 // here (source='frame'). With none declared, the engine fails loud deep in
 // `semantic_per_column` (semantic_per_column_phase.py) — a dead Temporal run the
-// user can't read. The trigger uses this count (added to the on-disk count in
-// verticalConceptCount) to refuse early with a "run frame first" message instead
-// of starting a doomed run. A shipped vertical's seed rows aren't written until
-// the pipeline runs, so at pre-flight its on-disk count is what clears the guard.
+// user can't read. The trigger uses this count (via `verticalConceptCount`'s
+// `resolvedConceptCount`, DAT-883: THIS count wins once it's nonzero, the
+// on-disk count only as a pre-frame fallback — never summed) to refuse early with
+// a "run frame first" message instead of starting a doomed run. A shipped
+// vertical's seed rows aren't written until the pipeline runs, so at pre-flight
+// its on-disk count is what clears the guard.
 
 import { and, count, eq, isNull } from "drizzle-orm";
 import { metadataWriteDb } from "./client";

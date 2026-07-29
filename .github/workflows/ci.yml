@@ -109,7 +109,9 @@ jobs:
     # @tanstack/ai contract test (tool-chip-state.contract.test.ts) driving the
     # real chat()→SSE→ChatClient pipeline. `bun run build` catches the Nitro/
     # preset/externalization breakage class (duckdb-neo bindings, bun preset).
-    # Integration tests need a real stack and stay out of this fast PR gate.
+    # The integration project needs only a docker daemon (fixture workspace on
+    # the engine's generated schema — src/test/README.md), which ubuntu-latest
+    # has; legacy compose-stack suites inside it skip loudly by design.
     # NOT path-filtered: engine PRs touching worker/contracts.py are
     # cross-package (the cockpit hand-mirrors the Temporal contracts).
     cockpit:
@@ -140,6 +142,12 @@ jobs:
 
             - name: Unit tests
               run: bun run test
+
+            # Fixture-workspace harness (DAT-671 W2-e): real routes/composers/
+            # narrows against the engine's real schema — the gate the unit
+            # suite structurally cannot be (its LLM/DB seams are mocked).
+            - name: Integration tests
+              run: bun run test:integration
 
             - name: Build
               run: bun run build

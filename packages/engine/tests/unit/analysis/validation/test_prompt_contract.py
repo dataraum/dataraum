@@ -86,6 +86,63 @@ def test_binder_existence_loophole_is_closed(binder: PromptTemplate) -> None:
     assert "no dimension-role table that enumerates the referenced entity" in system
 
 
+def test_induction_temporal_form_floor_is_pinned(induction: PromptTemplate) -> None:
+    """DAT-874: a movement is never proposed directly against a level, and the
+    coherent alternatives are named so the rule redirects instead of only forbidding.
+
+    The floor shipped pinned only by a header-phrase anchor
+    (``test_prompt_render_smoke.test_temporal_form_coherence_rule_is_pinned``, which
+    asserts the string "TEMPORAL-FORM coherence" survives rendering). That catches a
+    DELETED rule and nothing else: an edit keeping the anchor and replacing the body
+    with "use your judgment." was executed against it and stayed GREEN, while the
+    body assertions below went red. An anchor proves a heading exists; these prove
+    the discipline still says something.
+    """
+    system = _flat(induction.system_prompt)
+    assert "TEMPORAL-FORM coherence" in system
+    assert "flow = a per-period movement (additive across periods)" in system
+    assert "stock = a level as of its period" in system
+    assert (
+        "NEVER compare a per-period flow (or a net of flows) directly against a stock level"
+        in system
+    )
+    # The coherent redirects, including the completeness condition on cumulation.
+    assert "flow vs the CHANGE in a stock between consecutive periods" in system
+    assert "the flow's history is complete from the stock's origin" in system
+
+
+def test_induction_undetermined_form_is_a_stated_absence(induction: PromptTemplate) -> None:
+    """The UNDETERMINED case reads off a SERVED statement, not a blank cell (DAT-874).
+
+    ``format_served_context`` renders a missing Materialization verdict as an empty
+    table cell; ``induction._render_temporal_form`` names those measures instead, and
+    the rule points at that statement — the DAT-876 absence-falls-loud doctrine.
+    """
+    system = _flat(induction.system_prompt)
+    assert 'restated per table under "Temporal form of the measures"' in system
+    assert "list as having NO temporal-form verdict is UNDETERMINED" in system
+    assert "that absence is STATED, never to be read as flow" in system
+
+
+def test_binder_temporal_form_floor_is_pinned(binder: PromptTemplate) -> None:
+    """The binder carries the same floor (DAT-874): a bound check cannot repair a
+    coherent proposal into an incoherent comparison, and an unbindable one declares
+    can_validate=false rather than guessing a form."""
+    system = _flat(binder.system_prompt)
+    assert "Same temporal form: both sides must be the same KIND of quantity" in system
+    assert (
+        "A per-period movement (or a net of movements) NEVER compares directly against a level"
+        in system
+    )
+    assert "the CHANGE in the level between consecutive periods" in system
+    assert "movement history is complete from the level's origin" in system
+    assert (
+        "If neither coherent form is groundable from the served facts, "
+        "set can_validate=false" in system
+    )
+    assert "Never aggregate a point_in_time column across periods." in system
+
+
 def test_validation_prompts_carry_no_domain_vocabulary() -> None:
     """Leak tripwire: the generic validation prompts are domain-free (DAT-876 fence).
 

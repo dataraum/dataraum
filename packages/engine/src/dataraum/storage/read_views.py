@@ -91,9 +91,26 @@ _CATALOG_GRAIN: dict[str, str] = {
     "measure_aggregation_lineage": "catalog",  # begin_session aggregation_lineage (DAT-491)
     "driver_rankings": "catalog",  # begin_session driver_rankings (DAT-546)
     "lifecycle_artifacts": "operating_model",
+    # The induction staging home (DAT-877): an operating_model run's proposed
+    # validation set, materialized into the ``validations`` vocabulary by that run's
+    # terminal promote. Head-gated like the rest of the family, so the read surface
+    # shows the PROMOTED run's induction and never an in-flight one.
+    "induced_validations": "operating_model",
+    # The induction SEAL (DAT-877) — one row per induction turn that completed,
+    # which is what distinguishes an authoritative zero-proposal set (supersede)
+    # from a degraded turn that never staged (keep the prior generation).
+    "induction_runs": "operating_model",
     "validation_results": "operating_model",
     "detected_business_cycles": "operating_model",
-    "metric_additivity": "operating_model",  # operating_model metrics phase (DAT-716)
+    "metric_axis_additivity": "operating_model",  # operating_model metrics phase (DAT-857/868)
+    # The per-entity breakdown the same phase composes once a verdict permits it
+    # (DAT-671 B1) — same head as the verdict that gated it, so a consumer can
+    # never read a breakdown whose verdict is not current.
+    "metric_unit_grain": "operating_model",
+    # The evaluated reconciles_with tie-out (DAT-739) — same phase, same head as
+    # the groundings it re-executed, so a consumer can never read a tie-out
+    # computed from a grounding set that is no longer current.
+    "concept_reconciliation": "operating_model",
 }
 
 # Written by THREE detect paths: add_source seals per (table:{id}, GENERATION),
@@ -154,6 +171,24 @@ _VERTICAL_SCOPED: tuple[str, ...] = (
     # family/direction off the detected-cycle columns, not this table). No control-plane
     # WRITE grant: 'seed' is the only writer until a frame-family path lands.
     "cycle_families",
+    # The vertical envelope (DAT-883) is likewise a PER-VERTICAL singleton (keyed on
+    # ``vertical`` alone, ``superseded_at`` the only lifecycle axis) — without this it
+    # would get the plain cross-vertical pass-through every OTHER table here was scoped
+    # to avoid. Engine-internal today (``envelope_store`` reads the base table with its
+    # own active-vertical filter); scoped here anyway for the same reason the sibling
+    # typed homes are — a wrong ``--vertical`` (or the eval's wild-vertical stand-in)
+    # must never leak a foreign envelope to a future reader of this view.
+    "vertical_envelopes",
+    # The cycle-type SHIPPED vocabulary (DAT-881) is likewise declaration-versioned
+    # and PER VERTICAL (keyed ``(vertical, name)``, ``superseded_at`` the only
+    # lifecycle axis), so it scopes the same way. Cockpit-consumed today by
+    # ``teach_cycle``'s override-shadow detection ONLY (a WORKSPACE question,
+    # valid post add_source) — the frame induction few-shot seed is a DIFFERENT,
+    # cross-vertical question this table cannot serve and still reads the shipped
+    # cycles.yaml directly; the engine's own judge keeps reading the overlay-
+    # inclusive ``config.get_cycle_types``, never this table. No control-plane WRITE
+    # grant: 'seed' is the only writer — a taught cycle stays in config_overlay.
+    "cycle_types",
 )
 
 # Run-stamped tables SANCTIONED to lack a ``(key, run_id)`` UNIQUE — the
@@ -501,6 +536,18 @@ def _current_entity_view_statements() -> list[tuple[str, str]]:
                 f"       s.parts->'from'->>0 AS relation,\n"
                 f"       s.parts->'select'->0->>'expr' AS select_expr,\n"
                 f"       (s.parts->'where')::text AS where_predicates,\n"
+                # DAT-887: the reporting instant a POINT-IN-TIME extract resolved to,
+                # un-nested so a consumer can read WHICH period a stock value is for
+                # without parsing the snippet's SQL or its parts JSON. NULL on a flow
+                # (no instant applies) and NULL when the instant could not be resolved
+                # — that case discloses itself as a typed assumption on the grounding's
+                # provenance, so a NULL here is never mistaken for a clean binding.
+                # ``calendar_source`` travels with it ('declared' vs the stamped
+                # calendar-year 'default') so a declared fiscal year stays
+                # distinguishable from an assumed one.
+                f"       s.parts->'period_binding'->>'as_of' AS resolved_period,\n"
+                f"       s.parts->'period_binding'->>'window_close' AS reporting_window_close,\n"
+                f"       s.parts->'period_binding'->>'calendar_source' AS calendar_source,\n"
                 f"       s.description,\n"
                 f"       s.sql,\n"
                 f"       s.parts,\n"

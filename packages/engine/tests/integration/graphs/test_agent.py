@@ -122,7 +122,7 @@ def _make_execution_context(
     exercise SQL generation. Using ExecutionContext without rich_context
     will fail fast with a clear error.
     """
-    from dataraum.graphs.context import GraphExecutionContext, TableContext
+    from dataraum.graphs.context_models import GraphExecutionContext, TableContext
     from dataraum.graphs.field_mapping import ColumnMeaning
 
     rich_context = GraphExecutionContext(
@@ -156,7 +156,7 @@ def _context_with_validity_cycle() -> tuple[duckdb.DuckDBPyConnection, Execution
     Rows: two posted (100 + 200), one draft (300), so the appended posted-only scope
     is observable in the metric value.
     """
-    from dataraum.graphs.context import (
+    from dataraum.graphs.context_models import (
         BusinessCycleContext,
         GraphExecutionContext,
         TableContext,
@@ -299,13 +299,43 @@ class TestDescribeTable:
         result = GraphAgent._describe_table(duckdb_with_data, "nonexistent")
         assert result is None
 
+    def test_surrogate_excluded_from_prompt_and_validator_together(self, duckdb_with_data):
+        """DAT-878: one artifact, so the surrogate leaves both consumers at once.
+
+        ``_describe_table``'s result feeds the prompt's ``<data_schema>`` block AND
+        ``validate_grounding_basis``'s membership allow-list, via
+        ``schema_tables_from_info``. Before this cut the agent was offered a
+        ``_sk__*`` column as an analysable attribute *and* the contract validator
+        accepted a grounding that referenced one. Asserting both off the same
+        artifact is the point: a fix that filtered only one side would leave the
+        validator rejecting a column the prompt still shows, or the reverse.
+        """
+        from dataraum.analysis.relationships.surrogate import SURROGATE_PREFIX
+        from dataraum.graphs.grounding_validation import schema_tables_from_info
+
+        surrogate = f"{SURROGATE_PREFIX}id__amount"
+        # Exactly the mint's shape: the typed table is rebuilt with the hash projected.
+        duckdb_with_data.execute(
+            'CREATE OR REPLACE TABLE test_data AS SELECT *, md5("id"::VARCHAR) '
+            f'AS "{surrogate}" FROM (SELECT * FROM test_data)'
+        )
+        raw = [r[0] for r in duckdb_with_data.execute("DESCRIBE test_data").fetchall()]
+        assert surrogate in raw, "fixture must reproduce the mint's physical shape"
+
+        result = GraphAgent._describe_table(duckdb_with_data, "test_data")
+
+        assert result is not None
+        assert [c["name"] for c in result["columns"]] == ["id", "amount"]
+        served = schema_tables_from_info({"tables": [result]})
+        assert served["test_data"] == {"id", "amount"}
+
 
 class TestGraphAgentExecution:
     """Tests for GraphAgent SQL execution."""
 
     def test_build_schema_info_with_rich_context(self, duckdb_with_data):
         """Test building multi-table schema from rich context."""
-        from dataraum.graphs.context import TableContext
+        from dataraum.graphs.context_models import TableContext
 
         agent = GraphAgent(
             config=MagicMock(),
@@ -1253,6 +1283,50 @@ class TestPriorContextFeedback:
         assert "concept has no supporting rows (abstain" in out
         assert "one-sided data" in out
 
+    def test_disjoint_collision_gets_distinguishing_guidance(
+        self, session: Session, sample_graph
+    ) -> None:
+        """DAT-709: a collision retry is told to DISTINGUISH, not just to revise.
+
+        The generic retained-failure steer ("revise, or abstain if it aggregated
+        to NULL") invites exactly the re-derivation that collided. A
+        ``disjoint_collision`` row instead feeds the guard's reason — which names
+        the partner concept — plus the one instruction that can resolve it: find
+        the evidence separating the two, or fall loud.
+        """
+        from dataraum.query.snippet_library import SnippetLibrary
+
+        SnippetLibrary(session, workspace_id=baseline_run_id()).save_snippet(
+            snippet_type="extract",
+            sql='SELECT SUM("amount") AS value FROM enriched_gl',
+            description="collided attempt",
+            schema_mapping_id="default",
+            source="graph:test_metric",
+            standard_field="test_field",
+            statement="test_table",
+            aggregation="sum",
+            provenance={
+                "failure_mode": "disjoint_collision",
+                "failure_reason": (
+                    "'test_field' grounded to the same extract as disjoint concept(s) "
+                    "SENTINEL_PARTNER"
+                ),
+            },
+            failed=True,
+        )
+        session.flush()
+
+        out = self._agent()._build_prior_context(session, sample_graph, None, "default")
+
+        assert "disjoint_collision" in out
+        assert "SENTINEL_PARTNER" in out, "the retry must know WHICH concept to separate from"
+        assert "do NOT re-emit unchanged" in out
+        assert "distinguishes it from" in out
+        assert "fall loud" in out
+        # The NULL-aggregation steer belongs to the other failure modes — serving it
+        # here would answer a question this failure never asked.
+        assert "one-sided data" not in out
+
     def test_retained_failure_reuse_excluded_but_fed_back(
         self, session: Session, sample_graph
     ) -> None:
@@ -1286,6 +1360,7 @@ class TestPriorContextFeedback:
                 standard_field="test_field",
                 statement="test_table",
                 aggregation="sum",
+                predicate="",
             )
             is None
         )

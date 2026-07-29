@@ -6,8 +6,27 @@
 // route imports this as an RPC stub and the helper never reaches the client.
 
 import { createServerFn } from "@tanstack/react-start";
+import { loadBusMatrix } from "#/tools/bus-matrix-load";
+import { loadConceptGraph } from "#/tools/concept-graph-load";
 import { loadOperatingModelGraph } from "#/tools/operating-model-load";
 
 export const loadModel = createServerFn({ method: "GET" }).handler(() =>
 	loadOperatingModelGraph(),
+);
+
+// The concept vocabulary graph (DAT-737) — a SEPARATE server fn from
+// `loadModel`: concepts are seeded at `frame`-time (config→DB, DAT-728),
+// independent of whether the operating_model stage has run, so it has its
+// own lifecycle and its own empty state (see `operating-model.tsx`).
+export const loadConcepts = createServerFn({ method: "GET" }).handler(() =>
+	loadConceptGraph(),
+);
+
+// The bus matrix (DAT-740) — which facts share which conformed dimensions, i.e.
+// which cross-fact comparisons can be composed at all. A THIRD server fn for the
+// same reason `loadConcepts` is a second: it is derived at catalog time by the
+// dimension-hierarchies phase, so it is present (or absent) independently of the
+// operating_model stage and carries its own empty state.
+export const loadBus = createServerFn({ method: "GET" }).handler(() =>
+	loadBusMatrix(),
 );

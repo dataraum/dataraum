@@ -5,6 +5,7 @@ from typing import Any
 from sqlalchemy import select
 from sqlalchemy.orm import Session
 
+from dataraum.analysis.relationships.surrogate import is_surrogate_column
 from dataraum.analysis.semantic.db_models import ColumnConcept, SemanticAnnotation
 from dataraum.analysis.typing.db_models import TypeCandidate
 from dataraum.storage import Column, Table
@@ -116,7 +117,15 @@ def load_persisted_annotations(
         .where(Table.table_id.in_(table_ids))
         .order_by(Table.table_name, Column.column_position)
     )
-    rows = session.execute(stmt).all()
+    # Mint-owned surrogate join keys are excluded HERE rather than left to the
+    # INNER JOIN above (DAT-878). Today the join already hides them — a surrogate
+    # never gets a SemanticAnnotation, because SemanticAgent._load_profiles skips
+    # it — but that makes this prompt incidentally shielded by a filter in another
+    # module rather than structurally surrogate-free. If annotations ever cover
+    # every column, the shield disappears silently. Rows are join tuples, not
+    # Column ORM objects, so this calls the predicate directly (see
+    # analysis/served_columns.py).
+    rows = [r for r in session.execute(stmt).all() if not is_surrogate_column(r.column_name)]
 
     # Value-carried unit per column (DAT-647): the CURRENT type candidate's
     # detected_unit. TypeCandidate accumulates across runs (a re-type / teach

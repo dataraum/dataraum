@@ -37,6 +37,7 @@ from sqlalchemy import select
 from sqlalchemy.orm import Session
 
 from dataraum.analysis.relationships.db_models import Relationship
+from dataraum.analysis.relationships.surrogate import is_surrogate_column
 from dataraum.analysis.relationships.utils import load_defined_relationships
 from dataraum.analysis.semantic.db_models import SemanticAnnotation, TableEntity
 from dataraum.analysis.slicing.db_models import SliceDefinition
@@ -169,6 +170,14 @@ def _load_annotation_rows(
         ).all()
         for row in rows:
             if row.run_id != pinned.get(row.table_id):
+                continue
+            # Mint-owned surrogate join keys (`_sk__*`) are not business columns
+            # (DAT-878) — excluded here, at the load site, so every downstream
+            # consumer of these rows (the rendered column_annotations prompt
+            # section, AND the `measure_ids` derivation these rows feed at the
+            # call site below) is structurally surrogate-free, not just
+            # incidentally shielded by some other gate.
+            if is_surrogate_column(row.column_name):
                 continue
             rows_out.append(
                 {
@@ -512,6 +521,13 @@ def _conditioned_evidence(
     }
     real_columns: dict[str, dict[str, Column]] = {}
     for column in session.execute(select(Column).where(Column.table_id.in_(from_ids))).scalars():
+        # DAT-878: filter at the load site (previously relied on the
+        # incidental `endpoint_ids` gate below to keep a surrogate out of the
+        # conditioned lines — a surrogate annotated as a measure would have
+        # ridden through unless it also happened to be a relationship
+        # endpoint). Structural, not coincidental.
+        if is_surrogate_column(column.column_name):
+            continue
         real_columns.setdefault(column.table_id, {})[column.column_name] = column
 
     out: dict[str, list[str]] = {}
@@ -761,6 +777,12 @@ def build_catalogue_inputs(
         .where(Column.table_id.in_(table_ids))
         .order_by(Column.table_id, Column.column_position)
     ).scalars():
+        # Mint-owned surrogate join keys (``_sk__*``, DAT-277) are not business
+        # columns — exclude them from the catalogue/meaning prompt's column set
+        # (DAT-878). They still surface as relationship evidence: the surrogate
+        # pair rides ``load_defined_relationships`` above, untouched by this filter.
+        if is_surrogate_column(column.column_name):
+            continue
         columns_by_table.setdefault(column.table_id, []).append(column)
 
     heads = _generation_heads(session, table_ids)
@@ -802,7 +824,9 @@ def build_catalogue_inputs(
     endpoint_ids = {c.column_id for rel in relationships for c in (rel.from_column, rel.to_column)}
     # The measure selection the structural section renders sign/range for —
     # reused so the conditioned serve and the flat serve agree on what a
-    # measure IS (the pinned annotations' semantic_role).
+    # measure IS (the pinned annotations' semantic_role). Structurally
+    # surrogate-free (DAT-878): `annotation_rows` is `_load_annotation_rows`'
+    # output, which already excludes `_sk__*` columns at its own load site.
     measure_ids = {
         row["column_id"] for row in annotation_rows if row.get("semantic_role") == "measure"
     }

@@ -16,8 +16,12 @@ import {
 	waitFor,
 } from "@testing-library/react";
 import { afterEach, describe, expect, it, vi } from "vitest";
-
-import type { DrillAxis } from "#/duckdb/drill";
+import { formatCell } from "#/duckdb/cell-format";
+import {
+	type DrillAxis,
+	type DrillSource,
+	MAX_GUIDANCE_AXES,
+} from "#/duckdb/drill";
 import { theme } from "#/ui/theme";
 
 import { TestQueryProvider } from "../test-query-provider";
@@ -27,16 +31,32 @@ vi.mock("#/ui/cockpit/widgets/result-grid", () => ({
 		sql,
 		onRowClick,
 		toolbarStart,
+		footerRow,
+		footerLabel,
 	}: {
 		sql?: string;
 		onRowClick?: (row: Record<string, unknown>) => void;
 		toolbarStart?: React.ReactNode;
+		footerRow?: Record<string, unknown>;
+		footerLabel?: string;
 	}) => (
 		<div>
 			{/* The drill controls render through the grid's toolbar-left slot
 			    (iteration 3) — the mock must mount them like the real grid. */}
 			{toolbarStart}
 			<div data-testid="mock-grid-sql">{sql}</div>
+			{/* The footer through the REAL cell formatter the production grid uses
+			    (result-grid.tsx renders `formatCell(value, type)` per column), so a
+			    dash asserted here is the dash a practitioner sees — not a shape this
+			    mock invented. */}
+			{footerRow && (
+				<div data-testid="mock-grid-footer">
+					<span data-testid="mock-footer-label">{footerLabel}</span>
+					<span data-testid="mock-footer-value">
+						{formatCell(footerRow.value as never, "DOUBLE")}
+					</span>
+				</div>
+			)}
 			{onRowClick && (
 				<button
 					type="button"
@@ -64,14 +84,28 @@ import { DrillableGrid } from "./drillable-grid";
 const axis = (
 	column: string,
 	temporal: DrillAxis["temporal"] = null,
+	guidance: Partial<
+		Pick<
+			DrillAxis,
+			| "driverGain"
+			| "sliceRelevance"
+			| "sliceInterest"
+			| "hierarchyNext"
+			| "disabledReason"
+		>
+	> = {},
 ): DrillAxis => ({
 	column,
-	priority: 1,
 	sliceType: "categorical",
 	values: [],
 	valueCount: 3,
 	businessContext: null,
 	temporal,
+	driverGain: guidance.driverGain ?? null,
+	sliceRelevance: guidance.sliceRelevance ?? null,
+	sliceInterest: guidance.sliceInterest ?? null,
+	hierarchyNext: guidance.hierarchyNext ?? null,
+	disabledReason: guidance.disabledReason ?? null,
 });
 
 const jsonResponse = (body: unknown) =>
@@ -86,9 +120,15 @@ let composeQueue: Array<(r: Response) => void>;
 /** The body of each compose POST, in call order — the wire-contract probe. */
 let composeBodies: unknown[];
 
+/** Axis-guidance calls (DAT-673) also resolve MANUALLY, same reason. */
+let guidanceQueue: Array<(r: Response) => void>;
+let guidanceBodies: unknown[];
+
 function stubFetch(axesResponse?: unknown) {
 	composeQueue = [];
 	composeBodies = [];
+	guidanceQueue = [];
+	guidanceBodies = [];
 	vi.stubGlobal(
 		"fetch",
 		vi.fn(async (url: RequestInfo | URL, init?: RequestInit) => {
@@ -104,7 +144,15 @@ function stubFetch(axesResponse?: unknown) {
 					},
 				);
 			}
-			if (u.endsWith("/api/drill/compose") || u.endsWith("/api/drill/node")) {
+			if (u.endsWith("/api/drill/axis-guidance")) {
+				guidanceBodies.push(JSON.parse(String(init?.body ?? "null")));
+				return new Promise<Response>((resolve) => guidanceQueue.push(resolve));
+			}
+			if (
+				u.endsWith("/api/drill/compose") ||
+				u.endsWith("/api/drill/node") ||
+				u.endsWith("/api/drill/parts")
+			) {
 				composeBodies.push({
 					url: u.slice(u.lastIndexOf("/api")),
 					body: JSON.parse(String(init?.body ?? "null")),
@@ -118,10 +166,35 @@ function stubFetch(axesResponse?: unknown) {
 
 const BASE_SQL = "SELECT SUM(x) AS value FROM t";
 
+/** The node compose path — the analyse overlay's shape. */
+const NODE_SOURCE: DrillSource = {
+	kind: "node",
+	ref: { metricKey: "m1" },
+};
+
+/** The answer compose path (DAT-678): a proven declared source. */
+const PARTS_SOURCE: DrillSource = {
+	kind: "parts",
+	source: {
+		sources: [
+			{
+				name: "revenue",
+				parts: {
+					selectExpr: 'SUM("amount")',
+					relation: "lake.typed.enriched_orders",
+					where: [],
+				},
+			},
+		],
+		expression: "revenue",
+	},
+};
+
 function renderGrid(
-	nodeRef?: { metricKey: string },
+	source?: DrillSource,
 	onPinnedRow?: (row: Record<string, unknown> | null) => void,
 	axesResponse?: unknown,
+	extraProps?: Partial<Parameters<typeof DrillableGrid>[0]>,
 ) {
 	stubFetch(axesResponse);
 	return render(
@@ -130,8 +203,9 @@ function renderGrid(
 				<DrillableGrid
 					sql={BASE_SQL}
 					axesRequest={{ metricKey: "m1" }}
-					nodeRef={nodeRef}
+					source={source}
 					onPinnedRow={onPinnedRow}
+					{...extraProps}
 				/>
 			</MantineProvider>
 		</TestQueryProvider>,
@@ -207,8 +281,8 @@ describe("DrillableGrid", () => {
 		expect(screen.queryByTestId("drill-refusal")).toBeNull();
 	});
 
-	it("with a nodeRef, steps recompose the NODE (`/api/drill/node`), not the base SQL", async () => {
-		renderGrid({ metricKey: "m1" });
+	it("with a node source, steps recompose the NODE (`/api/drill/node`), not the base SQL", async () => {
+		renderGrid(NODE_SOURCE);
 		await sliceBy("region", "NODE_SQL");
 		expect(gridSql()).toBe("NODE_SQL");
 		expect(composeBodies).toEqual([
@@ -216,6 +290,45 @@ describe("DrillableGrid", () => {
 				url: "/api/drill/node",
 				body: {
 					metricKey: "m1",
+					steps: [{ kind: "slice", column: "region" }],
+				},
+			},
+		]);
+	});
+
+	// DAT-678: the answer path. The declared+proven clause parts ride the request
+	// (the streaming path is stateless — there is no server handle to name), and
+	// the slice recomposes AT SOURCE, so the dimension need not be on the result.
+	it("with a parts source, steps recompose from the declared parts (`/api/drill/parts`)", async () => {
+		renderGrid(PARTS_SOURCE);
+		await sliceBy("region", "PARTS_SQL");
+		expect(gridSql()).toBe("PARTS_SQL");
+		expect(composeBodies).toEqual([
+			{
+				url: "/api/drill/parts",
+				body: {
+					sources:
+						PARTS_SOURCE.kind === "parts" ? PARTS_SOURCE.source.sources : [],
+					expression: "revenue",
+					steps: [{ kind: "slice", column: "region" }],
+				},
+			},
+		]);
+	});
+
+	// Tier A is the fallback everywhere (DAT-678 mounts it on the answer,
+	// run_sql and report surfaces): with no source at all the grid wraps its own
+	// statement, which is the one thing that always works.
+	it("with no source, steps wrap the base SQL (`/api/drill/compose`)", async () => {
+		renderGrid();
+		await sliceBy("region", "TIER_A_SQL");
+		expect(gridSql()).toBe("TIER_A_SQL");
+		expect(composeBodies).toEqual([
+			{
+				url: "/api/drill/compose",
+				body: {
+					sql: BASE_SQL,
+					params: [],
 					steps: [{ kind: "slice", column: "region" }],
 				},
 			},
@@ -231,7 +344,7 @@ const lastSteps = () =>
 		.steps;
 
 describe("DrillableGrid — time grain", () => {
-	it("WITHOUT a nodeRef a temporal axis slices RAW — grain is a node-path capability", async () => {
+	it("WITHOUT a node source a temporal axis slices RAW — grain is a node-path capability", async () => {
 		renderGrid(); // tier-A path: /api/drill/compose rejects grained steps
 		await sliceBy("entry_id__date", "SQL_RAW");
 		expect(lastSteps()).toEqual([{ kind: "slice", column: "entry_id__date" }]);
@@ -242,7 +355,7 @@ describe("DrillableGrid — time grain", () => {
 	});
 
 	it("slices a temporal axis at MONTH grain by default; the chip is the grain control", async () => {
-		renderGrid({ metricKey: "m1" });
+		renderGrid(NODE_SOURCE);
 		await sliceBy("entry_id__date", "SQL_M");
 		expect(lastSteps()).toEqual([
 			{ kind: "slice", column: "entry_id__date", grain: "1M" },
@@ -264,7 +377,7 @@ describe("DrillableGrid — time grain", () => {
 	});
 
 	it("refuses an off-grammar custom token locally — no compose call fires", async () => {
-		renderGrid({ metricKey: "m1" });
+		renderGrid(NODE_SOURCE);
 		await sliceBy("entry_id__date", "SQL_M");
 		const before = composeBodies.length;
 		fireEvent.click(screen.getByTestId("drill-step-slice-entry_id__date"));
@@ -280,7 +393,7 @@ describe("DrillableGrid — time grain", () => {
 	});
 
 	it("a valid custom token composes (typed power path)", async () => {
-		renderGrid({ metricKey: "m1" });
+		renderGrid(NODE_SOURCE);
 		await sliceBy("entry_id__date", "SQL_M");
 		fireEvent.click(screen.getByTestId("drill-step-slice-entry_id__date"));
 		const input = await screen.findByTestId(
@@ -300,7 +413,7 @@ describe("DrillableGrid — time grain", () => {
 
 	it("a row-pin FREEZES the slice's grain; re-graining the slice leaves the pin (and the lock) standing", async () => {
 		const onPinnedRow = vi.fn();
-		renderGrid({ metricKey: "m1" }, onPinnedRow);
+		renderGrid(NODE_SOURCE, onPinnedRow);
 		await sliceBy("entry_id__date", "SQL_M");
 
 		// Pin the bucket row: the pin carries the slice's CURRENT grain.
@@ -393,5 +506,485 @@ describe("DrillableGrid — temporal gate reason", () => {
 			).toBe(false),
 		);
 		expect(screen.queryByTestId("drill-temporal-gate-reason")).toBeNull();
+	});
+});
+
+// --- rehydrate on mount (DAT-676) --------------------------------------------
+//
+// The report-detail route decodes its `?drill=` search param into steps and
+// hands them here as `initialSteps` — composed exactly like a live apply
+// (same endpoint, same acceptance rule), but ONCE, on mount.
+
+describe("DrillableGrid — rehydrate on mount", () => {
+	it("composes the saved steps on mount and commits them (steps + effective SQL + onStepsChange)", async () => {
+		const onStepsChange = vi.fn();
+		renderGrid(undefined, undefined, undefined, {
+			initialSteps: [{ kind: "slice", column: "region" }],
+			onStepsChange,
+		});
+		expect(gridSql()).toBe(BASE_SQL); // nothing committed yet — the compose is in flight
+		await waitFor(() => expect(composeQueue.length).toBe(1));
+		expect(composeBodies[0]).toEqual({
+			url: "/api/drill/compose",
+			body: {
+				sql: BASE_SQL,
+				params: [],
+				steps: [{ kind: "slice", column: "region" }],
+			},
+		});
+		composeQueue.shift()?.(
+			jsonResponse({ ok: true, sql: "REHYDRATED_SQL", params: [] }),
+		);
+		await waitFor(() => expect(gridSql()).toBe("REHYDRATED_SQL"));
+		await screen.findByTestId("drill-step-slice-region");
+		expect(onStepsChange).toHaveBeenCalledWith(
+			[{ kind: "slice", column: "region" }],
+			{ sql: "REHYDRATED_SQL", params: [] },
+		);
+		expect(screen.queryByTestId("drill-rehydrate-notice")).toBeNull();
+	});
+
+	it("degrades to the base result with a visible, dismissable notice when the saved step is refused", async () => {
+		renderGrid(undefined, undefined, undefined, {
+			initialSteps: [{ kind: "slice", column: "region" }],
+		});
+		await waitFor(() => expect(composeQueue.length).toBe(1));
+		composeQueue.shift()?.(
+			jsonResponse({ ok: false, reason: "axis no longer catalogued" }),
+		);
+		const notice = await screen.findByTestId("drill-rehydrate-notice");
+		expect(notice.textContent).toContain("axis no longer catalogued");
+		expect(gridSql()).toBe(BASE_SQL);
+		expect(screen.queryByTestId("drill-step-slice-region")).toBeNull();
+
+		// Dismissable, like the live-apply refusal.
+		const closeButton = notice.querySelector("button");
+		if (!closeButton) throw new Error("notice close button not rendered");
+		fireEvent.click(closeButton);
+		expect(screen.queryByTestId("drill-rehydrate-notice")).toBeNull();
+	});
+
+	it("degrades to the base result on a network failure too (never throws)", async () => {
+		vi.stubGlobal(
+			"fetch",
+			vi.fn(async (url: RequestInfo | URL) => {
+				const u = String(url);
+				if (u.endsWith("/api/drill/axes")) {
+					return jsonResponse({ axes: [axis("region")] });
+				}
+				if (u.endsWith("/api/drill/compose")) {
+					throw new Error("network down");
+				}
+				throw new Error(`unexpected fetch: ${u}`);
+			}),
+		);
+		render(
+			<TestQueryProvider>
+				<MantineProvider theme={theme} env="test">
+					<DrillableGrid
+						sql={BASE_SQL}
+						axesRequest={{ metricKey: "m1" }}
+						initialSteps={[{ kind: "slice", column: "region" }]}
+					/>
+				</MantineProvider>
+			</TestQueryProvider>,
+		);
+		await screen.findByTestId("drill-rehydrate-notice");
+		expect(gridSql()).toBe(BASE_SQL);
+	});
+
+	it("does nothing when initialSteps is absent — the ordinary empty-stack start", async () => {
+		renderGrid();
+		expect(composeBodies).toEqual([]);
+		expect(screen.queryByTestId("drill-rehydrate-notice")).toBeNull();
+	});
+});
+
+// --- axis guidance badge (DAT-673) ------------------------------------------
+
+describe("DrillableGrid — axis guidance badge", () => {
+	it("shows the driver-gain badge on an axis with a measured ranking", async () => {
+		renderGrid(undefined, undefined, {
+			axes: [axis("region", null, { driverGain: 0.1 }), axis("product")],
+		});
+		const button = screen.getByTestId<HTMLButtonElement>("drill-slice-button");
+		await waitFor(() => expect(button.disabled).toBe(false));
+		fireEvent.click(button);
+		await screen.findByText("region");
+		// 3 significant digits (review-round fix — 2dp collapsed small real
+		// gains into a self-contradicting "0.00").
+		expect(await screen.findByText("Driver · 0.100")).toBeTruthy();
+	});
+
+	it("shows nothing for a bare substrate axis with no catalog or driver signal", async () => {
+		renderGrid(undefined, undefined, {
+			axes: [axis("region"), axis("product")],
+		});
+		const button = screen.getByTestId<HTMLButtonElement>("drill-slice-button");
+		await waitFor(() => expect(button.disabled).toBe(false));
+		fireEvent.click(button);
+		await screen.findByText("region");
+		expect(screen.queryByText(/Driver|Primary|Supporting|Unjudged/)).toBeNull();
+	});
+});
+
+// --- DAT-671: already-in-result grey-out -------------------------------------
+
+describe("DrillableGrid — already-in-result grey-out (DAT-671)", () => {
+	it("keeps a disabled axis IN THE MENU, greyed, carrying its reason — never removes it", async () => {
+		renderGrid(undefined, undefined, {
+			axes: [
+				axis("region", null, {
+					disabledReason:
+						"already at this grain — this column already breaks out the result",
+				}),
+				axis("product"),
+			],
+		});
+		const button = screen.getByTestId<HTMLButtonElement>("drill-slice-button");
+		// The Slice button itself stays ENABLED — greying never empties the menu
+		// or disables the control (superseding the old "no axes" behavior for
+		// this class of state).
+		await waitFor(() => expect(button.disabled).toBe(false));
+		fireEvent.click(button);
+
+		// The item is still IN THE MENU (never removed) …
+		const disabledItem = await screen.findByTestId("drill-axis-region");
+		// … but disabled, and its reason is visible inline.
+		expect(disabledItem.getAttribute("data-disabled")).toBeTruthy();
+		expect(await screen.findByText(/already at this grain/i)).toBeTruthy();
+
+		// The other, non-matching axis stays fully offered.
+		const enabledItem = screen.getByTestId("drill-axis-product");
+		expect(enabledItem.getAttribute("data-disabled")).toBeFalsy();
+	});
+
+	it("clicking the disabled item does not fire a compose call", async () => {
+		renderGrid(undefined, undefined, {
+			axes: [axis("region", null, { disabledReason: "already at this grain" })],
+		});
+		const button = screen.getByTestId<HTMLButtonElement>("drill-slice-button");
+		await waitFor(() => expect(button.disabled).toBe(false));
+		fireEvent.click(button);
+		const disabledItem = await screen.findByTestId("drill-axis-region");
+		fireEvent.click(disabledItem);
+		// Flush past the current task before asserting: useMutation's own
+		// mutationFn (which reaches the mocked fetch and pushes onto
+		// composeQueue) runs on a LATER microtask/task than the click handler
+		// itself, so asserting immediately would pass whether or not the click
+		// fired a compose call at all — this is not a style nicety, it's what
+		// makes the assertion below mean anything (review-caught: forcing the
+		// item enabled left the un-flushed assertion green too).
+		await new Promise((resolve) => setTimeout(resolve, 0));
+		expect(composeQueue.length).toBe(0);
+	});
+
+	it("never promotes a hierarchy-descent suggestion for an axis that's simultaneously disabled", async () => {
+		renderGrid(undefined, undefined, {
+			axes: [
+				axis("region", null, { hierarchyNext: "product" }),
+				axis("product", null, { disabledReason: "already at this grain" }),
+			],
+		});
+		await sliceBy("region", "SQL1");
+		fireEvent.click(screen.getByTestId("mock-row"));
+		await waitFor(() => expect(composeQueue.length).toBeGreaterThan(0));
+		composeQueue.shift()?.(
+			jsonResponse({ ok: true, sql: "SQL_PINNED", params: [] }),
+		);
+		await screen.findByTestId("drill-step-pin-region");
+
+		fireEvent.click(screen.getByTestId("drill-slice-button"));
+		expect(
+			screen.queryByTestId("drill-hierarchy-suggestion-product"),
+		).toBeNull();
+	});
+});
+
+// --- hierarchy descent suggestion (DAT-673) ---------------------------------
+
+describe("DrillableGrid — hierarchy descent suggestion", () => {
+	it("shows no suggestion before any pin is committed", async () => {
+		renderGrid(undefined, undefined, {
+			axes: [
+				axis("region", null, { hierarchyNext: "product" }),
+				axis("product"),
+			],
+		});
+		const button = screen.getByTestId<HTMLButtonElement>("drill-slice-button");
+		await waitFor(() => expect(button.disabled).toBe(false));
+		fireEvent.click(button);
+		await screen.findByText("region");
+		expect(
+			screen.queryByTestId("drill-hierarchy-suggestion-product"),
+		).toBeNull();
+	});
+
+	it("suggests the hierarchy's next level after a pin on its coarser member", async () => {
+		renderGrid(undefined, undefined, {
+			axes: [
+				axis("region", null, { hierarchyNext: "product" }),
+				axis("product"),
+				axis("entry_id__date", "date"),
+			],
+		});
+		await sliceBy("region", "SQL1");
+
+		// Pin region=EU via the row-click path.
+		fireEvent.click(screen.getByTestId("mock-row"));
+		await waitFor(() => expect(composeQueue.length).toBeGreaterThan(0));
+		composeQueue.shift()?.(
+			jsonResponse({ ok: true, sql: "SQL_PINNED", params: [] }),
+		);
+		await screen.findByTestId("drill-step-pin-region");
+
+		fireEvent.click(screen.getByTestId("drill-slice-button"));
+		const suggestion = await screen.findByTestId(
+			"drill-hierarchy-suggestion-product",
+		);
+		expect(suggestion.textContent).toContain("Descend to product");
+	});
+
+	// Fold-in #7: the promoted entry used to render WITHOUT the target axis's
+	// guidance badge or valueCount, so the same axis looked like two
+	// different things depending on which entry offered it.
+	it("the promoted entry carries the SAME guidance badge and valueCount as the axis's plain list entry", async () => {
+		renderGrid(undefined, undefined, {
+			axes: [
+				axis("region", null, { hierarchyNext: "product" }),
+				axis("product", null, { driverGain: 0.2 }),
+			],
+		});
+		await sliceBy("region", "SQL1");
+		fireEvent.click(screen.getByTestId("mock-row"));
+		await waitFor(() => expect(composeQueue.length).toBeGreaterThan(0));
+		composeQueue.shift()?.(
+			jsonResponse({ ok: true, sql: "SQL_PINNED", params: [] }),
+		);
+		await screen.findByTestId("drill-step-pin-region");
+
+		fireEvent.click(screen.getByTestId("drill-slice-button"));
+		const suggestion = await screen.findByTestId(
+			"drill-hierarchy-suggestion-product",
+		);
+		// Same badge (driverGain 0.2 → "Driver · 0.200") and the same
+		// valueCount (3, the `axis()` helper's default) the plain entry for
+		// "product" would show further down the SAME menu.
+		expect(suggestion.textContent).toContain("Driver · 0.200");
+		expect(suggestion.textContent).toContain("3");
+	});
+
+	it("hides the suggestion once its target column is itself already sliced", async () => {
+		renderGrid(undefined, undefined, {
+			axes: [
+				axis("region", null, { hierarchyNext: "product" }),
+				axis("product"),
+			],
+		});
+		await sliceBy("region", "SQL1");
+		fireEvent.click(screen.getByTestId("mock-row"));
+		await waitFor(() => expect(composeQueue.length).toBeGreaterThan(0));
+		composeQueue.shift()?.(
+			jsonResponse({ ok: true, sql: "SQL_PINNED", params: [] }),
+		);
+		await screen.findByTestId("drill-step-pin-region");
+
+		// Slice "product" directly — it's now active, so it can no longer be
+		// the suggestion (the affordance would be a shortcut to a no-op).
+		fireEvent.click(screen.getByTestId("drill-slice-button"));
+		fireEvent.click(await screen.findByText("product"));
+		await waitFor(() => expect(composeQueue.length).toBeGreaterThan(0));
+		composeQueue.shift()?.(
+			jsonResponse({ ok: true, sql: "SQL_BOTH", params: [] }),
+		);
+		await screen.findByTestId("drill-step-slice-product");
+
+		fireEvent.click(screen.getByTestId("drill-slice-button"));
+		expect(
+			screen.queryByTestId("drill-hierarchy-suggestion-product"),
+		).toBeNull();
+	});
+});
+
+// --- Haiku guidance fallback (DAT-673) --------------------------------------
+
+describe("DrillableGrid — Haiku guidance fallback", () => {
+	it("offers 'Suggest' only when EVERY axis has no measured signal", async () => {
+		renderGrid(undefined, undefined, {
+			axes: [axis("region"), axis("product")], // no guidance fields on either
+		});
+		const button = screen.getByTestId<HTMLButtonElement>("drill-slice-button");
+		await waitFor(() => expect(button.disabled).toBe(false));
+		fireEvent.click(button);
+		await screen.findByText("region");
+		expect(screen.getByTestId("drill-suggest-guidance")).toBeTruthy();
+	});
+
+	it("does NOT offer 'Suggest' when even one axis carries a measured signal", async () => {
+		renderGrid(undefined, undefined, {
+			axes: [axis("region", null, { driverGain: 0.1 }), axis("product")],
+		});
+		const button = screen.getByTestId<HTMLButtonElement>("drill-slice-button");
+		await waitFor(() => expect(button.disabled).toBe(false));
+		fireEvent.click(button);
+		await screen.findByText("region");
+		expect(screen.queryByTestId("drill-suggest-guidance")).toBeNull();
+	});
+
+	it("fetches and renders the suggestion inline, then hides the 'Suggest' action", async () => {
+		renderGrid(undefined, undefined, {
+			axes: [axis("region"), axis("product")],
+		});
+		const button = screen.getByTestId<HTMLButtonElement>("drill-slice-button");
+		await waitFor(() => expect(button.disabled).toBe(false));
+		fireEvent.click(button);
+		fireEvent.click(await screen.findByTestId("drill-suggest-guidance"));
+
+		await waitFor(() => expect(guidanceQueue.length).toBe(1));
+		expect(guidanceBodies[0]).toMatchObject({
+			measureLabel: "m1",
+			axes: [
+				{ column: "region", sliceType: "categorical" },
+				{ column: "product", sliceType: "categorical" },
+			],
+		});
+		guidanceQueue.shift()?.(
+			jsonResponse({
+				suggestions: [
+					{ column: "region", guidance: "See if patterns cluster by area." },
+				],
+			}),
+		);
+		// The item click closed the menu, same as any other Menu.Item — reopen
+		// it to see the now-loaded suggestion rendered inline on "region".
+		await waitFor(() => expect(button.disabled).toBe(false));
+		fireEvent.click(button);
+
+		expect(
+			await screen.findByText(
+				"Suggested (unmeasured): See if patterns cluster by area.",
+			),
+		).toBeTruthy();
+		expect(screen.queryByTestId("drill-suggest-guidance")).toBeNull();
+	});
+
+	it("shows an inline error and leaves the menu unchanged on failure", async () => {
+		renderGrid(undefined, undefined, {
+			axes: [axis("region"), axis("product")],
+		});
+		const button = screen.getByTestId<HTMLButtonElement>("drill-slice-button");
+		await waitFor(() => expect(button.disabled).toBe(false));
+		fireEvent.click(button);
+		fireEvent.click(await screen.findByTestId("drill-suggest-guidance"));
+
+		await waitFor(() => expect(guidanceQueue.length).toBe(1));
+		guidanceQueue.shift()?.(
+			new Response(JSON.stringify({ error: "Internal server error." }), {
+				status: 500,
+				headers: { "Content-Type": "application/json" },
+			}),
+		);
+
+		await screen.findByTestId("drill-guidance-error");
+		// The action is still there — the user can retry (the menu closed on
+		// item click, same as any other Menu.Item — reopen it to check).
+		fireEvent.click(button);
+		expect(await screen.findByTestId("drill-suggest-guidance")).toBeTruthy();
+	});
+
+	// Review-round Critical 1: a pure-substrate node routinely has MORE than
+	// MAX_GUIDANCE_AXES axes — sending all of them 400'd on the route's own
+	// cap with a raw zod message. The client must cap BEFORE sending.
+	it("caps the request to MAX_GUIDANCE_AXES — never sends the whole substrate set", async () => {
+		const manyAxes = Array.from({ length: MAX_GUIDANCE_AXES + 5 }, (_, i) =>
+			axis(`col_${i}`),
+		);
+		renderGrid(undefined, undefined, { axes: manyAxes });
+		const button = screen.getByTestId<HTMLButtonElement>("drill-slice-button");
+		await waitFor(() => expect(button.disabled).toBe(false));
+		fireEvent.click(button);
+		fireEvent.click(await screen.findByTestId("drill-suggest-guidance"));
+
+		await waitFor(() => expect(guidanceQueue.length).toBe(1));
+		const sent = guidanceBodies[0] as { axes: unknown[] };
+		expect(sent.axes.length).toBe(MAX_GUIDANCE_AXES);
+		guidanceQueue.shift()?.(jsonResponse({ suggestions: [] }));
+	});
+
+	// Fold-in #4: a successful call with ZERO surviving suggestions must not
+	// be a silent dead end — the Suggest action used to just vanish with no
+	// text and no error.
+	it("shows an explicit 'No suggestions' state on a successful call with zero results", async () => {
+		renderGrid(undefined, undefined, {
+			axes: [axis("region"), axis("product")],
+		});
+		const button = screen.getByTestId<HTMLButtonElement>("drill-slice-button");
+		await waitFor(() => expect(button.disabled).toBe(false));
+		fireEvent.click(button);
+		fireEvent.click(await screen.findByTestId("drill-suggest-guidance"));
+
+		await waitFor(() => expect(guidanceQueue.length).toBe(1));
+		guidanceQueue.shift()?.(jsonResponse({ suggestions: [] }));
+
+		fireEvent.click(button); // reopen — the item click closed the menu
+		expect(
+			await screen.findByTestId("drill-suggest-guidance-empty"),
+		).toBeTruthy();
+		expect(screen.queryByTestId("drill-suggest-guidance")).toBeNull();
+	});
+});
+
+describe("non-reconciling total (DAT-857)", () => {
+	const RATIO_AXES = {
+		axes: [axis("region"), axis("entry_id__date", "date")],
+		// The engine classified this target: it recomputes per bucket, so a
+		// breakdown's parts do NOT sum to the unrestricted scalar.
+		reconciles: { time: false, categorical: true },
+	};
+
+	it("prints the recomputed total with the label saying so — never a dash", async () => {
+		renderGrid(NODE_SOURCE, undefined, RATIO_AXES, {
+			footerCells: { value: 42, revenue: 800 },
+		});
+		// Undrilled, the grid IS the scalar — no footer to contradict.
+		expect(screen.queryByTestId("mock-grid-footer")).toBeNull();
+
+		await sliceBy("entry_id__date", "SELECT 1");
+
+		// The deferred-mutation trap: the step commit lands in a transition, so
+		// flush before asserting on what it rendered.
+		await waitFor(() =>
+			expect(screen.getByTestId("mock-grid-footer")).toBeTruthy(),
+		);
+		// The total is the formula over the carrier totals beside it — the same
+		// number the header shows; hiding it made the two disagree (lead ruling
+		// 2026-07-29 retired the dash mask). The label carries the not-a-row-sum
+		// note instead. Exact match: composing over an ABSENT caller label must
+		// fall back to WindowedGrid's own "Total" default, never stringify
+		// undefined (found live on the closing smoke).
+		expect(screen.getByTestId("mock-footer-value").textContent).toBe("42");
+		expect(screen.getByTestId("mock-footer-label").textContent).toBe(
+			"Total — value recomputed",
+		);
+	});
+
+	it("keeps a real total when the drilled axis reconciles", async () => {
+		renderGrid(
+			NODE_SOURCE,
+			undefined,
+			{
+				axes: [axis("region"), axis("entry_id__date", "date")],
+				reconciles: { time: true, categorical: true },
+			},
+			{ footerCells: { value: 42 } },
+		);
+		await sliceBy("entry_id__date", "SELECT 1");
+		await waitFor(() =>
+			expect(screen.getByTestId("mock-grid-footer")).toBeTruthy(),
+		);
+		expect(screen.getByTestId("mock-footer-value").textContent).toBe("42");
+		expect(screen.getByTestId("mock-footer-label").textContent).not.toContain(
+			"recomputed",
+		);
 	});
 });

@@ -31,6 +31,19 @@ vi.mock("#/tools/list-tables", () => ({
 	listTables: () => listTablesMock(),
 }));
 
+// The run_steps HANDLER test below needs the two lake-backed calls stubbed —
+// and only those. `composeStandalone`/`validateStepNames` stay REAL (importOriginal),
+// because the handler's own composition is part of what is under test.
+const runStepsMock = vi.fn();
+vi.mock("#/duckdb/run-steps", async (importOriginal) => ({
+	...(await importOriginal<typeof import("#/duckdb/run-steps")>()),
+	runSteps: (...a: unknown[]) => runStepsMock(...a),
+}));
+vi.mock("#/tools/grain-note", () => ({
+	computeGrainNote: vi.fn().mockResolvedValue(null),
+	loadNearUniqueColumns: vi.fn().mockResolvedValue(new Set()),
+}));
+
 // save-on-clean: saveQuerySnippet is the write boundary — mocked so the persist
 // gating/best-effort logic is testable. DAT-506: snippets are workspace-scoped
 // (the `workspace_id` column replaced the session FK), so there's no session gate.
@@ -43,13 +56,17 @@ vi.mock("#/db/metadata/snippet-writer", () => ({
 import {
 	assembleAnswer,
 	type Component,
+	candidateSource,
 	classifyComponents,
 	componentsToSave,
+	declarationNote,
 	exhaustionDiagnostic,
 	isMissingStructuredResult,
+	makeRunStepsTool,
 	noResultNarrative,
 	persistLearnedSnippets,
 	type QueryDraft,
+	type RunStepsCapture,
 	readDataQuality,
 	salvageDraft,
 } from "./query";
@@ -198,6 +215,7 @@ describe("assembleAnswer", () => {
 					},
 				],
 				grainNote: null,
+				declaredSource: null,
 			},
 			{ band: "investigate", note: "n" },
 		);
@@ -230,7 +248,12 @@ describe("assembleAnswer", () => {
 		const note = 'Note: this query groups by "txn_id", which is near-unique.';
 		const out = assembleAnswer(
 			draft(),
-			{ composedSql: "SELECT 1", components: [], grainNote: note },
+			{
+				composedSql: "SELECT 1",
+				components: [],
+				grainNote: note,
+				declaredSource: null,
+			},
 			null,
 		);
 		// Surfaced deterministically — even if the model omitted it.
@@ -244,7 +267,12 @@ describe("assembleAnswer", () => {
 		d.assumptions = [note];
 		const out = assembleAnswer(
 			d,
-			{ composedSql: "SELECT 1", components: [], grainNote: note },
+			{
+				composedSql: "SELECT 1",
+				components: [],
+				grainNote: note,
+				declaredSource: null,
+			},
 			null,
 		);
 		expect(out.assumptions.filter((a) => a === note)).toHaveLength(1);
@@ -267,7 +295,12 @@ describe("assembleAnswer", () => {
 	it("yields a null grid when the captured composed SQL is blank", () => {
 		const out = assembleAnswer(
 			draft(),
-			{ composedSql: "   ", components: [], grainNote: null },
+			{
+				composedSql: "   ",
+				components: [],
+				grainNote: null,
+				declaredSource: null,
+			},
 			null,
 		);
 		expect(out.grid).toBeNull();
@@ -316,6 +349,7 @@ describe("persistLearnedSnippets (save-on-clean)", () => {
 				comp("margin", "adapted", "SELECT SUM(m) AS value"),
 			],
 			grainNote: null,
+			declaredSource: null,
 		});
 
 		// fresh + adapted only — exact_reuse is skipped.
@@ -338,6 +372,7 @@ describe("persistLearnedSnippets (save-on-clean)", () => {
 			composedSql: "x",
 			components: [comp("a", "exact_reuse")],
 			grainNote: null,
+			declaredSource: null,
 		});
 		expect(saveQuerySnippetMock).not.toHaveBeenCalled();
 	});
@@ -351,6 +386,7 @@ describe("persistLearnedSnippets (save-on-clean)", () => {
 				composedSql: "x",
 				components: [comp("a", "fresh")],
 				grainNote: null,
+				declaredSource: null,
 			}),
 		).resolves.toBeUndefined();
 		expect(warnSpy).toHaveBeenCalled();
@@ -376,6 +412,7 @@ describe("salvageDraft (validated-but-unfinalized run)", () => {
 			composedSql: "WITH revenue AS (…) SELECT *",
 			components,
 			grainNote: null,
+			declaredSource: null,
 		});
 		expect(out.concepts_used).toEqual(["revenue", "by_region"]);
 		// No hallucinated tables — the salvage doesn't invent tables_touched.
@@ -471,5 +508,221 @@ describe("isMissingStructuredResult (which chat() failures are salvageable)", ()
 		).toBe(false);
 		expect(isMissingStructuredResult("not an error")).toBe(false);
 		expect(isMissingStructuredResult(null)).toBe(false);
+	});
+});
+
+// --- parts-at-source candidate (DAT-678) --------------------------------------
+//
+// The boundary between "the model said something" and "we have a candidate to
+// prove". Nothing here believes the declaration — it only decides whether there
+// is a well-formed thing to check. The check itself is answer-source.test.ts.
+
+const declared = (
+	relation: string,
+	value_expr: string,
+	filters: string[] = [],
+) => ({ relation, value_expr, filters });
+
+describe("candidateSource", () => {
+	// The relation arrives in the model's `lake.<layer>.<name>` form and is
+	// reduced to the bare name here — the composer quotes it as one identifier,
+	// so the qualified spelling would never bind.
+	it("collects the steps that declared a source, relations reduced", async () => {
+		expect(
+			await candidateSource(
+				[
+					{ name: "revenue", source: declared("lake.typed.o", "SUM(amt)") },
+					{ name: "cost", source: declared("lake.typed.o", "SUM(cost)") },
+				],
+				"revenue - cost",
+			),
+		).toEqual({
+			candidate: {
+				sources: [
+					{
+						name: "revenue",
+						parts: {
+							selectExpr: "SUM(amt)",
+							relation: "o",
+							where: [],
+						},
+					},
+					{
+						name: "cost",
+						parts: {
+							selectExpr: "SUM(cost)",
+							relation: "o",
+							where: [],
+						},
+					},
+				],
+				expression: "revenue - cost",
+			},
+			notes: [],
+		});
+	});
+
+	// The house empty-aggregation guard (DAT-671): a scalar arrives wrapped in
+	// CASE WHEN COUNT(*) = 0, i.e. THREE aggregate calls in one value
+	// expression. That is the normal shape of a correct answer and must sail
+	// straight through acceptance — the prompt's carve-out is worthless if the
+	// code then refuses what it invited.
+	it("accepts a CASE-guarded scalar — the house empty-aggregation shape", async () => {
+		const guarded =
+			"CASE WHEN COUNT(*) = 0 THEN NULL ELSE COALESCE(SUM(credit), 0) - COALESCE(SUM(debit), 0) END";
+		const outcome = await candidateSource(
+			[{ name: "net", source: declared("lake.typed.gl", guarded) }],
+			"net",
+		);
+		expect(outcome.notes).toEqual([]);
+		expect(outcome.candidate?.sources[0]?.parts.selectExpr).toBe(guarded);
+	});
+
+	// A step that abstained is simply absent from the candidate — the model is
+	// never pushed into decomposing a join or a window into a shape it does not
+	// have.
+	it("drops abstained steps and keeps the rest", async () => {
+		const outcome = await candidateSource(
+			[
+				{ name: "revenue", source: declared("lake.typed.o", "SUM(amt)") },
+				{ name: "joined", source: declared("", "") },
+			],
+			"revenue",
+		);
+		expect(outcome.candidate?.sources.map((s) => s.name)).toEqual(["revenue"]);
+		// An abstention is the contract working, so it is NOT reported back.
+		expect(outcome.notes).toEqual([]);
+	});
+
+	// DAT-671: the silent failure this gate exists to end. `SUM(x) AS revenue`
+	// used to compose to `SUM(x) AS revenue AS "value"` — a parse error the
+	// executed proof swallowed into an unexplained tier-A downgrade.
+	it("refuses a value expression carrying its own alias, and says so", async () => {
+		const outcome = await candidateSource(
+			[
+				{
+					name: "revenue",
+					source: declared("lake.typed.o", "SUM(amt) AS rev"),
+				},
+				{ name: "cost", source: declared("lake.typed.o", "SUM(cost)") },
+			],
+			"revenue - cost",
+		);
+		expect(outcome.notes).toHaveLength(1);
+		expect(outcome.notes[0]).toContain("revenue");
+		expect(outcome.notes[0]).toContain("AS rev");
+		// The clean sibling still stands: the refusal is per-declaration.
+		expect(outcome.candidate?.sources.map((s) => s.name)).toEqual(["cost"]);
+	});
+
+	// A declaration that smuggles the whole query in also cannot compose — the
+	// relation belongs in `relation`, the predicates in `filters`.
+	it("refuses a value expression carrying its own FROM/WHERE", async () => {
+		const outcome = await candidateSource(
+			[
+				{
+					name: "revenue",
+					source: declared("lake.typed.o", "SUM(amt) FROM o WHERE x = 1"),
+				},
+			],
+			"revenue",
+		);
+		expect(outcome.candidate).toBeNull();
+		expect(outcome.notes[0]).toMatch(/FROM clause/);
+	});
+
+	// No combining arithmetic means final_sql is not a formula over the steps
+	// (a grouped breakdown, a join, a filter) — there is nothing to recompose,
+	// and tier A is the right path for exactly those results anyway.
+	it("yields no candidate without a combining expression", async () => {
+		expect(
+			await candidateSource(
+				[{ name: "revenue", source: declared("lake.typed.o", "SUM(amt)") }],
+				"   ",
+			),
+		).toEqual({ candidate: null, notes: [] });
+	});
+
+	it("yields no candidate when every step abstained", async () => {
+		expect(
+			(
+				await candidateSource(
+					[{ name: "joined", source: declared("", "") }],
+					"joined",
+				)
+			).candidate,
+		).toBeNull();
+	});
+});
+
+// The LAST hop of the DAT-671 disclosure: candidateSource produces notes,
+// declarationNote turns them into a sentence, and the run_steps handler has to
+// actually PUT that sentence on the tool result. Deleting the `source_note`
+// spread left every other test in this file green — and rejection-over-strip was
+// justified BY the model being told, so the telling is the load-bearing part.
+describe("run_steps handler — refused declarations reach the model", () => {
+	const okResult = {
+		ok: true as const,
+		columns: ["value"],
+		rowCount: 1,
+		sample: [{ value: 1 }],
+		truncated: false,
+	};
+
+	const invoke = async (valueExpr: string) => {
+		runStepsMock.mockResolvedValue(okResult);
+		const captured: RunStepsCapture = { value: null, lastError: null };
+		const tool = makeRunStepsTool(captured, new Set());
+		const out = await tool.execute?.(
+			{
+				steps: [
+					{
+						name: "revenue",
+						sql: "SELECT SUM(amt) AS value FROM o",
+						source: {
+							relation: "lake.typed.o",
+							value_expr: valueExpr,
+							filters: [],
+						},
+					},
+				],
+				final_sql: "SELECT value FROM revenue",
+				combining_expression: "revenue",
+			},
+			undefined,
+		);
+		return { out: out as Record<string, unknown>, captured };
+	};
+
+	it("names the offending step and its alias on the tool result", async () => {
+		const { out, captured } = await invoke("SUM(amt) AS rev");
+		expect(out.source_note).toContain("revenue");
+		expect(out.source_note).toContain("AS rev");
+		// The answer is untouched: the run still validated, and only the drill
+		// handle is gone.
+		expect(out.ok).toBe(true);
+		expect(captured.value?.declaredSource).toBeNull();
+	});
+
+	it("says nothing when every declaration was accepted", async () => {
+		const { out, captured } = await invoke(
+			"CASE WHEN COUNT(*) = 0 THEN NULL ELSE SUM(amt) END",
+		);
+		expect(out.source_note).toBeUndefined();
+		expect(captured.value?.declaredSource?.sources).toHaveLength(1);
+	});
+});
+
+describe("declarationNote", () => {
+	it("is null when there is nothing to disclose", () => {
+		expect(declarationNote([])).toBeNull();
+	});
+
+	it("states the cost precisely — the drill, never the answer", () => {
+		const note = declarationNote(["'revenue' — it carries its own alias"]);
+		expect(note).toContain("'revenue'");
+		expect(note).toContain("cannot be re-sliced at source");
+		// The model must not read this as "your query is wrong" and re-plan.
+		expect(note).toMatch(/answer are unaffected/i);
 	});
 });

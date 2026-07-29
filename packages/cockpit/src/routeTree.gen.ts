@@ -32,8 +32,10 @@ import { Route as appCockpitRouteRouteImport } from './routes/(app)/cockpit/rout
 import { Route as appReportsIndexRouteImport } from './routes/(app)/reports/index'
 import { Route as appCockpitIndexRouteImport } from './routes/(app)/cockpit/index'
 import { Route as ApiReportsMintRouteImport } from './routes/api/reports/mint'
+import { Route as ApiDrillPartsRouteImport } from './routes/api/drill/parts'
 import { Route as ApiDrillNodeRouteImport } from './routes/api/drill/node'
 import { Route as ApiDrillComposeRouteImport } from './routes/api/drill/compose'
+import { Route as ApiDrillAxisGuidanceRouteImport } from './routes/api/drill/axis-guidance'
 import { Route as ApiDrillAxesRouteImport } from './routes/api/drill/axes'
 import { Route as ApiChartsAuthorRouteImport } from './routes/api/charts/author'
 import { Route as ApiAuthSplatRouteImport } from './routes/api/auth/$'
@@ -154,6 +156,11 @@ const ApiReportsMintRoute = ApiReportsMintRouteImport.update({
   path: '/api/reports/mint',
   getParentRoute: () => rootRouteImport,
 } as any)
+const ApiDrillPartsRoute = ApiDrillPartsRouteImport.update({
+  id: '/api/drill/parts',
+  path: '/api/drill/parts',
+  getParentRoute: () => rootRouteImport,
+} as any)
 const ApiDrillNodeRoute = ApiDrillNodeRouteImport.update({
   id: '/api/drill/node',
   path: '/api/drill/node',
@@ -162,6 +169,11 @@ const ApiDrillNodeRoute = ApiDrillNodeRouteImport.update({
 const ApiDrillComposeRoute = ApiDrillComposeRouteImport.update({
   id: '/api/drill/compose',
   path: '/api/drill/compose',
+  getParentRoute: () => rootRouteImport,
+} as any)
+const ApiDrillAxisGuidanceRoute = ApiDrillAxisGuidanceRouteImport.update({
+  id: '/api/drill/axis-guidance',
+  path: '/api/drill/axis-guidance',
   getParentRoute: () => rootRouteImport,
 } as any)
 const ApiDrillAxesRoute = ApiDrillAxesRouteImport.update({
@@ -216,8 +228,10 @@ export interface FileRoutesByFullPath {
   '/api/auth/$': typeof ApiAuthSplatRoute
   '/api/charts/author': typeof ApiChartsAuthorRoute
   '/api/drill/axes': typeof ApiDrillAxesRoute
+  '/api/drill/axis-guidance': typeof ApiDrillAxisGuidanceRoute
   '/api/drill/compose': typeof ApiDrillComposeRoute
   '/api/drill/node': typeof ApiDrillNodeRoute
+  '/api/drill/parts': typeof ApiDrillPartsRoute
   '/api/reports/mint': typeof ApiReportsMintRoute
   '/cockpit/': typeof appCockpitIndexRoute
   '/reports/': typeof appReportsIndexRoute
@@ -246,8 +260,10 @@ export interface FileRoutesByTo {
   '/api/auth/$': typeof ApiAuthSplatRoute
   '/api/charts/author': typeof ApiChartsAuthorRoute
   '/api/drill/axes': typeof ApiDrillAxesRoute
+  '/api/drill/axis-guidance': typeof ApiDrillAxisGuidanceRoute
   '/api/drill/compose': typeof ApiDrillComposeRoute
   '/api/drill/node': typeof ApiDrillNodeRoute
+  '/api/drill/parts': typeof ApiDrillPartsRoute
   '/api/reports/mint': typeof ApiReportsMintRoute
   '/cockpit': typeof appCockpitIndexRoute
   '/reports': typeof appReportsIndexRoute
@@ -279,8 +295,10 @@ export interface FileRoutesById {
   '/api/auth/$': typeof ApiAuthSplatRoute
   '/api/charts/author': typeof ApiChartsAuthorRoute
   '/api/drill/axes': typeof ApiDrillAxesRoute
+  '/api/drill/axis-guidance': typeof ApiDrillAxisGuidanceRoute
   '/api/drill/compose': typeof ApiDrillComposeRoute
   '/api/drill/node': typeof ApiDrillNodeRoute
+  '/api/drill/parts': typeof ApiDrillPartsRoute
   '/api/reports/mint': typeof ApiReportsMintRoute
   '/(app)/cockpit/': typeof appCockpitIndexRoute
   '/(app)/reports/': typeof appReportsIndexRoute
@@ -312,8 +330,10 @@ export interface FileRouteTypes {
     | '/api/auth/$'
     | '/api/charts/author'
     | '/api/drill/axes'
+    | '/api/drill/axis-guidance'
     | '/api/drill/compose'
     | '/api/drill/node'
+    | '/api/drill/parts'
     | '/api/reports/mint'
     | '/cockpit/'
     | '/reports/'
@@ -342,8 +362,10 @@ export interface FileRouteTypes {
     | '/api/auth/$'
     | '/api/charts/author'
     | '/api/drill/axes'
+    | '/api/drill/axis-guidance'
     | '/api/drill/compose'
     | '/api/drill/node'
+    | '/api/drill/parts'
     | '/api/reports/mint'
     | '/cockpit'
     | '/reports'
@@ -374,8 +396,10 @@ export interface FileRouteTypes {
     | '/api/auth/$'
     | '/api/charts/author'
     | '/api/drill/axes'
+    | '/api/drill/axis-guidance'
     | '/api/drill/compose'
     | '/api/drill/node'
+    | '/api/drill/parts'
     | '/api/reports/mint'
     | '/(app)/cockpit/'
     | '/(app)/reports/'
@@ -398,8 +422,10 @@ export interface RootRouteChildren {
   ApiAuthSplatRoute: typeof ApiAuthSplatRoute
   ApiChartsAuthorRoute: typeof ApiChartsAuthorRoute
   ApiDrillAxesRoute: typeof ApiDrillAxesRoute
+  ApiDrillAxisGuidanceRoute: typeof ApiDrillAxisGuidanceRoute
   ApiDrillComposeRoute: typeof ApiDrillComposeRoute
   ApiDrillNodeRoute: typeof ApiDrillNodeRoute
+  ApiDrillPartsRoute: typeof ApiDrillPartsRoute
   ApiReportsMintRoute: typeof ApiReportsMintRoute
 }
 
@@ -566,6 +592,13 @@ declare module '@tanstack/react-router' {
       preLoaderRoute: typeof ApiReportsMintRouteImport
       parentRoute: typeof rootRouteImport
     }
+    '/api/drill/parts': {
+      id: '/api/drill/parts'
+      path: '/api/drill/parts'
+      fullPath: '/api/drill/parts'
+      preLoaderRoute: typeof ApiDrillPartsRouteImport
+      parentRoute: typeof rootRouteImport
+    }
     '/api/drill/node': {
       id: '/api/drill/node'
       path: '/api/drill/node'
@@ -578,6 +611,13 @@ declare module '@tanstack/react-router' {
       path: '/api/drill/compose'
       fullPath: '/api/drill/compose'
       preLoaderRoute: typeof ApiDrillComposeRouteImport
+      parentRoute: typeof rootRouteImport
+    }
+    '/api/drill/axis-guidance': {
+      id: '/api/drill/axis-guidance'
+      path: '/api/drill/axis-guidance'
+      fullPath: '/api/drill/axis-guidance'
+      preLoaderRoute: typeof ApiDrillAxisGuidanceRouteImport
       parentRoute: typeof rootRouteImport
     }
     '/api/drill/axes': {
@@ -677,8 +717,10 @@ const rootRouteChildren: RootRouteChildren = {
   ApiAuthSplatRoute: ApiAuthSplatRoute,
   ApiChartsAuthorRoute: ApiChartsAuthorRoute,
   ApiDrillAxesRoute: ApiDrillAxesRoute,
+  ApiDrillAxisGuidanceRoute: ApiDrillAxisGuidanceRoute,
   ApiDrillComposeRoute: ApiDrillComposeRoute,
   ApiDrillNodeRoute: ApiDrillNodeRoute,
+  ApiDrillPartsRoute: ApiDrillPartsRoute,
   ApiReportsMintRoute: ApiReportsMintRoute,
 }
 export const routeTree = rootRouteImport

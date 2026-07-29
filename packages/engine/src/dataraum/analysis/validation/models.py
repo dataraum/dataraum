@@ -5,12 +5,11 @@ Contains data structures for validation specs and results.
 
 from __future__ import annotations
 
-import json
 from datetime import UTC, datetime
 from enum import StrEnum
-from typing import Any
+from typing import Any, Literal
 
-from pydantic import BaseModel, Field, model_validator
+from pydantic import BaseModel, ConfigDict, Field, model_validator
 
 
 def _utc_now() -> datetime:
@@ -59,6 +58,28 @@ class ValidationCheckType(StrEnum):
     AGGREGATE = "aggregate"
 
 
+class ExpectedFormulaDeclaration(BaseModel):
+    """The DAT-447 expected-formula teach's typed declaration payload (DAT-880).
+
+    Present on a :class:`ValidationSpec` exactly when ``check_type ==
+    "expected_formula"`` (enforced by :meth:`ValidationSpec._check_expected_formula_
+    pairing`) — the fifth, out-of-vocabulary check_type value a column-identity
+    declaration rides (see the field comment on ``ValidationSpec.check_type``).
+    ``table``/``column`` identify WHICH column the declaration targets —
+    :func:`dataraum.entropy.detectors.loaders.load_declared_formula` matches them
+    case-insensitively against the measured column — and ``formula`` is the human's
+    claimed identity in the discovery's binary-arithmetic language (e.g. ``"subtotal
+    + tax"``), which the SQL-binding agent renders into its grounding guidance
+    (``analysis.validation.agent``) and the derived_value measurement pools as the
+    ``human_declaration`` witness. Replaces the untyped ``parameters: {table,
+    column, formula}`` bag the DAT-880 retype retired.
+    """
+
+    table: str
+    column: str
+    formula: str
+
+
 class ValidationSpec(BaseModel):
     """Specification for a validation check — a TYPED check definition (DAT-735).
 
@@ -69,12 +90,29 @@ class ValidationSpec(BaseModel):
     relevant columns; no pre-resolution needed.
 
     Read from the typed ``validations`` home (:class:`~dataraum.analysis.validation.
-    db_models.Validation`) ``⊕`` the ``validation`` teach overlay. The
-    ``mode="before"`` normalizer maps the LEGACY wire shape — YAML seed files and
-    the cockpit's ``validation`` config_overlay teach rows, both of which carry
-    ``parameters`` + ``sql_hints`` — onto the typed fields, so a live cross-package
-    teach contract keeps working without a schema change on the cockpit side.
+    db_models.Validation`) ``⊕`` the ``validation`` teach overlay — a
+    :func:`~dataraum.core.overlay.apply_overlay`-merged raw dict re-parsed through
+    this model at load time (``analysis.validation.config.load_all_validation_specs``),
+    so every field here (including ``expected_formula``, DAT-880) is the ROW'S wire
+    shape, typed — never a free-form bag a loader re-interprets downstream. There
+    is exactly ONE wire shape now: every producer writes these fields.
+
+    A ``mode="before"`` fold used to translate a second, pre-DAT-735 shape
+    (``parameters``/``sql_hints``) that the cockpit's frame INDUCTION path still
+    emitted after DAT-735 retyped the hand-authored teach. DAT-880's close-out
+    migrated that producer — ``validation-induction.ts``'s ``InducedValidation``
+    schema and the cached prompt block that instructs it — so the fold is gone
+    and the two paths agree.
+
+    ``extra="forbid"`` (DAT-880) is what keeps them agreeing: with nothing
+    translating legacy keys, a payload still carrying them fails loudly at
+    construction rather than silently dropping ``tolerance``/``guidance`` — the
+    exact failure the fold's premature deletion would have shipped, now
+    structurally unreachable. Any other unrecognized key is a genuine unknown
+    field and fails the same way.
     """
+
+    model_config = ConfigDict(extra="forbid")
 
     validation_id: str
     name: str
@@ -82,18 +120,33 @@ class ValidationSpec(BaseModel):
     category: str  # 'financial', 'data_quality', 'business_rule'
     severity: ValidationSeverity = ValidationSeverity.ERROR
 
-    # Typed check definition (DAT-735). ``check_type`` is a plain ``str`` (not the
-    # ValidationCheckType enum) because the DAT-447 ``expected_formula`` teach overlay
-    # rides this field with a value OUTSIDE the four-value contract; the typed
-    # ``validations`` home CHECK-enforces ValidationCheckType (balance | comparison |
-    # constraint | aggregate — the cockpit CHECK_TYPES contract), the overlay layer does
-    # not. It is a LABEL the ADR-0017 evaluator never branches on.
-    check_type: str
-    tolerance: float | None = None  # ADR-0017 pass threshold; None ⇒ DEFAULT_TOLERANCE
+    # Typed check definition (DAT-735). A union, not the bare ValidationCheckType
+    # enum (DAT-880): the DAT-447 `expected_formula` teach overlay rides this field
+    # with a fifth, documented value OUTSIDE the four-value contract — a column-
+    # identity declaration, not an evaluator branch (see `expected_formula` below).
+    # The typed `validations` home still CHECK-enforces the closed four (balance |
+    # comparison | constraint | aggregate — the cockpit CHECK_TYPES contract);
+    # `expected_formula` rows never reach that table, only the overlay ⊕ layer. This
+    # union is a LABEL the ADR-0017 evaluator never branches on.
+    check_type: ValidationCheckType | Literal["expected_formula"]
+    # ADR-0017 pass threshold; None ⇒ DEFAULT_TOLERANCE. ``ge=0`` because a negative
+    # tolerance is UNSATISFIABLE under that rule (``deviation <= tolerance`` over a
+    # non-negative deviation) — it is frame induction's "not declared" sentinel
+    # (validation-induction.ts), never a threshold, and being unsatisfiable is
+    # exactly why the sentinel is safe. So no boundary may accept it as a value: a
+    # leaked literal raises here and ``load_all_validation_specs``'s per-row catch
+    # degrades it to a logged skip — one check fails loud, rather than every check
+    # silently grading a perfect result as failed.
+    tolerance: float | None = Field(default=None, ge=0)
 
     # Advisory SQL-binding hint prose (the former sql_hints) + what a pass looks like.
     guidance: str | None = None
     expected_outcome: str | None = None
+
+    # The DAT-447 column-identity declaration (DAT-880): present iff
+    # check_type == "expected_formula" (enforced below, loud on mismatch — there is
+    # no partial-declaration state). See ExpectedFormulaDeclaration.
+    expected_formula: ExpectedFormulaDeclaration | None = None
 
     # Metadata
     tags: list[str] = Field(default_factory=list)
@@ -111,46 +164,29 @@ class ValidationSpec(BaseModel):
     version: str = "1.0"
     source: str = "config"
 
-    @model_validator(mode="before")
-    @classmethod
-    def _normalize_legacy_check_fields(cls, data: Any) -> Any:
-        """Map the ``parameters`` + ``sql_hints`` wire shape onto the typed fields.
+    @model_validator(mode="after")
+    def _check_expected_formula_pairing(self) -> ValidationSpec:
+        """Enforce the ``check_type``/``expected_formula`` pairing (DAT-880).
 
-        NOT a dead shim — one LIVE producer remains: the DAT-447
-        ``expected_formula`` teach overlay, whose spec-shaped payload carries
-        ``parameters: {table, column, formula}`` by contract (core/overlay.py
-        ``_apply_validation``); the parameters→guidance fold is how that
-        declaration reaches the SQL binder. The two former producers are gone —
-        finance's nine seed YAMLs used the native ``tolerance``/``guidance`` shape
-        before DAT-725 band 3 retired them entirely (no vertical ships a
-        ``validations/`` directory today; LLM induction is the sole source), and
-        the cockpit's ``teach_validation`` writes the typed shape natively too
-        (teach-surface retire). Retiring this normalizer = retyping the
-        expected-formula teach contract first (parked, closeout triage).
-        Normalization: ``parameters.tolerance`` → ``tolerance``; ``sql_hints`` →
-        ``guidance``, with any NON-tolerance ``parameters`` folded into
-        ``guidance``. Explicit typed fields always win over the legacy inference.
+        ``expected_formula`` is not an optional add-on to any check — it IS the
+        ``check_type == "expected_formula"`` row's declaration, always. A row
+        naming that check_type with no declaration (or vice versa) is malformed
+        data, not a valid partial state — fail loudly at construction. Absence
+        falls loud PER ROW: the one caller that parses arbitrary overlay-merged
+        data (``analysis.validation.config.load_all_validation_specs``) catches
+        this ``ValidationError`` and skips just that row (logged), mirroring
+        ``ensure_validations_seeded``'s per-doc isolation — one malformed teach
+        must not take the whole vocabulary load, or the phase it feeds, down.
         """
-        if not isinstance(data, dict):
-            return data
-        data = dict(data)
-        params = data.pop("parameters", None)
-        sql_hints = data.pop("sql_hints", None)
-        if data.get("tolerance") is None and isinstance(params, dict) and "tolerance" in params:
-            data["tolerance"] = params["tolerance"]
-        if data.get("guidance") is None:
-            parts: list[str] = []
-            if sql_hints:
-                parts.append(str(sql_hints))
-            extra = (
-                {k: v for k, v in params.items() if k != "tolerance"}
-                if isinstance(params, dict)
-                else {}
+        is_formula_check = self.check_type == "expected_formula"
+        has_declaration = self.expected_formula is not None
+        if is_formula_check != has_declaration:
+            raise ValueError(
+                "check_type='expected_formula' requires expected_formula to be set, "
+                "and vice versa — got "
+                f"check_type={self.check_type!r}, expected_formula={self.expected_formula!r}"
             )
-            if extra:
-                parts.append("Parameters: " + json.dumps(extra))
-            data["guidance"] = "\n\n".join(parts) if parts else None
-        return data
+        return self
 
 
 class ValidationSQLOutput(BaseModel):
@@ -298,10 +334,12 @@ class ValidationRunResult(BaseModel):
 
 
 __all__ = [
+    "ExpectedFormulaDeclaration",
     "ValidationCheckType",
     "ValidationSeverity",
     "ValidationStatus",
     "ValidationSpec",
+    "ValidationSQLOutput",
     "GeneratedSQL",
     "ValidationResult",
     "ValidationRunResult",

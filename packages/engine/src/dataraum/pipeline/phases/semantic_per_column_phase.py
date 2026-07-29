@@ -17,6 +17,7 @@ from types import ModuleType
 from sqlalchemy import func, select
 
 from dataraum.analysis.cycles.cycle_family_store import ensure_cycle_families_seeded
+from dataraum.analysis.cycles.cycle_type_store import ensure_cycle_types_seeded
 from dataraum.analysis.semantic.concept_edge_store import ensure_concept_edges_seeded
 from dataraum.analysis.semantic.concept_store import (
     ensure_concepts_seeded,
@@ -24,6 +25,7 @@ from dataraum.analysis.semantic.concept_store import (
     require_active_vertical,
 )
 from dataraum.analysis.semantic.convention_store import ensure_conventions_seeded
+from dataraum.analysis.semantic.envelope_store import ensure_envelope_seeded
 from dataraum.analysis.semantic.processor import ground_columns
 from dataraum.analysis.validation.validation_store import ensure_validations_seeded
 from dataraum.core.logging import get_logger
@@ -161,6 +163,12 @@ class SemanticPerColumnPhase(BasePhase):
         # finance seeds from its shipped ontology; a framed vertical seeds nothing
         # here and relies on frame's typed writes.
         ensure_concepts_seeded(ctx.session, ontology)
+        # Envelope (DAT-883): seed the vertical's own identity (name/version/
+        # description) into the typed `vertical_envelopes` home right after its
+        # concepts — same idempotent config→DB seed. A framed vertical (no on-disk
+        # YAML) seeds nothing here; its envelope stays honestly absent rather than a
+        # fabricated placeholder.
+        ensure_envelope_seeded(ctx.session, ontology)
         # Conventions (DAT-789): seed the vertical's domain conventions into the typed
         # `conventions` home right after the concepts their `concept_groups` name — same
         # idempotent config→DB seed. All three SQL authors (extraction, validation, the
@@ -182,6 +190,12 @@ class SemanticPerColumnPhase(BasePhase):
         # (seed ⊕ generated) instead of the YAML directory walk. Agentic induction adds
         # `source='generated'` rows in the operating_model stage.
         ensure_validations_seeded(ctx.session, ontology)
+        # Cycle types (DAT-881): seed the vertical's shipped cycle-type vocabulary into
+        # the typed `cycle_types` home — same idempotent config→DB seed. Shipped-baseline
+        # ONLY (never the overlay-layered view): the cockpit's shipped-only readers
+        # (teach_cycle's override-shadow detection, the frame induction seed) are the
+        # consumer; the engine judge keeps reading the overlay-inclusive config reader.
+        ensure_cycle_types_seeded(ctx.session, ontology)
         # Cycle families (DAT-856): seed the vertical's direction-axis declaration into
         # the typed `cycle_families` home — same idempotent config→DB seed. Committed in
         # add_source so the operating_model cycles phase serves the families to the judge
@@ -209,9 +223,20 @@ class SemanticPerColumnPhase(BasePhase):
             return PhaseResult.failed(grounding.error or "Column annotation failed")
 
         count = grounding.unwrap()
+        # Retry disclosure (DAT-889): grounding.warnings is non-empty only
+        # when a runaway (max_tokens) or a content-omission was recovered by
+        # retrying a reduced batch. It rides three channels, not a debug log
+        # a human has to go looking for: PhaseResult.warnings below, this
+        # summary's suffix (Temporal history), and the activity.phase_done /
+        # activity.session_phase_done log line's warnings field
+        # (worker/activity.py).
+        summary = f"{count} column annotations"
+        if grounding.warnings:
+            summary += f" ({len(grounding.warnings)} runaway retries)"
         return PhaseResult.success(
             outputs={"annotations": count, "tables_analyzed": len(table_ids)},
             records_processed=count,
             records_created=count,
-            summary=f"{count} column annotations",
+            warnings=grounding.warnings,
+            summary=summary,
         )

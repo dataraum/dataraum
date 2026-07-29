@@ -9,6 +9,9 @@
 
 import type { ConversationKind } from "#/db/cockpit/conversations";
 import type { WorkspaceBriefing } from "#/db/metadata/briefing/types";
+// Type-only (erased at compile time) — the canvas carries the answer tool's
+// proven drill handle without pulling its server module into the bundle.
+import type { AnswerDrillSource } from "#/duckdb/answer-source";
 import type { AvailableSource } from "#/tools/list-sources";
 import type { InventoryTable } from "#/tools/list-tables";
 import type { LookCycleResult } from "#/tools/look-cycle";
@@ -128,17 +131,25 @@ export type CanvasState =
 	// NO-RESULT answer (the sub-agent couldn't compose a runnable query — a legitimate
 	// outcome) carries `sql: null` + `confidence: null`, and the widget shows an
 	// explicit "no result" state (with the narrative) rather than a stale/blank canvas.
+	// `drillSource` (DAT-678) is the PROVEN parts-at-source handle: it lets the
+	// answer grid recompose upstream and be sliced by a dimension the answer never
+	// projected — the only way a scalar result is drillable at all. It rides the
+	// canvas rather than a server handle for the same reason `sql` does: the
+	// streaming path is stateless. null = drill tier A instead (which is the
+	// better path for a row-set answer anyway — its dimensions are in the result).
 	| {
 			kind: "answer-result";
 			sql: string;
 			summary: string;
 			confidence: AnswerConfidence;
+			drillSource: AnswerDrillSource | null;
 	  }
 	| {
 			kind: "answer-result";
 			sql: null;
 			summary: string;
 			confidence: null;
+			drillSource: null;
 	  }
 	// DAT-576/DAT-597: the editable probe surface — the staging hub default. The user
 	// picks a configured DB source, writes/edits read-only SQL, and runs it against

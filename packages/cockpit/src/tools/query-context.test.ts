@@ -13,6 +13,7 @@ vi.mock("#/db/metadata/client", () => ({ metadataDb: {} }));
 import type { DriverRanking } from "./look-drivers";
 import type { TableEntity } from "./look-table";
 import {
+	buildConceptContextBlock,
 	buildGrainBlock,
 	type CatalogAxisRow,
 	type CatalogHierarchyRow,
@@ -60,6 +61,52 @@ const concepts: SchemaConceptRow[] = [
 		temporalBehavior: null,
 	},
 ];
+
+describe("formatSchema — surrogate join keys (DAT-878)", () => {
+	// The engine mints `_sk__*` hash columns onto the TYPED tables to cure composite
+	// keys, and they ride into every enriched view via its `f.*` passthrough — so both
+	// cockpit schema paths see them. They are machinery, not analysable attributes.
+	const withSurrogate: SchemaColumnRow[] = [
+		...columnRows,
+		{
+			tableId: "t1",
+			columnId: "c4",
+			name: "_sk__konto__belegnummer",
+			resolvedType: "VARCHAR",
+		},
+	];
+
+	it("excludes the surrogate from the served column list", () => {
+		const block = formatSchema(tables, withSurrogate, concepts);
+		expect(block).not.toContain("_sk__konto__belegnummer");
+	});
+
+	it("keeps the table's real columns", () => {
+		// Guards against the filter degenerating into a blanket drop.
+		const block = formatSchema(tables, withSurrogate, concepts);
+		expect(block).toContain("Betrag");
+		expect(block).toContain("Datum");
+		expect(block).toContain("account_type");
+	});
+
+	it("does not match a column that merely CONTAINS the prefix", () => {
+		// The predicate is a strict prefix test, mirroring the engine: a substring
+		// match would be a guess about user data.
+		const block = formatSchema(
+			tables,
+			[
+				{
+					tableId: "t1",
+					columnId: "c5",
+					name: "beleg_sk__nummer",
+					resolvedType: "VARCHAR",
+				},
+			],
+			[],
+		);
+		expect(block).toContain("beleg_sk__nummer");
+	});
+});
 
 describe("formatSchema", () => {
 	it("addresses each table as lake.<layer>.<name>", () => {
@@ -214,6 +261,7 @@ describe("formatCatalog (DAT-538 dimension catalog block)", () => {
 				tableId: "t1",
 				columnId: "col-acct",
 				columnName: "account_type",
+				valueCount: 3,
 				distinctValues: ["Sales Revenue", "COGS", "SG&A"],
 			},
 		];
@@ -226,6 +274,28 @@ describe("formatCatalog (DAT-538 dimension catalog block)", () => {
 		expect(block).not.toContain("Sales Revenue");
 	});
 
+	it("counts from the MEASURED value_count, not the stored value list (DAT-879)", () => {
+		// The stored `distinct_values` is a bounded echo — the cataloguing agent
+		// listed 3 of a 500-value axis. Rendering its LENGTH announced "(3 values)"
+		// for a dimension with 500, which is the DAT-622 class of silent lie: the
+		// number looked measured and was not.
+		const block = formatCatalog(
+			[
+				{
+					tableId: "t1",
+					columnId: "col-acct",
+					columnName: "account_code",
+					valueCount: 500,
+					distinctValues: ["1000", "1200", "1400"],
+				},
+			],
+			[],
+			addr,
+		);
+		expect(block).toContain('"account_code" (500 values)');
+		expect(block).not.toContain("(3 values)");
+	});
+
 	it("serves count + id only — never the value-set, regardless of size (DAT-621)", () => {
 		const many = Array.from({ length: 45 }, (_, i) => `v${i}`);
 		const block = formatCatalog(
@@ -234,17 +304,158 @@ describe("formatCatalog (DAT-538 dimension catalog block)", () => {
 					tableId: "t1",
 					columnId: "col-code",
 					columnName: "code",
+					valueCount: 45,
 					distinctValues: many,
 				},
 			],
 			[],
 			addr,
 		);
-		// Honest count (value_count == complete set size, low-card by construction); the
-		// values themselves are drilled via look_values(col-code), never inlined here.
+		// Honest count (the engine's measured COUNT(DISTINCT)); the values themselves
+		// are drilled via look_values(col-code), never inlined here.
 		expect(block).toContain("(45 values) [id: col-code]");
 		expect(block).not.toContain("v44");
 		expect(block).not.toContain("more");
+	});
+
+	it("shows measured relevance, and omits it when unmeasured (DAT-879)", () => {
+		const block = formatCatalog(
+			[
+				{
+					tableId: "t1",
+					columnId: "col-a",
+					columnName: "region",
+					valueCount: 4,
+					relevance: 0.94,
+					interest: "primary",
+				},
+				{
+					tableId: "t1",
+					columnId: "col-b",
+					columnName: "unprofiled",
+					valueCount: 2,
+					relevance: null,
+				},
+			],
+			[],
+			addr,
+		);
+		expect(block).toContain('"region" (4 values), relevance 0.94, primary');
+		// No profile ⇒ no number. Printing 0.00 would assert the axis resolves
+		// nothing when in truth nothing measured it.
+		expect(block).toContain('"unprofiled" (2 values) [id: col-b]');
+		expect(block).not.toContain("relevance 0.00");
+	});
+
+	it("states how many catalogued dimensions it is NOT showing (DAT-622)", () => {
+		const block = formatCatalog(
+			[
+				{
+					tableId: "t1",
+					columnId: "col-a",
+					columnName: "region",
+					valueCount: 4,
+					relevance: 0.9,
+					interest: "primary",
+				},
+			],
+			[],
+			addr,
+			{ total: 40, served: 1 },
+		);
+		expect(block).toContain("Showing 1 of 40 catalogued dimensions");
+		// The REASON, not just the number: "dropped" invites the agent to assume
+		// the tail was junk, when in fact nothing assessed it.
+		expect(block).toContain("NOT judged");
+	});
+
+	it("orders axes by (interest, relevance desc, name) like the engine (DAT-879)", () => {
+		// One rule at every surface: a 'supporting' axis must never lead a
+		// 'primary' one however well it measures, and an UNMEASURED axis must not
+		// lead a measured one by having its null read as zero.
+		const block = formatCatalog(
+			[
+				{
+					tableId: "t1",
+					columnId: "c1",
+					columnName: "aaa_supporting_high",
+					valueCount: 2,
+					relevance: 0.99,
+					interest: "supporting",
+				},
+				{
+					tableId: "t1",
+					columnId: "c2",
+					columnName: "zzz_primary_low",
+					valueCount: 2,
+					relevance: 0.1,
+					interest: "primary",
+				},
+				{
+					tableId: "t1",
+					columnId: "c3",
+					columnName: "bbb_primary_unmeasured",
+					valueCount: 2,
+					relevance: null,
+					interest: "primary",
+				},
+			],
+			[],
+			addr,
+		);
+		const line = block
+			.split("\n")
+			.find((l) => l.startsWith("  dimensions:")) as string;
+		expect(line.indexOf("zzz_primary_low")).toBeLessThan(
+			line.indexOf("bbb_primary_unmeasured"),
+		);
+		expect(line.indexOf("bbb_primary_unmeasured")).toBeLessThan(
+			line.indexOf("aaa_supporting_high"),
+		);
+	});
+
+	it("states the ranker-skipped fallback rather than staying silent (DAT-879)", () => {
+		// The engine's note says the cataloguing agent did not run; the cockpit
+		// used to say nothing at all on the same branch, so the two surfaces
+		// disagreed about the same catalog.
+		const block = formatCatalog(
+			[
+				{
+					tableId: "t1",
+					columnId: "c1",
+					columnName: "region",
+					valueCount: 4,
+					relevance: 0.9,
+					interest: null,
+				},
+			],
+			[],
+			addr,
+			{ total: 40, served: 25, unjudgedFallback: true },
+		);
+		expect(block).toContain("Showing 25 of 40 catalogued dimensions");
+		expect(block).toContain("measured partition quality only");
+		expect(block).toContain("did not run");
+		// NOT the judged-path wording — nothing was assessed and rejected here.
+		expect(block).not.toContain("NOT judged");
+	});
+
+	it("says nothing about curation when it served everything (DAT-622)", () => {
+		const block = formatCatalog(
+			[
+				{
+					tableId: "t1",
+					columnId: "col-a",
+					columnName: "region",
+					valueCount: 4,
+				},
+			],
+			[],
+			addr,
+			{ total: 1, served: 1 },
+		);
+		expect(block).not.toContain("Showing");
+		expect(block).not.toContain("catalogued dimensions");
 	});
 
 	it("renders a CONFIRMED alias group as canonical ≡ others (group by canonical)", () => {
@@ -774,5 +985,14 @@ describe("buildGrainBlock (DAT-793) — soft-fail", () => {
 		// boundary stub) — any Drizzle call off it throws, exercising the same
 		// soft-fail contract as buildDriversBlock without a bespoke DB mock.
 		await expect(buildGrainBlock()).resolves.toBe("");
+	});
+});
+
+describe("buildConceptContextBlock (DAT-737) — soft-fail", () => {
+	it("resolves to '' rather than throwing when the metadata read fails", async () => {
+		// Same {}-stubbed metadataDb boundary as buildGrainBlock above — this is
+		// degradable context (an answer without it falls back to <schema>'s
+		// [meaning:] tags alone), so a read failure must not fail the answer.
+		await expect(buildConceptContextBlock()).resolves.toBe("");
 	});
 });

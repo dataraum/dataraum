@@ -219,8 +219,10 @@ def _seed(engine: Engine) -> None:
     # edge c_amt → c_ccy (both seeded in _units_and_additivity_stmts).
     stmts.append(
         "INSERT INTO column_concepts "
-        "(concept_id, column_id, run_id, temporal_behavior, unit_source_column, annotated_at) "
-        f"VALUES ('cc_amt', 'c_amt', '{RUN}', 'point_in_time', 'currency', '{TS}')"
+        "(concept_id, column_id, run_id, temporal_behavior, unit_source_column, "
+        " stored_sign, annotated_at) "
+        f"VALUES ('cc_amt', 'c_amt', '{RUN}', 'point_in_time', 'currency', "
+        f"'ledger_signed', '{TS}')"
     )
     # measure_time_axis_column_id / event_time_axis_column_id are left NULL — this
     # fixture doesn't seed a TableEntity.time_columns axis, so there is nothing to
@@ -234,11 +236,12 @@ def _seed(engine: Engine) -> None:
         " measure_time_axis_column, event_time_axis_column, "
         " measure_slice_column_id, event_slice_column_id, "
         " slice_dimension, convention_sql, period_grain, pattern, match_rate, "
-        " r_flow_median, r_stock_median, n_entities, n_entities_fired, created_at) "
+        " r_flow_median, r_stock_median, n_entities, n_entities_fired, "
+        " sign_fired_primary, sign_fired_mirror, sign_fired_both, created_at) "
         f"VALUES ('mal_amt', '{RUN}', 't1', 'c_amt', 't1', "
         f"'period_date', 'period_date', 'c_k1', 'c_k1', "
         f"'month', 'SUM(amount)', "
-        f"'month', 'per_period', 1.0, 0.9, 0.1, 10, 10, '{TS}')"
+        f"'month', 'per_period', 1.0, 0.9, 0.1, 10, 10, 10, 0, 0, '{TS}')"
     )
     # detection_method='llm': og_references serves the DEFINED catalog only
     # (DAT-850) — a row without a real method would be dropped by the view.
@@ -272,9 +275,9 @@ def _seed(engine: Engine) -> None:
         stmts.append(
             "INSERT INTO slice_definitions "
             "(slice_id, run_id, table_id, column_id, column_name, dimension_table_id, "
-            " dimension_attribute, fk_role, slice_priority, slice_type, detection_source, created_at) "
+            " dimension_attribute, fk_role, slice_relevance, slice_interest, slice_type, detection_source, created_at) "
             f"VALUES ('{sid}', '{RUN}', '{tid}', '{cid}', '{colname}', 't2', "
-            f"'{attr}', '{role}', 1, 'categorical', 'llm', '{TS}')"
+            f"'{attr}', '{role}', 0.9, 'primary', 'categorical', 'llm', '{TS}')"
         )
     # DAT-867 FOLDED slice: journal's own categorical region_flat — dimension_table_id /
     # dimension_attribute / fk_role ALL NULL (no FK identity, SliceDefinition contract).
@@ -284,9 +287,9 @@ def _seed(engine: Engine) -> None:
         stmts.append(
             "INSERT INTO slice_definitions "
             "(slice_id, run_id, table_id, column_id, column_name, dimension_table_id, "
-            " dimension_attribute, fk_role, slice_priority, slice_type, detection_source, created_at) "
+            " dimension_attribute, fk_role, slice_relevance, slice_interest, slice_type, detection_source, created_at) "
             f"VALUES ('{sid}', '{RUN}', '{tid}', '{cid}', 'region_flat', NULL, "
-            f"NULL, NULL, 1, 'categorical', 'structural', '{TS}')"
+            f"NULL, NULL, 0.8, NULL, 'categorical', 'structural', '{TS}')"
         )
     # Referenced bus-matrix cells carry the DAT-788 role identity the graph joins on
     # (og_conformed_dimension). Same-named FK roles across facts auto-conform to one
@@ -295,6 +298,9 @@ def _seed(engine: Engine) -> None:
     # so no conformed edge forms across them on region — role-separated axes. The
     # seg1/seg2 roles are differently-named but share ONE group (as the judge assigns
     # after a CONFORM verdict), so they DO conform on segment — the positive path.
+    # confirmation_source is 'judge' because og_conformed_dimension serves CONFIRMED
+    # cells only (DAT-809): an unconfirmed pairing is not a legal merge key, and
+    # test_conformed_dimension_drops_an_unconfirmed_pairing pins that separately.
     for eid, tid, role, group in [
         ("bm_1", "t1", "account_id", "ref:t2:account_id"),
         ("bm_2", "t4", "account_id", "ref:t2:account_id"),
@@ -310,7 +316,7 @@ def _seed(engine: Engine) -> None:
             " roles, attributes, confirmation_source, conformed_group, needs_confirmation, "
             " signature, created_at) "
             f"VALUES ('{eid}', '{RUN}', '{tid}', 'referenced', 'accounts', 't2', "
-            f"'[\"{role}\"]', '[]', 'unconfirmed', '{group}', false, "
+            f"'[\"{role}\"]', '[]', 'judge', '{group}', false, "
             f"'bus:referenced:{tid}:t2:{role}', '{TS}')"
         )
     # DAT-867 FOLDED bus-matrix cells for the region_flat fold on TWO facts (journal,
@@ -664,7 +670,7 @@ def _units_and_additivity_stmts() -> list[str]:
       semantic_annotation on c_ccy / c_amt3 / c_self, so the measure→materialization
       MATCH (semantic_role='measure') is untouched — og_measured_in fires purely off
       column_concepts.unit_source_column.
-    - Two ``metric_additivity`` verdicts under a fresh operating_model head: a MEASURE
+    - ``metric_axis_additivity`` verdicts under a fresh operating_model head: a MEASURE
       verdict keyed by the concept name 'revenue' (→ a has_additivity edge from the
       revenue concept) and a METRIC verdict keyed by a formula graph_id 'mk_margin'
       (no concept → vertex only, reachable by property, never by has_additivity).
@@ -702,27 +708,100 @@ def _units_and_additivity_stmts() -> list[str]:
         "(concept_id, column_id, run_id, unit_source_column, annotated_at) "
         f"VALUES ('cc_self', 'c_self', '{RUN}', 'price_usd', '{TS}')"
     )
-    # The operating_model head that promotes metric_additivity (read_views _CATALOG_GRAIN
-    # maps it to (catalog, 'operating_model')). The existing seed only has (catalog,
-    # 'catalog') — without this head current_metric_additivity resolves zero rows.
+    # The operating_model head that promotes metric_axis_additivity (read_views
+    # _CATALOG_GRAIN maps it to (catalog, 'operating_model')). The existing seed only
+    # has (catalog, 'catalog') — without this head the current view resolves zero rows.
     stmts.append(
         "INSERT INTO metadata_snapshot_head (head_id, target, stage, run_id, promoted_at) "
         f"VALUES ('h_om', 'catalog', 'operating_model', '{RUN}', '{TS}')"
     )
-    for aid, kind, key, cat_add, time_add, cat_reason, time_reason in [
+    for aid, kind, key, axis_kind, axis_key, status, verdict, reason, abstain, grain in [
         # revenue: an active finance concept → gets a has_additivity edge. A summed
-        # balance reconciles across categories but not across time (STOCK).
-        ("ma_rev", "measure", "revenue", "true", "false", "NULL", "'stock'"),
+        # balance is additive across categories and SEMI-additive across time (stock).
+        (
+            "ma_rev_c",
+            "measure",
+            "revenue",
+            "categorical",
+            "*",
+            "classified",
+            "'additive'",
+            "NULL",
+            "NULL",
+            "NULL",
+        ),
+        (
+            "ma_rev_t",
+            "measure",
+            "revenue",
+            "time",
+            "*",
+            "classified",
+            "'semi_additive'",
+            "'stock'",
+            "NULL",
+            "NULL",
+        ),
+        # ...and a concrete time axis REFINES the class row with its observed cadence.
+        (
+            "ma_rev_p",
+            "measure",
+            "revenue",
+            "time",
+            "period",
+            "classified",
+            "'semi_additive'",
+            "'stock'",
+            "NULL",
+            "'month'",
+        ),
         # mk_margin: a formula graph_id (no concept) → vertex only, no has_additivity.
-        # A ratio reconciles on NEITHER axis.
-        ("ma_margin", "metric", "mk_margin", "false", "false", "'ratio'", "'ratio'"),
+        # A ratio must be RECOMPUTED per bucket on either axis.
+        (
+            "ma_mg_c",
+            "metric",
+            "mk_margin",
+            "categorical",
+            "*",
+            "classified",
+            "'non_additive_recompute'",
+            "'ratio'",
+            "NULL",
+            "NULL",
+        ),
+        (
+            "ma_mg_t",
+            "metric",
+            "mk_margin",
+            "time",
+            "*",
+            "classified",
+            "'non_additive_recompute'",
+            "'ratio'",
+            "NULL",
+            "NULL",
+        ),
+        # mk_unknown: never judged — the typed abstention must project too, so a
+        # consumer can tell "not judged" from "judged non-additive".
+        (
+            "ma_unk_t",
+            "metric",
+            "mk_unknown",
+            "time",
+            "*",
+            "abstained",
+            "NULL",
+            "NULL",
+            "'unknown_temporal'",
+            "NULL",
+        ),
     ]:
         stmts.append(
-            "INSERT INTO metric_additivity "
-            "(additivity_id, run_id, target_kind, target_key, categorical_additive, "
-            " time_additive, categorical_reason, time_reason, created_at) "
-            f"VALUES ('{aid}', '{RUN}', '{kind}', '{key}', {cat_add}, {time_add}, "
-            f"{cat_reason}, {time_reason}, '{TS}')"
+            "INSERT INTO metric_axis_additivity "
+            "(additivity_id, run_id, target_kind, target_key, axis_kind, axis_key, "
+            " status, verdict, reason, abstain_reason, bucket_grain, created_at) "
+            f"VALUES ('{aid}', '{RUN}', '{kind}', '{key}', '{axis_kind}', '{axis_key}', "
+            f"'{status}', {verdict}, {reason}, {abstain}, {grain}, '{TS}')"
         )
     return stmts
 
@@ -1351,6 +1430,59 @@ def test_conformed_dimension_gates_on_role_identity(graph_engine: Engine) -> Non
     assert ("statement", "journal", "segment") in rows
     # Bill-to vs ship-to on accounts.region → separate roles, NEVER a conformed edge.
     assert not any(attr == "region" for _, _, attr in rows), "role-playing FKs conformed spuriously"
+
+
+def test_conformed_dimension_projects_the_merge_key(graph_engine: Engine) -> None:
+    """DAT-809: the edge carries the conformed_group a drill-across merges ON.
+
+    Gating on the group while dropping it left the consumer told two facts "share a
+    dimension" with no way to name the identity — and the only thing left to name it
+    with is the label, which drifts and collides (DAT-800).
+    """
+    sql = (
+        f"SELECT src, dst, grp, src_conf FROM GRAPH_TABLE ({_graph_ref()} "
+        "MATCH (a IS table_node)-[e IS conformed_dimension]->(b IS table_node) "
+        "COLUMNS (a.table_name AS src, b.table_name AS dst, e.conformed_group AS grp, "
+        "e.confirmation_source AS src_conf))"
+    )
+    with graph_engine.connect() as conn:
+        rows = {(r.src, r.dst, r.grp, r.src_conf) for r in conn.execute(text(sql))}
+    assert ("journal", "statement", "ref:t2:account_id", "judge") in rows
+    # The judge-merged pair carries the SHARED group, not either fact's own role.
+    assert ("journal", "statement", "ref:t2:seg1_acct|seg2_acct", "judge") in rows
+    assert all(grp for _, _, grp, _ in rows), "a served merge key must never be NULL"
+
+
+def test_conformed_dimension_drops_an_unconfirmed_pairing(graph_engine: Engine) -> None:
+    """DAT-809: only CONFIRMED conformance is a legal merge key.
+
+    Two facts referencing one dim in a same-named role auto-conform STRUCTURALLY —
+    the group key matches on both sides with nobody having confirmed the underlying
+    relationship. Serving that as a drill-across path is exactly how a name match
+    becomes a silent join, so the edge must not form. Absence falls loud at the
+    consumer (a typed refusal naming the unconfirmed pairing), never a quiet merge.
+    """
+    with graph_engine.begin() as conn:
+        for eid, tid in [("bm_u1", "t1"), ("bm_u2", "t4")]:
+            conn.execute(
+                text(
+                    "INSERT INTO bus_matrix (entry_id, run_id, fact_table_id, attachment, "
+                    " concept_label, dimension_table_id, roles, attributes, "
+                    " confirmation_source, conformed_group, needs_confirmation, signature, "
+                    " created_at) "
+                    f"VALUES ('{eid}', '{RUN}', '{tid}', 'referenced', 'accounts', 't2', "
+                    f"'[\"unconf_acct\"]', '[]', 'unconfirmed', 'ref:t2:unconf_acct', false, "
+                    f"'bus:referenced:{tid}:t2:unconf_acct', '{TS}')"
+                )
+            )
+    sql = (
+        f"SELECT grp FROM GRAPH_TABLE ({_graph_ref()} "
+        "MATCH (a IS table_node)-[e IS conformed_dimension]->(b IS table_node) "
+        "COLUMNS (e.conformed_group AS grp))"
+    )
+    with graph_engine.connect() as conn:
+        groups = {r.grp for r in conn.execute(text(sql))}
+    assert "ref:t2:unconf_acct" not in groups
 
 
 def test_conformed_pair_excluded_from_refs(graph_engine: Engine) -> None:
@@ -2094,26 +2226,65 @@ def test_concept_ordering_property_is_queryable(graph_engine: Engine) -> None:
 # --- DAT-731: additivity projection + measured_in units ---------------------------
 
 
-def test_additivity_verdict_vertices_carry_the_two_axis_verdict(graph_engine: Engine) -> None:
-    """additivity_verdict (DAT-731): both drill-target kinds project as one uniform
+def test_additivity_verdict_vertices_carry_the_per_axis_verdict(graph_engine: Engine) -> None:
+    """additivity_verdict (DAT-857/868): both drill-target kinds project as one uniform
     vertex — a MEASURE (target_key = a concept name) and a METRIC (target_key = a
-    formula graph_id with no vertex of its own) — each carrying the 2-axis verdict
-    (categorical / time additive + reason), MATCH-able by property."""
+    formula graph_id with no vertex of its own) — each carrying a verdict PER AXIS,
+    MATCH-able by property. The class row ('*') covers every axis of its kind; a named
+    axis refines it with the cadence; an abstention projects as itself."""
     sql = (
-        f"SELECT kind, key, cadd, tadd, creason, treason FROM GRAPH_TABLE ({_graph_ref()} "
+        f"SELECT kind, key, ak, axk, st, vd, rsn, ab, bg FROM GRAPH_TABLE ({_graph_ref()} "
         "MATCH (a IS additivity_verdict) "
-        "COLUMNS (a.target_kind AS kind, a.target_key AS key, a.categorical_additive AS cadd, "
-        "a.time_additive AS tadd, a.categorical_reason AS creason, a.time_reason AS treason))"
+        "COLUMNS (a.target_kind AS kind, a.target_key AS key, a.axis_kind AS ak, "
+        "a.axis_key AS axk, a.status AS st, a.verdict AS vd, a.reason AS rsn, "
+        "a.abstain_reason AS ab, a.bucket_grain AS bg))"
     )
     with graph_engine.connect() as conn:
         rows = {
-            (r.kind, r.key, r.cadd, r.tadd, r.creason, r.treason) for r in conn.execute(text(sql))
+            (r.kind, r.key, r.ak, r.axk, r.st, r.vd, r.rsn, r.ab, r.bg)
+            for r in conn.execute(text(sql))
         }
     assert rows == {
-        # revenue: a summed balance reconciles across categories, not across time (stock).
-        ("measure", "revenue", True, False, None, "stock"),
-        # mk_margin: a ratio reconciles on neither axis.
-        ("metric", "mk_margin", False, False, "ratio", "ratio"),
+        # revenue: additive across categories, semi-additive across time (stock)...
+        ("measure", "revenue", "categorical", "*", "classified", "additive", None, None, None),
+        ("measure", "revenue", "time", "*", "classified", "semi_additive", "stock", None, None),
+        # ...with the `period` axis carrying its observed monthly cadence.
+        (
+            "measure",
+            "revenue",
+            "time",
+            "period",
+            "classified",
+            "semi_additive",
+            "stock",
+            None,
+            "month",
+        ),
+        # mk_margin: a ratio is recomputed per bucket on either axis.
+        (
+            "metric",
+            "mk_margin",
+            "categorical",
+            "*",
+            "classified",
+            "non_additive_recompute",
+            "ratio",
+            None,
+            None,
+        ),
+        (
+            "metric",
+            "mk_margin",
+            "time",
+            "*",
+            "classified",
+            "non_additive_recompute",
+            "ratio",
+            None,
+            None,
+        ),
+        # mk_unknown: an abstention is a row that SAYS SO, not an absence.
+        ("metric", "mk_unknown", "time", "*", "abstained", None, None, "unknown_temporal", None),
     }
 
 
@@ -2124,14 +2295,19 @@ def test_has_additivity_links_a_measure_concept_to_its_verdict(graph_engine: Eng
     formula graph_id) names no concept and is reachable only by property on the vertex —
     the graph never dangles (the og_grounded_by INNER-join discipline)."""
     sql = (
-        f"SELECT cname, tadd, treason FROM GRAPH_TABLE ({_graph_ref()} "
+        f"SELECT cname, axk, vd, rsn FROM GRAPH_TABLE ({_graph_ref()} "
         "MATCH (c IS concept_node)-[e IS has_additivity]->(a IS additivity_verdict) "
-        "COLUMNS (c.name AS cname, a.time_additive AS tadd, a.time_reason AS treason))"
+        "WHERE a.axis_kind = 'time' "
+        "COLUMNS (c.name AS cname, a.axis_key AS axk, a.verdict AS vd, a.reason AS rsn))"
     )
     with graph_engine.connect() as conn:
-        rows = {(r.cname, r.tadd, r.treason) for r in conn.execute(text(sql))}
+        rows = {(r.cname, r.axk, r.vd, r.rsn) for r in conn.execute(text(sql))}
     # revenue is the only measure verdict; mk_margin (metric) never surfaces here.
-    assert rows == {("revenue", False, "stock")}
+    # Both its class row and its refining `period` axis row hang off the concept.
+    assert rows == {
+        ("revenue", "*", "semi_additive", "stock"),
+        ("revenue", "period", "semi_additive", "stock"),
+    }
 
 
 def test_measured_in_edge_resolves_the_unit_column(graph_engine: Engine) -> None:

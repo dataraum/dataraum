@@ -7,9 +7,6 @@
 //     interactive when given `onToggleSort`; `onReachEnd` fires when the
 //     virtualized body nears its end (the windowed grid pages on it). Trivially
 //     testable, no I/O.
-//   - ResultGridWidget: the registered entry. Owns the BASE query (the agent's
-//     run_sql call) and `key`s the inner grid on it, so a new agent query
-//     remounts the grid and resets the sort cleanly.
 //   - WindowedGrid (lake, DAT-613): the human-facing lake grid. A Mosaic-style
 //     window onto a re-runnable query — `useInfiniteQuery` fetches one
 //     LIMIT/OFFSET page per scroll-window from `/api/run-sql`, each folded into
@@ -76,7 +73,6 @@ import {
 	readNdjsonIntoStore,
 	readNdjsonStream,
 } from "#/duckdb/ndjson-stream";
-import type { CanvasState } from "#/ui/cockpit/canvas-state";
 import { SqlBlock } from "#/ui/cockpit/widgets/sql-block";
 
 // §7.3 hook: carry the neo column type metadata on each TanStack column. The
@@ -702,47 +698,6 @@ export function ResultGridView({
 	);
 }
 
-/**
- * The registered widget. Owns the BASE query (the agent's `run_sql` call) and
- * remounts the inner grid whenever that query changes, via a value-stable `key`.
- *
- * The remount is deliberate: the inner grid holds the grid-local sort + filter
- * state, and remounting on a new base query resets them cleanly without a reset
- * effect (which would fire a redundant second stream). The agent's
- * `state.sql`/`params` stay immutable — sort/filter are VIEW concerns, never
- * written back to the canvas state.
- *
- * The query itself is reachable from the grid's toolbar ("Show SQL" → modal),
- * covering BOTH `run_sql` grids and `answer` grids (AnswerResultWidget composes
- * this widget with the composed final SQL) in one place.
- */
-export function ResultGridWidget({
-	state,
-	toolbarActions,
-}: {
-	state: Extract<CanvasState, { kind: "result-grid" }>;
-	/** Forwarded to the grid toolbar (left of "View SQL") — see ResultGridView. */
-	toolbarActions?: ReactNode;
-}) {
-	// The provider derives a fresh canvas object on every message tick; serialize
-	// sql+params so a new `key` is produced only when the QUERY actually changes,
-	// not on per-tick object churn.
-	const baseKey = useMemo(
-		() => JSON.stringify([state.sql, state.params ?? null]),
-		[state.sql, state.params],
-	);
-	return (
-		<WindowedGrid
-			key={baseKey}
-			endpoint="/api/run-sql"
-			body={{ sql: state.sql, params: state.params }}
-			sql={state.sql}
-			sqlParams={state.params}
-			toolbarActions={toolbarActions}
-		/>
-	);
-}
-
 /** The grid stream routes return a 400 body as `{ "error": "<message>" }`; surface
  * the message, not the raw JSON. Falls back to the raw text for any other body. */
 function extractError(text: string): string {
@@ -767,7 +722,7 @@ function extractError(text: string): string {
  * sort or filter change transparently re-pages from offset 0, and Query owns
  * fetch dedup, cancellation of superseded windows, and the loading state. Sort +
  * filters are grid-local and reset by remounting on a new base query
- * (ResultGridWidget's `key`).
+ * (the registered widget's `key` — DrillableResultGridWidget).
  */
 export function WindowedGrid({
 	endpoint,

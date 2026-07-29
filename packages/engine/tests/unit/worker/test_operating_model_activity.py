@@ -14,6 +14,7 @@ from __future__ import annotations
 
 from contextlib import contextmanager
 from typing import Any
+from unittest.mock import patch
 
 import pytest
 from sqlalchemy import create_engine, event, select
@@ -21,6 +22,9 @@ from sqlalchemy.orm import sessionmaker
 from sqlalchemy.pool import StaticPool
 from temporalio.exceptions import ApplicationError
 
+from dataraum.analysis.validation.db_models import Validation
+from dataraum.analysis.validation.models import ValidationSeverity, ValidationSpec
+from dataraum.analysis.validation.validation_store import stage_induced_validations
 from dataraum.investigation import link_run_tables
 from dataraum.storage import (
     GENERATION_STAGE,
@@ -38,6 +42,30 @@ from dataraum.worker.contracts import RunRef
 _IDENTITY = RunRef(workspace_id="ws-1", run_id="run-om-A")
 _VERTICAL = "finance"
 _CATALOG_RUN = "run-bs"
+
+
+def _gen_spec(validation_id: str) -> ValidationSpec:
+    return ValidationSpec(
+        validation_id=validation_id,
+        name=validation_id.replace("_", " ").title(),
+        description="induced check",
+        category="data_quality",
+        severity=ValidationSeverity.WARNING,
+        check_type="constraint",
+        tolerance=0.02,
+    )
+
+
+def _active_generated(session: Any) -> set[str]:
+    """The workspace's LIVE generated validation vocabulary."""
+    return {
+        r.validation_id
+        for r in session.execute(
+            select(Validation).where(
+                Validation.source == "generated", Validation.superseded_at.is_(None)
+            )
+        ).scalars()
+    }
 
 
 @pytest.fixture
@@ -74,6 +102,12 @@ def _manager(session_factory: Any) -> Any:
             try:
                 yield session
                 session.commit()
+            except Exception:
+                # Mirrors ConnectionManager.session_scope's real contract — the
+                # promote's atomicity test depends on the rollback being explicit
+                # here, not on close() happening to discard uncommitted work.
+                session.rollback()
+                raise
             finally:
                 session.close()
 
@@ -216,3 +250,63 @@ class TestPromoteOperatingModelRun:
 
         with pytest.raises(RuntimeError, match="requires a stamped run.run_id"):
             promote_operating_model_run(_manager(session_factory), identity)
+
+    def test_materializes_the_runs_staged_induction(self, session_factory):
+        """The promote lands the run's staged validations WITH the head (DAT-877).
+
+        The vocabulary flip and the head flip are one transaction, so a head-resolved
+        reader can never see a promoted operating_model run whose generated
+        validations are still the previous run's — or, before this, an UNPROMOTED
+        run's generation already serving as current.
+        """
+        with session_factory() as s:
+            stage_induced_validations(s, "run-om-A", _VERTICAL, [_gen_spec("induced_a")])
+            s.commit()
+
+        # Staging alone published nothing.
+        with session_factory() as s:
+            assert _active_generated(s) == set()
+
+        assert promote_operating_model_run(_manager(session_factory), _IDENTITY) == 1
+
+        with session_factory() as s:
+            assert _active_generated(s) == {"induced_a"}
+            head = s.execute(select(MetadataSnapshotHead)).scalar_one()
+        assert head.run_id == "run-om-A"
+
+    def test_head_failure_leaves_the_vocabulary_unchanged(self, session_factory):
+        """The atomicity invariant this ticket exists for (DAT-877).
+
+        Materialize and the head flip share one transaction. If the head write
+        fails, the vocabulary must roll back with it — otherwise the promote has
+        published a generation for a run that is not the head, which is the exact
+        split-state the staging design removes.
+        """
+        with session_factory() as s:
+            stage_induced_validations(s, "run-om-A", _VERTICAL, [_gen_spec("induced_a")])
+            s.commit()
+
+        with (
+            patch(
+                "dataraum.worker.activity._upsert_head",
+                side_effect=RuntimeError("head write failed"),
+            ),
+            pytest.raises(RuntimeError, match="head write failed"),
+        ):
+            promote_operating_model_run(_manager(session_factory), _IDENTITY)
+
+        with session_factory() as s:
+            assert _active_generated(s) == set()
+            assert s.execute(select(MetadataSnapshotHead)).all() == []
+
+    def test_promote_ignores_another_runs_staging(self, session_factory):
+        """Only the PROMOTED run's staged set lands — a sibling run's stays staged."""
+        with session_factory() as s:
+            stage_induced_validations(s, "run-om-A", _VERTICAL, [_gen_spec("induced_a")])
+            stage_induced_validations(s, "run-om-B", _VERTICAL, [_gen_spec("induced_b")])
+            s.commit()
+
+        promote_operating_model_run(_manager(session_factory), _IDENTITY)
+
+        with session_factory() as s:
+            assert _active_generated(s) == {"induced_a"}

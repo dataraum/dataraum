@@ -12,9 +12,11 @@ legal, the content is not. Those still fail, and they fail LOUD in one turn.
 from __future__ import annotations
 
 import json
+from datetime import UTC, datetime
 from unittest.mock import MagicMock
 
 from dataraum.analysis.semantic.agent import SemanticAgent
+from dataraum.analysis.statistics.models import ColumnProfile, ColumnRef
 
 _COMPLETE_REL = {
     "from_table": "payments",
@@ -105,8 +107,20 @@ def _agent_with(provider: MagicMock, monkeypatch) -> SemanticAgent:
     ontology_loader.format_concepts_for_prompt.return_value = ""
     agent._ontology_loader = ontology_loader  # type: ignore[attr-defined]
 
+    # A REAL profile: the role derivation reads cardinality off this list
+    # (DAT-847), so a MagicMock would stand in for load-bearing input.
+    profile = ColumnProfile(
+        column_id="t1.id",
+        column_ref=ColumnRef(table_name="payments", column_name="id"),
+        profiled_at=datetime(2026, 1, 1, tzinfo=UTC),
+        total_count=10,
+        null_count=0,
+        distinct_count=10,
+        null_ratio=0.0,
+        cardinality_ratio=1.0,
+    )
     agent._load_profiles = MagicMock(  # type: ignore[method-assign]
-        return_value=MagicMock(success=True, value=[MagicMock()], error=None)
+        return_value=MagicMock(success=True, value=[profile], error=None)
     )
     agent._build_tables_json = MagicMock(return_value=[])  # type: ignore[method-assign]
     agent._format_relationship_candidates = MagicMock(return_value="")  # type: ignore[method-assign]

@@ -29,14 +29,14 @@ _VECTORS = json.loads(
 )["cases"]
 
 
-def _eval_spec(check_type: str, **parameters) -> ValidationSpec:
+def _eval_spec(check_type: str, tolerance: float | None = None) -> ValidationSpec:
     return ValidationSpec(
         validation_id="test",
         name="Test",
         description="Test",
         category="test",
         check_type=check_type,
-        parameters=parameters,
+        tolerance=tolerance,
     )
 
 

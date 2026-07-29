@@ -62,6 +62,7 @@ def validate_grounding_basis(
     schema_tables: dict[str, set[str]],
     duckdb_conn: duckdb.DuckDBPyConnection | None,
     served_values: dict[str, set[str]] | None = None,
+    declared_predicate: str = "",
 ) -> list[str]:
     """Contract-v2 violations of one grounding output, empty when clean.
 
@@ -78,6 +79,10 @@ def validate_grounding_basis(
             attribute served under a joined name, a high-cardinality search
             column, or an unprofiled one) is honest under-coverage, never a false
             rejection of a legitimately searched value.
+        declared_predicate: The extract step's declared row restriction
+            (``StepSource.predicate``, DAT-838), ``""`` when the step declares
+            none. A declared restriction that grounded to NO predicate is a
+            violation — see below.
 
     Returns:
         Human-readable violation lines for the repair turn; ``[]`` when the
@@ -86,16 +91,41 @@ def validate_grounding_basis(
     if not output.relation:
         return []  # fall-loud: no relation, no columns, nothing to enforce
 
+    # DAT-838: the declaration must actually reach the SQL. A step that declares a
+    # restriction and grounds to an unrestricted extract measures a different
+    # population than the catalogue asked for, and the result is not visibly wrong
+    # — the ticket's own case is a rate that comes out ≈1.0 by construction while
+    # its declared `0 <= value <= 1` check passes. Only the presence of a predicate
+    # is enforced, never its TEXT: whether `status is reconciled` is faithfully
+    # rendered is a grounding judgment made against the served value sets (and
+    # cross-checked by the `filter_members` membership rules below), not something
+    # this function can decide by comparing strings.
+    #
+    # Routed through the ordinary violation list, so it inherits the existing
+    # repair turn and, if still unmet, the PROVENANCE_INVALID retained failure —
+    # no new failure mode, and the abstention is visible on the row either way.
+    if declared_predicate and not [p for p in output.where if p and p.strip()]:
+        violations_predicate = [
+            f"the step declares the row restriction '{declared_predicate}' but `where` is "
+            "empty — ground that restriction as a predicate over the relation's columns "
+            "using verified served values, or fall loud (empty relation) if the column or "
+            "value it needs does not exist; an unrestricted extract measures a different "
+            "population than the metric declares"
+        ]
+    else:
+        violations_predicate = []
+
     relation_columns = schema_tables.get(output.relation)
     if relation_columns is None:
         return [
+            *violations_predicate,
             f"relation '{output.relation}' is not among the served relations "
-            f"({sorted(schema_tables)}) — use a served relation name verbatim"
+            f"({sorted(schema_tables)}) — use a served relation name verbatim",
         ]
 
     measure_enumerated: set[str] = set()
     filter_enumerated: set[str] = set()
-    violations: list[str] = []
+    violations: list[str] = list(violations_predicate)
     for entry in output.provenance.column_mappings_basis:
         measure_enumerated.update(entry.basis.measure_columns)
         filter_enumerated.update(entry.basis.filter_columns)

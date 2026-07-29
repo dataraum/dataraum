@@ -75,6 +75,16 @@ SELECT * FROM __WS__.concept_edges
 WHERE vertical = COALESCE(
   (SELECT active_vertical FROM __WS__.workspace_settings), '_adhoc');
 
+DROP VIEW IF EXISTS __READ__.current_concept_reconciliation;
+CREATE VIEW __READ__.current_concept_reconciliation AS
+SELECT r.* FROM __WS__.concept_reconciliation r
+WHERE EXISTS (
+  SELECT 1 FROM __WS__.metadata_snapshot_head h
+  WHERE h.target = 'catalog'
+    AND h.stage = 'operating_model'
+    AND h.run_id = r.run_id
+);
+
 DROP VIEW IF EXISTS __READ__.concepts;
 CREATE VIEW __READ__.concepts AS
 SELECT * FROM __WS__.concepts
@@ -94,6 +104,12 @@ WHERE vertical = COALESCE(
 DROP VIEW IF EXISTS __READ__.cycle_families;
 CREATE VIEW __READ__.cycle_families AS
 SELECT * FROM __WS__.cycle_families
+WHERE vertical = COALESCE(
+  (SELECT active_vertical FROM __WS__.workspace_settings), '_adhoc');
+
+DROP VIEW IF EXISTS __READ__.cycle_types;
+CREATE VIEW __READ__.cycle_types AS
+SELECT * FROM __WS__.cycle_types
 WHERE vertical = COALESCE(
   (SELECT active_vertical FROM __WS__.workspace_settings), '_adhoc');
 
@@ -229,6 +245,26 @@ WHERE EXISTS (
   )
 ;
 
+DROP VIEW IF EXISTS __READ__.current_induced_validations;
+CREATE VIEW __READ__.current_induced_validations AS
+SELECT r.* FROM __WS__.induced_validations r
+WHERE EXISTS (
+  SELECT 1 FROM __WS__.metadata_snapshot_head h
+  WHERE h.target = 'catalog'
+    AND h.stage = 'operating_model'
+    AND h.run_id = r.run_id
+);
+
+DROP VIEW IF EXISTS __READ__.current_induction_runs;
+CREATE VIEW __READ__.current_induction_runs AS
+SELECT r.* FROM __WS__.induction_runs r
+WHERE EXISTS (
+  SELECT 1 FROM __WS__.metadata_snapshot_head h
+  WHERE h.target = 'catalog'
+    AND h.stage = 'operating_model'
+    AND h.run_id = r.run_id
+);
+
 DROP VIEW IF EXISTS __READ__.current_lifecycle_artifacts;
 CREATE VIEW __READ__.current_lifecycle_artifacts AS
 SELECT r.* FROM __WS__.lifecycle_artifacts r
@@ -263,9 +299,9 @@ DROP VIEW IF EXISTS __READ__.metadata_snapshot_head;
 CREATE VIEW __READ__.metadata_snapshot_head AS
 SELECT * FROM __WS__.metadata_snapshot_head;
 
-DROP VIEW IF EXISTS __READ__.current_metric_additivity;
-CREATE VIEW __READ__.current_metric_additivity AS
-SELECT r.* FROM __WS__.metric_additivity r
+DROP VIEW IF EXISTS __READ__.current_metric_axis_additivity;
+CREATE VIEW __READ__.current_metric_axis_additivity AS
+SELECT r.* FROM __WS__.metric_axis_additivity r
 WHERE EXISTS (
   SELECT 1 FROM __WS__.metadata_snapshot_head h
   WHERE h.target = 'catalog'
@@ -284,6 +320,16 @@ CREATE VIEW __READ__.metric_parameters AS
 SELECT * FROM __WS__.metric_parameters
 WHERE vertical = COALESCE(
   (SELECT active_vertical FROM __WS__.workspace_settings), '_adhoc');
+
+DROP VIEW IF EXISTS __READ__.current_metric_unit_grain;
+CREATE VIEW __READ__.current_metric_unit_grain AS
+SELECT r.* FROM __WS__.metric_unit_grain r
+WHERE EXISTS (
+  SELECT 1 FROM __WS__.metadata_snapshot_head h
+  WHERE h.target = 'catalog'
+    AND h.stage = 'operating_model'
+    AND h.run_id = r.run_id
+);
 
 DROP VIEW IF EXISTS __READ__.metrics;
 CREATE VIEW __READ__.metrics AS
@@ -435,6 +481,12 @@ SELECT * FROM __WS__.validations
 WHERE vertical = COALESCE(
   (SELECT active_vertical FROM __WS__.workspace_settings), '_adhoc');
 
+DROP VIEW IF EXISTS __READ__.vertical_envelopes;
+CREATE VIEW __READ__.vertical_envelopes AS
+SELECT * FROM __WS__.vertical_envelopes
+WHERE vertical = COALESCE(
+  (SELECT active_vertical FROM __WS__.workspace_settings), '_adhoc');
+
 DROP VIEW IF EXISTS __READ__.workspace_calendar;
 CREATE VIEW __READ__.workspace_calendar AS
 SELECT * FROM __WS__.workspace_calendar;
@@ -486,6 +538,9 @@ SELECT s.snippet_id,
        s.parts->'from'->>0 AS relation,
        s.parts->'select'->0->>'expr' AS select_expr,
        (s.parts->'where')::text AS where_predicates,
+       s.parts->'period_binding'->>'as_of' AS resolved_period,
+       s.parts->'period_binding'->>'window_close' AS reporting_window_close,
+       s.parts->'period_binding'->>'calendar_source' AS calendar_source,
        s.description,
        s.sql,
        s.parts,

@@ -364,7 +364,12 @@ def _load_run_specs(context: DetectorContext) -> dict[str, Any]:
         .first()
     )
     vertical = (artifact.teaches or {}).get("vertical") if artifact else None
-    return load_all_validation_specs(vertical, context.session) if vertical else {}
+    if not vertical:
+        return {}
+    # In-run read (DAT-877): this detector scores THIS run's validation results, so it
+    # needs the generation this run's induction staged — the vocabulary home does not
+    # carry it until the terminal promote.
+    return load_all_validation_specs(vertical, context.session, run_id=context.run_id)
 
 
 class CrossTableConsistencyDetector(EntropyDetector):

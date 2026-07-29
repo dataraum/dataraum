@@ -3,7 +3,8 @@ import { describe, expect, it } from "vitest";
 import { narrowDag, summarizeDag } from "#/lib/metric-dag";
 
 // A shipped metric DAG as it comes off the YAML (untrusted shape — extra keys
-// like `validation`/`decimal_places` the render view ignores).
+// like `decimal_places` the render view ignores; `validation` IS narrowed,
+// DAT-840).
 const EBITDA_OUTPUT = {
 	type: "scalar",
 	metric_id: "ebitda",
@@ -61,6 +62,45 @@ describe("narrowDag", () => {
 			dependsOn: ["operating_income", "depreciation"],
 			outputStep: true,
 		});
+	});
+
+	it("narrows a step's declared post-execution checks (DAT-840) — the YAML's singular `validation:` key", () => {
+		const { steps } = narrowDag(EBITDA_OUTPUT, EBITDA_DEPS);
+		const revenue = steps.find((s) => s.id === "revenue");
+		expect(revenue?.validation).toEqual([
+			{ condition: "value > 0", severity: null, message: null },
+		]);
+		// A step declaring none narrows to an empty array, not undefined.
+		const ebitda = steps.find((s) => s.id === "ebitda");
+		expect(ebitda?.validation).toEqual([]);
+	});
+
+	it("is tolerant of a malformed validation entry (skips it, never throws)", () => {
+		const deps = {
+			...EBITDA_DEPS,
+			revenue: {
+				...EBITDA_DEPS.revenue,
+				validation: [
+					{
+						condition: "value > 0",
+						severity: "warning",
+						message: "must be positive",
+					},
+					{ severity: "warning" }, // missing required `condition` — dropped
+					42,
+					"nope",
+				],
+			},
+		};
+		const { steps } = narrowDag(EBITDA_OUTPUT, deps);
+		const revenue = steps.find((s) => s.id === "revenue");
+		expect(revenue?.validation).toEqual([
+			{
+				condition: "value > 0",
+				severity: "warning",
+				message: "must be positive",
+			},
+		]);
 	});
 
 	it("sorts steps by dependency level, leaves first and output last", () => {

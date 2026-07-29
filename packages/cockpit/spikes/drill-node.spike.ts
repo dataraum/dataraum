@@ -32,9 +32,9 @@ import { applyEngineScope, closeLake, withLakeConnection } from "#/duckdb/lake";
 import {
 	composeNodeQuery,
 	composeNodeTotals,
-	flattenAdditive,
 	type NodeStep,
 	nodeShape,
+	signedContributions,
 } from "#/duckdb/parts";
 import { resolveDrillAxes } from "#/tools/drill-axes";
 import { resolveNodeSteps } from "#/tools/drill-metric";
@@ -49,7 +49,7 @@ function isAdditive(steps: NodeStep[]): boolean {
 	const byId = new Map(steps.map((s) => [s.stepId, s]));
 	const output =
 		steps.find((s) => s.outputStep) ?? steps[steps.length - 1] ?? null;
-	return output !== null && flattenAdditive(output, byId) !== null;
+	return output !== null && signedContributions(output, byId) !== null;
 }
 
 const toPin = (v: unknown): DrillPinValue | undefined =>
@@ -140,7 +140,7 @@ async function main(): Promise<void> {
 			if (gtNote.includes("✗")) fails++;
 
 			// 1b) totals (DAT-712): value == scalar, columns == shape operands+value
-			const shape = nodeShape(resolved.steps, undefined);
+			const shape = nodeShape(resolved.steps, undefined, false);
 			const tq = composeNodeTotals(resolved.steps, undefined);
 			let totalsNote = "";
 			if ("refusal" in tq) {
@@ -216,7 +216,7 @@ async function main(): Promise<void> {
 					}
 				}
 				report.push(
-					`  [${axis.priority === Number.MAX_SAFE_INTEGER ? "substrate" : "curated"}] ${axis.column}: ${rows.length} groups${nulls ? `, ${nulls} NULL` : ""}${sumNote}${axis.temporal ? ` [temporal:${axis.temporal}]` : ""}`,
+					`  [${axis.businessContext === null && axis.valueCount === null ? "substrate" : "curated"}] ${axis.column}: ${rows.length} groups${nulls ? `, ${nulls} NULL` : ""}${sumNote}${axis.temporal ? ` [temporal:${axis.temporal}]` : ""}`,
 				);
 
 				// 2b) the grain matrix (DAT-712): every preset grain on a temporal

@@ -5,11 +5,16 @@
 // of the grid, server-side and binder-validated, into a new effective base
 // SQL + params; the ordinary `WindowedGrid` renders it — remounting on the
 // effective key so grid-local sort/filters reset exactly as on a new agent
-// query (React rule 5). TWO compose paths, chosen by `nodeRef`:
+// query (React rule 5). THREE compose paths, chosen by `source`:
 //   - a canvas NODE (metric or measure) recomposes from its persisted clause
 //     parts with the steps as clause appends (`/api/drill/node`);
-//   - an ad-hoc grid wraps its own visible columns (`/api/drill/compose`,
-//     tier A only).
+//   - an ANSWER recomposes from the clause parts its sub-agent declared and the
+//     server PROVED against the answer's own value (`/api/drill/parts`,
+//     DAT-678) — the only way a scalar answer is drillable, since it projects
+//     no column to group by;
+//   - no source: the grid wraps its own visible columns (`/api/drill/compose`,
+//     tier A) — always available, and the right path for a result that already
+//     carries its dimensions.
 // The stack only ever holds compositions the server ACCEPTED: a candidate
 // stack is sent as a user-event mutation and committed on `ok: true`; a
 // refusal shows the amber "can't slice this deterministically" state and
@@ -30,8 +35,10 @@
 // changes — plus pass-through rendering props (footer cells, column accents,
 // unit chips) whose CONTENT the layer owns.
 //
-// Axes come from the metric path (`/api/drill/axes`, catalog metadata only —
-// DAT-678 adds ad-hoc resolution). This widget fetches the drill routes
+// Axes come from `/api/drill/axes`, one resolution per compose path (DAT-678):
+// the node's own catalog, the answer's proven relation, or — for tier A — the
+// catalogued dimensions that are actually COLUMNS of this result, since that is
+// all an outer GROUP BY can address. This widget fetches the drill routes
 // instead of importing server modules (bundle hygiene).
 
 // Type-only, erased at compile time — the same source result-grid.tsx uses.
@@ -48,22 +55,37 @@ import {
 	Tooltip,
 } from "@mantine/core";
 import { useMutation, useQuery } from "@tanstack/react-query";
-import { Check, ChevronDown, Layers, X } from "lucide-react";
-import { useMemo, useRef, useState } from "react";
+import {
+	Check,
+	ChevronDown,
+	ChevronsDown,
+	Layers,
+	Sparkles,
+	X,
+} from "lucide-react";
+import { type ReactNode, useEffect, useMemo, useRef, useState } from "react";
 import type { ChartConfig } from "#/charts/chart-config";
-import type {
-	DrillAxesRequest,
-	DrillAxis,
-	DrillPinValue,
-	DrillStep,
+import {
+	DRILL_GUIDANCE_TIMEOUT_MS,
+	type DrillAxesRequest,
+	type DrillAxis,
+	type DrillPinValue,
+	type DrillSource,
+	type DrillStep,
+	MAX_GUIDANCE_AXES,
+	totalIsRecomputed,
 } from "#/duckdb/drill";
 
-import { grainLabel, grainPresets, parseGrainToken } from "#/duckdb/grain";
+import { grainLabel, grainPresetsFrom, parseGrainToken } from "#/duckdb/grain";
 // Type-only (erased at compile time — the canvas-state.ts / tool-result-to-canvas.ts
 // precedent for pulling a server tool's RESULT shape without importing its runtime):
 // the wire contract for the axes route's response, kept in sync with the server's
 // actual return shape instead of hand-duplicated here.
 import type { DrillAxesResult } from "#/tools/drill-axes";
+import {
+	AxisGuidanceBadge,
+	axisGuidanceTier,
+} from "#/ui/cockpit/widgets/axis-guidance";
 import { ChartToolbarButton } from "#/ui/cockpit/widgets/chart-toolbar-button";
 import { WindowedGrid } from "#/ui/cockpit/widgets/result-grid";
 
@@ -73,11 +95,16 @@ type ComposeResponse =
 	| { ok: true; sql: string; params: SqlParams }
 	| { ok: false; reason: string };
 
-async function postJson<T>(url: string, body: unknown): Promise<T> {
+async function postJson<T>(
+	url: string,
+	body: unknown,
+	signal?: AbortSignal,
+): Promise<T> {
 	const res = await fetch(url, {
 		method: "POST",
 		headers: { "Content-Type": "application/json" },
 		body: JSON.stringify(body),
+		signal,
 	});
 	if (!res.ok) {
 		const detail = (await res.json().catch(() => null)) as {
@@ -93,15 +120,32 @@ async function postJson<T>(url: string, body: unknown): Promise<T> {
 }
 
 /** Chart state scoped to ONE effective query — mounted with `key=effective`
- *  so drilling resets the authored chart along with sort/filters (rule 5). */
-function DrillChartAction({ sql, params }: { sql: string; params: SqlParams }) {
+ *  so drilling resets the authored chart along with sort/filters (rule 5).
+ *
+ *  CONTROLLED when the surface passes `chart`: a surface that OUTLIVES the
+ *  chart (the answer's Report mint freezes it) has to own the value, and then
+ *  the reset-on-drill is its handler's job rather than this remount's. Still
+ *  ONE button either way — a second chart affordance beside this one would be
+ *  two sources of truth for the same picture. */
+function DrillChartAction({
+	sql,
+	params,
+	chart,
+}: {
+	sql: string;
+	params: SqlParams;
+	chart?: {
+		value: ChartConfig | null;
+		onChange: (config: ChartConfig | null) => void;
+	};
+}) {
 	const [config, setConfig] = useState<ChartConfig | null>(null);
 	return (
 		<ChartToolbarButton
 			sql={sql}
 			params={params}
-			value={config}
-			onChange={setConfig}
+			value={chart ? chart.value : config}
+			onChange={chart ? chart.onChange : setConfig}
 		/>
 	);
 }
@@ -150,7 +194,9 @@ function GrainMenu({
 }) {
 	const [custom, setCustom] = useState("");
 	const [customError, setCustomError] = useState<string | null>(null);
-	const presets = grainPresets(axis.temporal ?? "date");
+	// Floored at the axis's observed cadence (DAT-857): a monthly measure is not
+	// offered day buckets it has no data to fill.
+	const presets = grainPresetsFrom(axis.temporal ?? "date", axis.bucketGrain);
 
 	const commitCustom = () => {
 		const token = custom.trim();
@@ -254,7 +300,8 @@ export function DrillableGrid({
 	sql,
 	params,
 	axesRequest,
-	nodeRef,
+	source,
+	initialSteps,
 	footerCells,
 	footerLabel,
 	columnAccents,
@@ -262,16 +309,30 @@ export function DrillableGrid({
 	onRowHover,
 	onPinnedRow,
 	onStepsChange,
+	toolbarActions,
+	chart,
 	fillHeight,
 }: {
 	/** The base query (the node's composed SQL on the canvas path). */
 	sql: string;
 	params?: SqlParams;
-	/** What the Slice control offers — resolved by the metric path only. */
+	/** What the Slice control offers, resolved per compose path. */
 	axesRequest: DrillAxesRequest;
-	/** Present on the canvas path: drill steps recompose the NODE from its
-	 *  persisted parts (`/api/drill/node`) instead of wrapping the base SQL. */
-	nodeRef?: DrillAxesRequest;
+	/** How a drill recomposes. Absent = tier A: wrap this result's own columns
+	 *  (`/api/drill/compose`). Present = recompose UPSTREAM from clause parts —
+	 *  a canvas node's persisted ones (`/api/drill/node`) or an answer's proven
+	 *  declared ones (`/api/drill/parts`, DAT-678). */
+	source?: DrillSource;
+	/** Rehydrate a drill on mount (DAT-676) — the report-detail route's search
+	 *  param is the one caller today: on load it decodes its `?drill=` steps
+	 *  and hands them here so the grid re-composes and opens ALREADY drilled,
+	 *  instead of a reload silently snapping back to the base result. Composed
+	 *  the same way a live apply is (same endpoint, same acceptance rule); a
+	 *  step that no longer composes (the catalog or data changed underneath
+	 *  the saved link) degrades to the base result with a visible notice —
+	 *  never a silently different grid. Omitted/empty = no rehydrate, the
+	 *  ordinary empty-stack start every other caller gets. */
+	initialSteps?: DrillStep[];
 	/** Total-row cells (column name → value), shown as the grid's sticky footer
 	 *  WHILE a drill is active — the anchor a slice would otherwise lose. The
 	 *  layer above owns the values (DAT-712). */
@@ -286,8 +347,25 @@ export function DrillableGrid({
 	 *  null otherwise (pins cleared / slice-only change) — the equation
 	 *  layer's lock-on-pin signal (DAT-712). */
 	onPinnedRow?: (row: Record<string, Json | null> | null) => void;
-	/** Fired with the committed step stack after every accepted apply. */
-	onStepsChange?: (steps: DrillStep[]) => void;
+	/** Fired with the committed step stack after every accepted apply, together
+	 *  with the statement now on screen. A surface that freezes or exports what
+	 *  the user is looking at (the answer's Report mint) needs the EFFECTIVE
+	 *  query, not the base one — otherwise it captures numbers the grid stopped
+	 *  showing the moment a slice was applied. */
+	onStepsChange?: (
+		steps: DrillStep[],
+		effective: { sql: string; params: SqlParams },
+	) => void;
+	/** Extra grid-toolbar actions, rendered after the drill's own chart button
+	 *  (the surface owns their content — this widget stays generic). */
+	toolbarActions?: ReactNode;
+	/** Take ownership of the chart the toolbar authors — for a surface that has
+	 *  to READ it (the answer freezes it into a report). Omitted = grid-local,
+	 *  reset on every drill. */
+	chart?: {
+		value: ChartConfig | null;
+		onChange: (config: ChartConfig | null) => void;
+	};
 	/** Fill the parent's height (flex column) instead of the grid's default
 	 *  480px body cap — see ResultGridView (DAT-712). */
 	fillHeight?: boolean;
@@ -301,6 +379,12 @@ export function DrillableGrid({
 		params: SqlParams;
 	} | null>(null);
 	const [refusal, setRefusal] = useState<string | null>(null);
+	// A REHYDRATE-specific notice (DAT-676), distinct from `refusal`: a live
+	// apply's refusal is the user's OWN action failing right now (dismissable,
+	// tied to the control they just used); a rehydrate failure is a SAVED link
+	// that no longer resolves — the grid opens on the base result instead, and
+	// this says why, once, on mount.
+	const [rehydrateNotice, setRehydrateNotice] = useState<string | null>(null);
 
 	const axesQuery = useQuery({
 		queryKey: ["drill-axes", axesRequest],
@@ -313,6 +397,80 @@ export function DrillableGrid({
 		[axes],
 	);
 
+	// DAT-671: excludes a greyed (already-in-result) axis from BOTH the
+	// all-unmeasured gate and the guidance payload below — Haiku has no
+	// business suggesting slicing by a column the menu already shows disabled.
+	const enabledAxes = axes.filter((a) => a.disabledReason === null);
+	// Haiku guidance fallback (DAT-673): offered ONLY when the node has NO
+	// measured signal at all — every ENABLED axis's tier is null. A node with
+	// even one measured/curated axis never shows this; mixing a real badge
+	// with an unmeasured guess on the same menu would blur exactly the honesty
+	// this chip exists to preserve. Session-local state (no persistence — this
+	// is an on-demand affordance, and a fresh mount naturally clears it, React
+	// idiom #5).
+	const allUnmeasured =
+		enabledAxes.length > 0 &&
+		enabledAxes.every((a) => axisGuidanceTier(a) === null);
+	// Tri-state, not a plain nullable Map (fold-in #4): a successful call that
+	// returns ZERO surviving suggestions must not look identical to "never
+	// asked" — an empty-but-truthy Map made the Suggest action vanish with no
+	// text and no error, a dead end. "empty" renders an explicit "No
+	// suggestions" state instead.
+	const [guidance, setGuidance] = useState<
+		Map<string, string> | "empty" | null
+	>(null);
+	const [guidanceError, setGuidanceError] = useState<string | null>(null);
+	const guidanceMutation = useMutation({
+		mutationFn: () => {
+			// Bound the call — the SAME shared constant the route's schema and
+			// the agent module cap with (duckdb/drill.ts); review-round Critical
+			// 1: a pure-substrate node routinely has MORE than MAX_GUIDANCE_AXES
+			// axes, and sending all of them 400'd on the route's own cap with a
+			// raw zod message. DAT-671: `enabledAxes`, not `axes` — never send a
+			// greyed (already-in-result) column for Haiku to suggest slicing by.
+			const capped = enabledAxes.slice(0, MAX_GUIDANCE_AXES);
+			// Fold-in #5: a hung model must not leave "Asking…" disabled
+			// forever — bound the client's own fetch independently of the
+			// server-side timeout (axis-guidance-agent.ts bounds its chat() call
+			// with the same duration).
+			const controller = new AbortController();
+			const timer = setTimeout(
+				() => controller.abort(),
+				DRILL_GUIDANCE_TIMEOUT_MS,
+			);
+			return postJson<{ suggestions: { column: string; guidance: string }[] }>(
+				"/api/drill/axis-guidance",
+				{
+					// No richer label is available at this layer (a node ref names a
+					// metric/measure key, an ad-hoc result has none at all) — the
+					// axes' own request shape is the best context on hand.
+					measureLabel:
+						"metricKey" in axesRequest
+							? axesRequest.metricKey
+							: "standardField" in axesRequest
+								? axesRequest.standardField
+								: "this result",
+					axes: capped.map((a) => ({
+						column: a.column,
+						sliceType: a.sliceType,
+					})),
+				},
+				controller.signal,
+			).finally(() => clearTimeout(timer));
+		},
+		onSuccess: (res) => {
+			setGuidanceError(null);
+			setGuidance(
+				res.suggestions.length > 0
+					? new Map(res.suggestions.map((s) => [s.column, s.guidance]))
+					: "empty",
+			);
+		},
+		onError: (err) => {
+			setGuidanceError(err instanceof Error ? err.message : String(err));
+		},
+	});
+
 	// Monotonic apply generation, bumped in the EVENT HANDLER so it carries
 	// click order. TanStack Query neither serializes nor cancels overlapping
 	// `.mutate()` calls — their callbacks fire in network-resolution order — so
@@ -321,6 +479,27 @@ export function DrillableGrid({
 	// that doesn't match the user's latest action. Ref, not state: read/written
 	// only in handlers/callbacks (rule 8's render restriction doesn't apply).
 	const generationRef = useRef(0);
+
+	// The ONE compose call, shared by a live apply (the mutation below) and the
+	// mount-time rehydrate (DAT-676) — same endpoint selection by `source`, so
+	// a rehydrate is composed exactly the way a live apply would be, never a
+	// second, drifting code path.
+	const runCompose = (candidate: DrillStep[]): Promise<ComposeResponse> =>
+		source === undefined
+			? postJson<ComposeResponse>("/api/drill/compose", {
+					sql,
+					params: baseParams,
+					steps: candidate,
+				})
+			: source.kind === "node"
+				? postJson<ComposeResponse>("/api/drill/node", {
+						...source.ref,
+						steps: candidate,
+					})
+				: postJson<ComposeResponse>("/api/drill/parts", {
+						...source.source,
+						steps: candidate,
+					});
 
 	// Applying a step stack is a user event → a mutation (rule 4). A refusal is
 	// a DOMAIN result (HTTP 200): surface it and keep the last accepted drill.
@@ -338,16 +517,7 @@ export function DrillableGrid({
 			candidate,
 			generation,
 			pinRow,
-			result: nodeRef
-				? await postJson<ComposeResponse>("/api/drill/node", {
-						...nodeRef,
-						steps: candidate,
-					})
-				: await postJson<ComposeResponse>("/api/drill/compose", {
-						sql,
-						params: baseParams,
-						steps: candidate,
-					}),
+			result: await runCompose(candidate),
 		}),
 		onSuccess: ({ candidate, generation, pinRow, result }) => {
 			if (generation !== generationRef.current) return; // superseded — drop
@@ -357,7 +527,10 @@ export function DrillableGrid({
 				setSteps(candidate);
 				setComposed({ sql: result.sql, params: result.params });
 				setRefusal(null);
-				onStepsChange?.(candidate);
+				onStepsChange?.(candidate, {
+					sql: result.sql,
+					params: result.params,
+				});
 				// The grid remounts on the new composition — a hover observed
 				// under the OLD one must not outlive it (it would shadow the
 				// lock/totals binding; mouse flows only self-heal by DOM-layout
@@ -383,6 +556,55 @@ export function DrillableGrid({
 		},
 	});
 
+	// Rehydrate a saved drill on mount (DAT-676): the report-detail route
+	// decodes its `?drill=` search param and hands the steps here as
+	// `initialSteps`. Composed exactly like a live apply (same `runCompose`,
+	// same acceptance rule) — a step that no longer resolves (the catalog or
+	// data changed under a saved/shared link) leaves `steps`/`composed` at
+	// their empty defaults and surfaces `rehydrateNotice` instead: the grid
+	// opens on the BASE result with a visible reason, never a silently
+	// different grid and never a throw. Runs from the URL's state AT LOAD;
+	// a LATER change rides through `apply`/`onStepsChange`, never back
+	// through here — an external-system sync (React idiom rule 2), not a
+	// state mirror, and the one-time nature is the point.
+	// biome-ignore lint/correctness/useExhaustiveDependencies: mount-only rehydrate from the URL's state AT LOAD — a later initialSteps/onStepsChange/runCompose identity change must NOT re-fire this (that would re-hydrate on every live apply, fighting the user's own action).
+	useEffect(() => {
+		if (!initialSteps || initialSteps.length === 0) return;
+		const generation = ++generationRef.current;
+		let live = true;
+		void (async () => {
+			let result: ComposeResponse;
+			try {
+				result = await runCompose(initialSteps);
+			} catch (err) {
+				if (live && generation === generationRef.current) {
+					setRehydrateNotice(
+						`This link's saved slice couldn't be restored — showing the base result (${
+							err instanceof Error ? err.message : String(err)
+						}).`,
+					);
+				}
+				return;
+			}
+			if (!live || generation !== generationRef.current) return;
+			if (result.ok) {
+				setSteps(initialSteps);
+				setComposed({ sql: result.sql, params: result.params });
+				onStepsChange?.(initialSteps, {
+					sql: result.sql,
+					params: result.params,
+				});
+			} else {
+				setRehydrateNotice(
+					`This link's saved slice couldn't be restored — showing the base result (${result.reason}).`,
+				);
+			}
+		})();
+		return () => {
+			live = false;
+		};
+	}, []);
+
 	const apply = (
 		candidate: DrillStep[],
 		pinRow?: Record<string, Json | null>,
@@ -394,7 +616,7 @@ export function DrillableGrid({
 			setSteps([]);
 			setComposed(null);
 			setRefusal(null);
-			onStepsChange?.([]);
+			onStepsChange?.([], { sql, params: baseParams });
 			onRowHover?.(null);
 			onPinnedRow?.(null);
 			return;
@@ -441,10 +663,13 @@ export function DrillableGrid({
 				}
 			: undefined;
 
-	// Grain is a NODE-path capability: composeNodeQuery buckets it; the tier-A
-	// route rejects grained steps outright (strict zod). Without a nodeRef the
-	// temporal axis slices raw and no grain control renders.
-	const grainable = nodeRef !== undefined;
+	// Grain is a NODE-path capability. composeNodeQuery can bucket for the answer
+	// path too, but nothing may: time bucketing is only honest under an
+	// additivity verdict, and an answer's ad-hoc concept has none — so the answer
+	// axes resolver withholds the grain and `/api/drill/parts` refuses a grained
+	// step, exactly like tier A. On both of those paths a temporal axis slices
+	// raw and no grain control renders.
+	const grainable = source?.kind === "node";
 
 	/** Slice a fresh axis — temporal axes start at the default grain. */
 	const slice = (axis: DrillAxis) => {
@@ -473,6 +698,103 @@ export function DrillableGrid({
 		);
 	};
 
+	// Hierarchy descent (DAT-673): the LAST committed pin governs the
+	// suggestion — each new pin refines it further, matching the AC "after a
+	// pin, the hierarchy's next level is the first suggestion." Derived during
+	// render (idiom #1) — no effect, no memo (cheap over a handful of steps/
+	// axes and not a dependency of any hook here, so memoizing it wouldn't
+	// earn its line per idiom #6).
+	const lastPin = [...steps].reverse().find((s) => s.kind === "pin");
+	const hierarchyNextColumn = lastPin
+		? axisByColumn.get(lastPin.column)?.hierarchyNext
+		: undefined;
+	// DAT-671: never promote a "Suggested: Descend to X" for an axis that's
+	// simultaneously shown greyed (already-in-result) in the list below —
+	// same filter shape as the existing already-sliced check just beside it.
+	const hierarchySuggestion =
+		hierarchyNextColumn &&
+		!slicedColumns.has(hierarchyNextColumn) &&
+		axisByColumn.get(hierarchyNextColumn)?.disabledReason === null
+			? axisByColumn.get(hierarchyNextColumn)
+			: undefined;
+
+	// Safe lookup over the tri-state (fold-in #4's "empty" isn't a Map).
+	const guidanceTextFor = (column: string): string | undefined =>
+		guidance instanceof Map ? guidance.get(column) : undefined;
+
+	/** One axis's rightSection (grain name / valueCount) — SHARED by the plain
+	 *  list entry and the promoted hierarchy-descent suggestion (fold-in #7:
+	 *  the same axis must never look like two different things depending on
+	 *  which entry renders it). */
+	const axisRightSection = (axis: DrillAxis): ReactNode =>
+		grainable && axis.temporal !== null ? (
+			<Text size="xs" c="dimmed">
+				{grainName(DEFAULT_TEMPORAL_GRAIN)}
+			</Text>
+		) : axis.valueCount !== null ? (
+			<Text size="xs" c="dimmed">
+				{axis.valueCount}
+			</Text>
+		) : undefined;
+
+	/** One axis's FULL Menu.Item body — the primary label (either the bare
+	 *  column name or the hierarchy-descent "Descend to X" framing) inline
+	 *  with its guidance badge, then curated business context and (DAT-673)
+	 *  any on-demand Haiku suggestion below. SHARED by the plain list entry
+	 *  and the promoted hierarchy-descent suggestion (fold-in #7: the same
+	 *  axis must never look like two different things depending on which
+	 *  entry renders it — the earlier version dropped the badge AND
+	 *  valueCount from the promoted entry). */
+	const axisItemBody = (axis: DrillAxis, label: string): ReactNode => (
+		<>
+			<Group gap={6} wrap="nowrap">
+				<Text size="sm">{label}</Text>
+				<AxisGuidanceBadge axis={axis} />
+			</Group>
+			{axis.businessContext && (
+				<Text size="xs" c="dimmed" lineClamp={1}>
+					{axis.businessContext}
+				</Text>
+			)}
+			{/* An on-demand Haiku suggestion, never dressed as measured —
+			    visually distinct (italic, muted, own prefix) from
+			    businessContext above, which is real catalog data. */}
+			{guidanceTextFor(axis.column) && (
+				<Text size="xs" c="dimmed" fs="italic" lineClamp={2}>
+					Suggested (unmeasured): {guidanceTextFor(axis.column)}
+				</Text>
+			)}
+			{/* DAT-671: the short inline reason a greyed axis carries — the item
+			    STAYS in the menu (never removed), disabled, with this label; the
+			    fuller Tooltip on the item itself (below) carries the same text on
+			    hover. */}
+			{axis.disabledReason && (
+				<Text size="xs" c="dimmed" fs="italic">
+					{axis.disabledReason}
+				</Text>
+			)}
+			{/* DAT-857: a date column the engine's verdict will not let us BUCKET.
+			    Unlike disabledReason this axis stays fully selectable — it is
+			    offered as a raw date slice — so the note explains the missing
+			    grain control, not a disabled item. It also ranks last. */}
+			{axis.temporalWithheldReason && (
+				<Text size="xs" c="dimmed" fs="italic">
+					{axis.temporalWithheldReason}
+				</Text>
+			)}
+		</>
+	);
+
+	// The total row anchors a DRILLED view; the undrilled grid IS the scalar, so
+	// a footer there would duplicate the single row. A recomputed value (ratio,
+	// average) PRINTS its real total — it is the formula over the carrier totals
+	// beside it, the same number the header shows — and the label below says so
+	// (DAT-857; lead ruling 2026-07-29 retired the dash mask).
+	const footerRow = steps.length > 0 ? footerCells : undefined;
+	const recomputedTotal =
+		steps.length > 0 &&
+		totalIsRecomputed(steps, axes, axesQuery.data?.reconciles);
+
 	// The drill controls live in the GRID's toolbar-left slot (where the row
 	// count used to sit — iteration 3), not on their own row above it.
 	const drillControls = (
@@ -491,31 +813,89 @@ export function DrillableGrid({
 					</Button>
 				</Menu.Target>
 				<Menu.Dropdown>
-					{axes.map((axis) => (
-						<Menu.Item
-							key={axis.column}
-							disabled={slicedColumns.has(axis.column)}
-							onClick={() => slice(axis)}
-							rightSection={
-								grainable && axis.temporal !== null ? (
-									<Text size="xs" c="dimmed">
-										{grainName(DEFAULT_TEMPORAL_GRAIN)}
-									</Text>
-								) : axis.valueCount !== null ? (
-									<Text size="xs" c="dimmed">
-										{axis.valueCount}
-									</Text>
-								) : undefined
-							}
-						>
-							<Text size="sm">{axis.column}</Text>
-							{axis.businessContext && (
-								<Text size="xs" c="dimmed" lineClamp={1}>
-									{axis.businessContext}
+					{hierarchySuggestion && (
+						<>
+							<Menu.Label>Suggested</Menu.Label>
+							<Menu.Item
+								key={`suggested:${hierarchySuggestion.column}`}
+								leftSection={<ChevronsDown size={13} />}
+								onClick={() => slice(hierarchySuggestion)}
+								rightSection={axisRightSection(hierarchySuggestion)}
+								data-testid={`drill-hierarchy-suggestion-${hierarchySuggestion.column}`}
+							>
+								{axisItemBody(
+									hierarchySuggestion,
+									`Descend to ${hierarchySuggestion.column}`,
+								)}
+							</Menu.Item>
+							<Menu.Divider />
+						</>
+					)}
+					{axes.map((axis) => {
+						const item = (
+							<Menu.Item
+								key={axis.column}
+								disabled={
+									slicedColumns.has(axis.column) || axis.disabledReason !== null
+								}
+								onClick={() => slice(axis)}
+								rightSection={axisRightSection(axis)}
+								data-testid={`drill-axis-${axis.column}`}
+							>
+								{axisItemBody(axis, axis.column)}
+							</Menu.Item>
+						);
+						// DAT-671: a disabled-because-already-in-result item stays in the
+						// menu (never removed) and carries its reason on hover too, not
+						// just the inline label inside axisItemBody.
+						return axis.disabledReason ? (
+							<Tooltip
+								key={axis.column}
+								label={axis.disabledReason}
+								position="right"
+								maw={280}
+								multiline
+							>
+								<div>{item}</div>
+							</Tooltip>
+						) : (
+							item
+						);
+					})}
+					{allUnmeasured && guidance === null && (
+						<>
+							<Menu.Divider />
+							<Menu.Item
+								leftSection={
+									guidanceMutation.isPending ? undefined : (
+										<Sparkles size={13} />
+									)
+								}
+								onClick={() => guidanceMutation.mutate()}
+								disabled={guidanceMutation.isPending}
+								data-testid="drill-suggest-guidance"
+							>
+								<Text size="sm">
+									{guidanceMutation.isPending
+										? "Asking…"
+										: "Suggest which dimensions might matter"}
 								</Text>
-							)}
-						</Menu.Item>
-					))}
+							</Menu.Item>
+						</>
+					)}
+					{/* Fold-in #4: a successful call with ZERO surviving suggestions
+					    must not be a silent dead end — say so explicitly rather than
+					    letting the Suggest action just vanish with nothing to show. */}
+					{allUnmeasured && guidance === "empty" && (
+						<>
+							<Menu.Divider />
+							<Menu.Item disabled data-testid="drill-suggest-guidance-empty">
+								<Text size="sm" c="dimmed">
+									No suggestions
+								</Text>
+							</Menu.Item>
+						</>
+					)}
 				</Menu.Dropdown>
 			</Menu>
 			{axes.length === 0 && !axesQuery.isPending && (
@@ -631,6 +1011,18 @@ export function DrillableGrid({
 					: undefined
 			}
 		>
+			{rehydrateNotice && (
+				<Alert
+					color="yellow"
+					mb="xs"
+					withCloseButton
+					onClose={() => setRehydrateNotice(null)}
+					title="Showing the base result"
+					data-testid="drill-rehydrate-notice"
+				>
+					{rehydrateNotice}
+				</Alert>
+			)}
 			{refusal && (
 				<Alert
 					color="yellow"
@@ -643,6 +1035,18 @@ export function DrillableGrid({
 					{refusal}
 				</Alert>
 			)}
+			{guidanceError && (
+				<Alert
+					color="gray"
+					mb="xs"
+					withCloseButton
+					onClose={() => setGuidanceError(null)}
+					title="Couldn't fetch suggestions"
+					data-testid="drill-guidance-error"
+				>
+					{guidanceError}
+				</Alert>
+			)}
 
 			<WindowedGrid
 				key={effectiveKey}
@@ -652,20 +1056,30 @@ export function DrillableGrid({
 				sqlParams={effective.params}
 				onRowClick={onRowClick}
 				onRowHover={onRowHover}
-				// The total row anchors a DRILLED view; the undrilled grid IS the
-				// scalar, so a footer there would duplicate the single row.
-				footerRow={steps.length > 0 ? footerCells : undefined}
-				footerLabel={footerLabel}
+				footerRow={footerRow}
+				// The note keeps anyone from reading the rows above as summing to a
+				// recomputed value. WindowedGrid defaults an ABSENT label to "Total" —
+				// composing here happens before that default, so repeat it or an
+				// unlabeled caller renders a literal "undefined".
+				footerLabel={
+					recomputedTotal
+						? `${footerLabel ?? "Total"} — value recomputed`
+						: footerLabel
+				}
 				columnAccents={columnAccents}
 				columnUnits={columnUnits}
 				toolbarStart={drillControls}
 				fillHeight={fillHeight}
 				toolbarActions={
-					<DrillChartAction
-						key={effectiveKey}
-						sql={effective.sql}
-						params={effective.params}
-					/>
+					<>
+						<DrillChartAction
+							key={effectiveKey}
+							sql={effective.sql}
+							params={effective.params}
+							chart={chart}
+						/>
+						{toolbarActions}
+					</>
 				}
 			/>
 		</div>

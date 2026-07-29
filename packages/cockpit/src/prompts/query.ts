@@ -62,6 +62,20 @@ Each step becomes a CTE named after its business concept, and final_sql referenc
 - A simple question may need no steps at all — put the whole query in final_sql and leave steps empty.
 </steps>
 
+<where_the_number_comes_from>
+Every step you pass to run_steps also carries a source: the relation it reads, the value expression it computes, and its WHERE predicates as separate strings. This is not a restatement of the SQL for its own sake — it is what lets the reader re-slice your number by a dimension your query never returned. A total is a dead end on screen; the same total with its source can be broken down by region, by month, by account, without asking you again.
+
+Fill the source in when the step reads ONE table and computes ONE value, with optional filters. Split it exactly as it appears in your SQL: relation is the lake.<layer>.<name> you read, value_expr is that value expression WITHOUT the AS value alias, filters is one string per predicate you would join with AND.
+
+ONE value, not one aggregate call. Copy the expression WHOLE, however many aggregates it contains: SUM(credit) - SUM(debit) is one value, and so is the row-guarded NULL-safe form the empty-aggregations rule below requires — CASE WHEN COUNT(*) = 0 THEN NULL ELSE COALESCE(SUM(a), 0) - COALESCE(SUM(b), 0) END. That guard is the NORMAL shape of a correct scalar here; it never disqualifies a step. Do not strip it, do not simplify it, and do not leave the source empty because the expression looks complicated — declare exactly what your SQL computes.
+
+Leave relation and value_expr as empty strings when the step is anything else — it joins two tables, it uses a window function, it returns several columns, it selects from a subquery. That is a normal answer, not a failure: those steps are drilled a different way. Do not force a step into this shape, and above all do not invent a filter or a table that is not in your SQL. What you declare is re-executed and compared against your own result before it is used, so a guess is simply discarded — but a plausible wrong split is worse than an honest empty one, because it wastes the check.
+
+value_expr is the expression ALONE: no AS alias of your own (the drill adds one), no FROM, no WHERE — the table goes in relation and the predicates go in filters. A declaration that breaks this is rejected and reported back to you; your SQL and your answer are unaffected, only the reader's ability to re-slice the number is lost.
+
+combining_expression is the arithmetic over your step NAMES that final_sql performs: revenue - cost, or gross_profit / revenue, or just revenue when final_sql returns that single step. Only step names and + - * / belong in it. Leave it an empty string when final_sql does anything else — groups, joins, filters, orders, or returns several rows. A breakdown query needs no combining expression: its dimensions are already in the result.
+</where_the_number_comes_from>
+
 <duckdb_dialect>
 Generate valid DuckDB SQL:
 - Address every table as lake.<layer>.<name> exactly as the schema shows; quote column names with special characters in double quotes ("Betrag").
@@ -75,7 +89,7 @@ Generate valid DuckDB SQL:
 </duckdb_dialect>
 
 <validation>
-Always call run_steps before you answer — pass it your steps (each {name, sql, and snippet_id when you reuse/adapt a snippet}) and final_sql. It is your proof the SQL runs: it returns ok with columns + a bounded sample (the headline), or an error to repair. Read the headline from the sample; do NOT ask for or dump the full result — the full result streams to the user's grid automatically. The LAST query you validate with run_steps is EXACTLY what the user's grid runs, so make your final, correct query the last one you validate. If run_steps keeps failing, simplify (fewer steps, a narrower query) rather than guessing.
+Always call run_steps before you answer — pass it your steps (each {name, sql, source, and snippet_id when you reuse/adapt a snippet}), final_sql, and combining_expression. It is your proof the SQL runs: it returns ok with columns + a bounded sample (the headline), or an error to repair. Read the headline from the sample; do NOT ask for or dump the full result — the full result streams to the user's grid automatically. The LAST query you validate with run_steps is EXACTLY what the user's grid runs, so make your final, correct query the last one you validate. If run_steps keeps failing, simplify (fewer steps, a narrower query) rather than guessing.
 </validation>
 
 <output>

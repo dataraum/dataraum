@@ -51,6 +51,12 @@ def _render_grain_facts(schema: dict[str, Any]) -> str:
     structural counterweight. Deterministic presentation of served facts —
     no SQL is generated or rewritten here.
 
+    It also states each monetary column's measured STORED SIGN (DAT-875) — a fact
+    the catalogue did not hold before, and the one an author needs to apply the
+    sign_natural_balance convention to BOTH sides of a comparison rather than one.
+    Absent for a column whose convention was not determined: nothing is stated, and
+    the author sees no fact rather than a guess.
+
     The block also states the existence-check universe (DAT-876): a positive
     projection of the closed ``table_role`` fact. An existence check ("this id
     must exist") binds only against a table that authoritatively enumerates the
@@ -86,6 +92,28 @@ def _render_grain_facts(schema: dict[str, Any]) -> str:
             parts.append(
                 f"point_in_time (level, never summed across periods): "
                 f"{', '.join(by_behavior['point_in_time'])}"
+            )
+        # Stored sign (DAT-875): the measured storage convention per monetary column.
+        # The vertical's sign_natural_balance convention says how a measure is
+        # EXPRESSED and explicitly not how it is STORED — without this fact an author
+        # normalizing one side of a comparison cannot tell whether the other side is
+        # already natural, which is the defect that survived three prompt revisions.
+        by_sign: dict[str, list[str]] = {}
+        for col in table.get("columns", []):
+            sign = (col.get("semantic") or {}).get("stored_sign")
+            if sign:
+                by_sign.setdefault(sign, []).append(col["column_name"])
+        if "ledger_signed" in by_sign:
+            parts.append(
+                f"stored ledger_signed (one raw ledger direction for every account "
+                f"family — credit-normal accounts read NEGATIVE; express BOTH sides of "
+                f"any comparison in one convention): {', '.join(by_sign['ledger_signed'])}"
+            )
+        if "natural_balance" in by_sign:
+            parts.append(
+                f"stored natural_balance (each account family's natural direction is "
+                f"already applied — credit-normal accounts read POSITIVE): "
+                f"{', '.join(by_sign['natural_balance'])}"
             )
         if parts:
             lines.append(f"- {table['table_name']}: {'; '.join(parts)}")
@@ -374,11 +402,28 @@ class ValidationAgent(LLMFeature):
         schema_text = format_multi_table_schema_for_prompt(schema)
 
         # Build context for template. ``guidance`` is the advisory binding hint
-        # (the former sql_hints); it fills the ``sql_hints`` prompt slot unchanged.
-        # ``parameters`` now carries ONLY the typed tolerance (the check's other
-        # params folded into guidance at load, DAT-735), keeping the prompt
-        # structure identical to minimize bind drift.
-        sql_hints = f"<sql_hints>{spec.guidance}</sql_hints>" if spec.guidance else ""
+        # (the former sql_hints); it fills the ``sql_hints`` prompt slot — the
+        # PROMPT variable keeps that name, the spec field does not. A DAT-447
+        # ``expected_formula`` declaration (DAT-880: typed, never folded into
+        # ``guidance`` at load) renders as its own explicit sentence alongside any
+        # guidance prose — the binder needs the column-identity claim spelled out,
+        # not buried in free text.
+        # ``parameters`` carries ONLY the typed tolerance. Both ``ef.table.column``
+        # and ``ef.formula`` are quoted identically — neither is more "the value"
+        # than the other; both are the user's literal words. This is the SECOND
+        # free-text string landing in the ``sql_hints`` prompt slot (renderer.
+        # _render_text does sequential ``{key}`` substitution — see its docstring
+        # for the pre-existing re-inlining risk this widens).
+        hint_parts: list[str] = []
+        if spec.guidance:
+            hint_parts.append(spec.guidance)
+        if spec.expected_formula:
+            ef = spec.expected_formula
+            hint_parts.append(
+                f'The user has declared that "{ef.table}.{ef.column}" should equal '
+                f'the formula: "{ef.formula}"'
+            )
+        sql_hints = f"<sql_hints>{'\n\n'.join(hint_parts)}</sql_hints>" if hint_parts else ""
         expected = (
             f"<expected_outcome>{spec.expected_outcome}</expected_outcome>"
             if spec.expected_outcome

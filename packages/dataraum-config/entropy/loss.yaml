@@ -18,7 +18,7 @@
 # network onto this path; their nodes/edges are gone). Weights are PLACEHOLDER
 # priors, calibrated later from generative families (DAT-450); NOT tuned to pass a metric.
 #
-# Intents: query_intent, aggregation_intent, reporting_intent.
+# Intents: query_intent, aggregation_intent, presentation_intent.
 
 # Readiness bands (relocated from the network.yaml discretization, which is being
 # deleted): a per-intent risk ≤ low_upper is ready, ≤ medium_upper is investigate,
@@ -31,28 +31,29 @@ readiness_bands:
 measurements:
   null_semantics:
     # Contested null markers: safe to surface as a caveat in a query, dangerous
-    # to silently sum, and wrong to report on without resolution.
+    # to silently sum, and wrong to present as fact without resolution.
     query_intent: { conflict: 0.4, ignorance: 0.2 }
     aggregation_intent: { conflict: 0.9, ignorance: 0.5 }
-    reporting_intent: { conflict: 0.8, ignorance: 0.4 }
+    presentation_intent: { conflict: 0.8, ignorance: 0.4 }
 
   temporal_behavior:
     # Contested stock-vs-flow: THE don't-SUM-a-stock failure — summing a
     # cumulative level double-counts every prior period, so aggregation bears
-    # the highest loss; a query can still caveat the resolved label; a report
-    # built on the wrong behaviour is materially wrong. Wired 2026-06-10 after
-    # the live three-witness e2e (recall C 0.003→0.363, precision quiet at
-    # 0.006). Name-witness reliabilities are rig-measured (DAT-450/445); the
-    # structural_reconciliation witness reliability is still a probe-derived
-    # placeholder (0.85) pending an events-backed generative family.
+    # the highest loss; a query can still caveat the resolved label; a
+    # presentation built on the wrong behaviour is materially wrong. Wired
+    # 2026-06-10 after the live three-witness e2e (recall C 0.003→0.363,
+    # precision quiet at 0.006). Name-witness reliabilities are rig-measured
+    # (DAT-450/445); the structural_reconciliation witness reliability is
+    # still a probe-derived placeholder (0.85) pending an events-backed
+    # generative family.
     query_intent: { conflict: 0.4, ignorance: 0.2 }
     aggregation_intent: { conflict: 0.9, ignorance: 0.4 }
-    reporting_intent: { conflict: 0.7, ignorance: 0.3 }
+    presentation_intent: { conflict: 0.7, ignorance: 0.3 }
 
   relationship_discovery:
     # Contested relationship genuineness (ADR-0009 pack, lane/relationship-pool):
     # a join the witnesses disagree about (data overlap vs LLM/teach assertion)
-    # corrupts anything built across it — reporting bears the highest loss (the
+    # corrupts anything built across it — presentation bears the highest loss (the
     # join shapes every cross-table number), aggregation close behind (orphan
     # fan-out / dropped rows), a query can caveat. PLACEHOLDER priors
     # (calibrated: false) — shaped after null_semantics/temporal_behavior rows,
@@ -60,7 +61,23 @@ measurements:
     # scoreboard.
     query_intent: { conflict: 0.4, ignorance: 0.2 }
     aggregation_intent: { conflict: 0.7, ignorance: 0.3 }
-    reporting_intent: { conflict: 0.8, ignorance: 0.4 }
+    presentation_intent: { conflict: 0.8, ignorance: 0.4 }
+
+  stored_sign:
+    # Contested storage convention (DAT-875): whether a monetary balance is stored
+    # account-naturally or in one raw ledger direction. A wrong reading flips the
+    # SIGN of a magnitude, so it is not a caveat-able imprecision — presentation bears
+    # the highest loss (a signed balance sheet reconciliation is materially wrong,
+    # the DAT-865/870/875 signature), aggregation close behind (a SUM over a
+    # credit-normal family returns the negation of the intended metric, the DAT-886
+    # accounts_payable/dpo defect), a query can still caveat the served label.
+    # PLACEHOLDER priors (calibrated: false) — shaped after the
+    # temporal_behavior/relationship_discovery rows, NOT tuned to a metric; the eval
+    # rig calibrates them against the outcomes scoreboard. The reliabilities entry
+    # carries the matching provenance flag.
+    query_intent: { conflict: 0.4, ignorance: 0.2 }
+    aggregation_intent: { conflict: 0.8, ignorance: 0.4 }
+    presentation_intent: { conflict: 0.9, ignorance: 0.4 }
 
   # benford is NOT in the loss table: it is an INFORMATIVE SIGNAL, not tunable entropy
   # (DAT-442). Leading-digit law is a forensic/compliance statistic, not an ERP data-
@@ -87,7 +104,7 @@ measurements:
 
   # slice_conditional_null is NOT in the loss table (DEMOTED 2026-06-22, DAT-540 P5 /
   # ADR-0013 eval gate) → informative DirectSignal, benford/dimensional_entropy lane.
-  # It WAS on the loss path (query 0.4 / agg 0.7 / reporting 0.6), so its bands had to
+  # It WAS on the loss path (query 0.4 / agg 0.7 / presentation 0.6), so its bands had to
   # predict WRONG ANSWERS — but the eval band-impact ablation (dataraum-eval
   # scripts/probes/dat540, the {score}-detector analogue of the structural ablation)
   # falsifies that: (1) its band move on a CLEAN column is a FALSE POSITIVE on benign
@@ -110,11 +127,11 @@ measurements:
   # end-state) — severity per intent now lives here, not in noisy-OR edges.
   null_ratio:
     # Raw missing fraction. Worst for aggregation (missing rows corrupt sums) and
-    # reporting; a query can caveat. (Old: query 0.5 direct; aggregation/reporting
+    # presentation; a query can caveat. (Old: query 0.5 direct; aggregation/presentation
     # via aggregation_safety.) Placeholder priors (DAT-450).
     query_intent: { score: 0.5 }
     aggregation_intent: { score: 0.7 }
-    reporting_intent: { score: 0.5 }
+    presentation_intent: { score: 0.5 }
   # outlier_rate CUT (DAT-442): absolute single-column IQR/z-score can't separate an
   # injected outlier burst from clean financial heavy tails (log-IQR absorbs the burst,
   # linear IQR flags 25%+ legitimate long-tail values) — same wall as temporal_drift /
@@ -122,7 +139,7 @@ measurements:
   # entry are gone. See dataraum-eval test_outlier_rate_recorded.py.
   derived_value:
     # A within-table formula no longer holds (e.g. net ≠ debit − credit). Worst for
-    # aggregation (you'd sum a broken derivation) and reporting. Was formula_match →
+    # aggregation (you'd sum a broken derivation) and presentation. Was formula_match →
     # aggregation_intent 0.7 in the network.
     #
     # formula_conflict / formula_ignorance (ADR-0009, derived-value second witness):
@@ -131,12 +148,12 @@ measurements:
     # (obj.score); the pooled C/U ride in evidence under these names because a
     # weight named "conflict" would alias to obj.score (loss.py primary-signal
     # rule). A grounded divergence (name says net+tax, data says otherwise) is
-    # worst for aggregation/reporting, mild for a caveatable query. PLACEHOLDER
+    # worst for aggregation/presentation, mild for a caveatable query. PLACEHOLDER
     # priors, calibrated: false — eval rig has not run for this measurement;
     # NOT tuned to pass any metric.
     query_intent: { formula_conflict: 0.3, formula_ignorance: 0.1 }
     aggregation_intent: { score: 0.7, formula_conflict: 0.6, formula_ignorance: 0.2 }
-    reporting_intent: { score: 0.6, formula_conflict: 0.5, formula_ignorance: 0.2 }
+    presentation_intent: { score: 0.6, formula_conflict: 0.5, formula_ignorance: 0.2 }
 
   # --- Relocated from network.yaml (DAT-442): this loss table is now the WHOLE rollup.
   # The noisy-OR DAG + intent-word nodes are deleted; each measurement maps DIRECTLY to
@@ -145,39 +162,39 @@ measurements:
   # them); relationship_entropy's 0.75 in particular was tuned to the old sqrt-boosted
   # fixture and is a known calibration question. ---
   type_fidelity:
-    # Type-cast failures break joins/filters (query) more than sums; some reporting risk.
+    # Type-cast failures break joins/filters (query) more than sums; some presentation risk.
     query_intent: { score: 0.7 }
-    reporting_intent: { score: 0.4 }
+    presentation_intent: { score: 0.4 }
   relationship_entropy:
-    # Orphan joins corrupt reports the most. (network: relationship_quality→reporting 0.75.)
-    reporting_intent: { score: 0.75 }
+    # Orphan joins corrupt what's presented the most. (network: relationship_quality→presentation 0.75.)
+    presentation_intent: { score: 0.75 }
   temporal_entropy:
-    # A broken time role breaks time filtering (query), time-bucketed aggregations, reports.
+    # A broken time role breaks time filtering (query), time-bucketed aggregations, and presentation.
     query_intent: { score: 0.5 }
     aggregation_intent: { score: 0.4 }
-    reporting_intent: { score: 0.4 }
+    presentation_intent: { score: 0.4 }
   unit_entropy:
     # Value-carried unit (DAT-647 split): a low-confidence / ambiguous unit token in
     # the VALUES (typing grain, detected_unit) is worst for aggregation (summing mixed
-    # units) + reports. Absence of a value-token is NOT scored here (→ 0); the
+    # units) + presentation. Absence of a value-token is NOT scored here (→ 0); the
     # "is the unit determinable at all" question is unit_source's, below.
     aggregation_intent: { score: 0.8 }
-    reporting_intent: { score: 0.6 }
+    presentation_intent: { score: 0.6 }
 
   unit_source:
     # Semantic-grain unit source (DAT-647 split): a MEASURE whose unit cannot be
     # determined from the catalogue (no dimension column like `currency`, not
-    # dimensionless) is unsafe to aggregate (you'd sum unknown units) + report. This
+    # dimensionless) is unsafe to aggregate (you'd sum unknown units) + present. This
     # is the aggregation-safety block; it is 0 once the unit is resolved. Teach:
     # unit_from_concept / rebind (teach-as-witness), never a deterministic override.
     aggregation_intent: { score: 0.8 }
-    reporting_intent: { score: 0.6 }
+    presentation_intent: { score: 0.6 }
   business_meaning:
-    # Garbage column names hurt reporting (labels) most; some query ambiguity.
+    # Garbage column names hurt presentation (labels) most; some query ambiguity.
     query_intent: { score: 0.3 }
-    reporting_intent: { score: 0.7 }
+    presentation_intent: { score: 0.7 }
   cross_table_consistency:
-    # Cross-table reconciliation breaks: worst for aggregation + reporting.
+    # Cross-table reconciliation breaks: worst for aggregation + presentation.
     # "score" here is the COLUMN fan-out's pooled evidence_mass (DAT-865b,
     # ADR-0009 witness pool over entropy/reliabilities.yaml's
     # cross_table_consistency priors), not the raw per-check score: a lone
@@ -187,7 +204,7 @@ measurements:
     # No weight change needed — the discount lives entirely in the pooled
     # score these weights read.
     aggregation_intent: { score: 0.8 }
-    reporting_intent: { score: 0.7 }
+    presentation_intent: { score: 0.7 }
   # dimensional_entropy is NOT in the loss table (DEMOTED 2026-06-16): an INFORMATIVE
   # SIGNAL, not tunable entropy. Its NMI is anti-predictive on the loss path — a Tier-1
   # eval falsification (eval scripts/probes/dimensional-entropy) showed the band runs the
@@ -198,9 +215,9 @@ measurements:
   # compute as a DirectSignal (context), but no longer drive intent readiness. Same lane as
   # benford / outliers / drift / variance.
   dimension_coverage:
-    # Fact-table dimension gaps affect query slicing + reporting completeness. (deferred)
+    # Fact-table dimension gaps affect query slicing + presentation completeness. (deferred)
     query_intent: { score: 0.5 }
-    reporting_intent: { score: 0.6 }
+    presentation_intent: { score: 0.6 }
   join_path_determinism:
     # Ambiguous join paths break query correctness. (deferred — recall fixture pending)
     query_intent: { score: 0.8 }

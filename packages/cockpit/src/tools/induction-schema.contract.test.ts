@@ -250,13 +250,16 @@ function audit(schema: z.ZodType): Audit {
 // minimum/maximum, then the compiled grammar being too large. Statically
 // checkable, so checked statically (DAT-807).
 //
-// The union count is the expected number of union-typed properties. Every one of
-// these is now ZERO: with no optionals left, the only unions that remain are the
-// deliberate ones — the metric DAG's step variants and the validation parameter
-// kinds, which are genuinely either/or and carry their own `const` discriminator.
+// The union count is the expected number of union-typed properties. With no
+// optionals left, the ONE union still spent is the metric DAG's step variants —
+// genuinely either/or, carrying their own `const` discriminator. Validation
+// induction used to spend a second on `parameters`' number/string_list kinds;
+// DAT-880's close-out retyped that field set to the engine's typed
+// `tolerance`/`guidance` (validation-induction.ts), so `InducedValidations` now
+// spends none and the grammar it compiles to is strictly smaller.
 describe.each([
 	["InducedMetrics", InducedMetrics, 1],
-	["InducedValidations", InducedValidations, 1],
+	["InducedValidations", InducedValidations, 0],
 	["InducedFrame", InducedFrame, 0],
 	["InducedCycles", InducedCycles, 0],
 	["AuthoredChartSchema", AuthoredChartSchema, 0],

@@ -6,6 +6,19 @@
 // lives here, once, render-oriented (flattened, tolerant) rather than the strict
 // teach-input `GraphStepSchema` (which is the AGENT's contract, not a render view).
 
+/** A step's declared post-execution check (the engine's `GraphStep.validations`
+ *  / the YAML's `validation:` block — THE KEY IS SINGULAR, graphs/loader.py
+ *  reads `data.get("validation")`). Enforced by `graphs/verifier.py` against
+ *  the executed value — execution-pass is not validation. Mirrors
+ *  `tools/operating-model-graph.ts`'s `StepValidation` (the two DAG-narrowing
+ *  paths stay independent per this module's header — a render view, not the
+ *  agent's strict `GraphStepSchema`). */
+export interface StepValidation {
+	condition: string;
+	severity: string | null;
+	message: string | null;
+}
+
 /** One DAG step, narrowed for rendering: the salient fields a human reads. */
 export interface DagStep {
 	id: string;
@@ -23,6 +36,9 @@ export interface DagStep {
 	dependsOn: string[];
 	/** True on the single step whose result IS the metric's output. */
 	outputStep: boolean;
+	/** Declared post-execution checks on this step's value (DAT-616/840) —
+	 *  usually only present on the output step. Empty when none declared. */
+	validation: StepValidation[];
 }
 
 /** A metric's output node, narrowed for rendering. */
@@ -58,6 +74,26 @@ function strArray(v: unknown): string[] {
 		: [];
 }
 
+/** Narrow a step's `validation` array (untrusted — rule 11). Skips entries
+ *  missing `condition` (the one required field); a non-array/absent key
+ *  yields []. */
+function narrowValidation(v: unknown): StepValidation[] {
+	if (!Array.isArray(v)) return [];
+	const out: StepValidation[] = [];
+	for (const item of v) {
+		if (!item || typeof item !== "object") continue;
+		const rec = item as Record<string, unknown>;
+		const condition = str(rec.condition);
+		if (!condition) continue;
+		out.push({
+			condition,
+			severity: str(rec.severity),
+			message: str(rec.message),
+		});
+	}
+	return out;
+}
+
 function narrowOutput(output: unknown): MetricOutputView | null {
 	if (!output || typeof output !== "object") return null;
 	const o = output as Record<string, unknown>;
@@ -85,6 +121,7 @@ function narrowSteps(dependencies: unknown): DagStep[] {
 			expression: str(s.expression),
 			dependsOn: strArray(s.depends_on),
 			outputStep: s.output_step === true,
+			validation: narrowValidation(s.validation),
 		});
 	}
 	// Deterministic render order: dependency level ascending (leaves first,

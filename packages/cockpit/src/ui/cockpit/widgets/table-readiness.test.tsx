@@ -52,12 +52,12 @@ const analyzed: LookTableResult = {
 			coverage: "measured",
 			band_stage: "session_detect",
 			worst_intent_risk: 0.42,
-			// The persisted intent keys are the engine's network NODE names
-			// (`*_intent`), not the bare words — the widget matches on these.
+			// The persisted intent keys are the loss table's KEYS (`*_intent`),
+			// not the bare words — the widget matches on these.
 			intents: [
 				{ intent: "query_intent", band: "ready", risk: 0.1 },
 				{ intent: "aggregation_intent", band: "investigate", risk: 0.42 },
-				{ intent: "reporting_intent", band: "blocked", risk: 0.71 },
+				{ intent: "presentation_intent", band: "blocked", risk: 0.71 },
 			],
 			top_drivers: [
 				{ label: "Unit Documentation", state: "high", impact_delta: 0.3 },
@@ -95,8 +95,8 @@ describe("TableReadinessWidget (DAT-350)", () => {
 		expect(screen.getByText("Unit Documentation")).toBeTruthy();
 		// Per-intent bands land in the right cells — this catches the intent-key
 		// mismatch (wrong keys would render every per-intent cell as a dash). The
-		// `amount` row is query=ready, aggregation=investigate, reporting=blocked,
-		// overall=investigate → "Blocked" appears once (reporting), "Ready" once.
+		// `amount` row is query=ready, aggregation=investigate, presentation=blocked,
+		// overall=investigate → "Blocked" appears once (presentation), "Ready" once.
 		// (Title-case: the shared BandBadge humanizes bands — DAT-451.)
 		const amountRow = within(screen.getByTestId("readiness-row-amount"));
 		expect(amountRow.getAllByText("Blocked")).toHaveLength(1);
@@ -138,7 +138,7 @@ describe("TableReadinessWidget (DAT-350)", () => {
 				worst_intent_risk: 0.42,
 				intents: [
 					{ intent: "query_intent", band: "ready", risk: 0.1 },
-					{ intent: "reporting_intent", band: "investigate", risk: 0.42 },
+					{ intent: "presentation_intent", band: "investigate", risk: 0.42 },
 				],
 				top_drivers: [
 					{ label: "Dimension Coverage", state: "high", impact_delta: 0.3 },
@@ -153,10 +153,19 @@ describe("TableReadinessWidget (DAT-350)", () => {
 		).toBeTruthy();
 		expect(overall.getByText("Dimension Coverage")).toBeTruthy();
 		// Overall band + the populated per-intent badges (query=ready,
-		// reporting=investigate) — "Investigate" twice (overall + reporting).
+		// presentation=investigate) — "Investigate" twice (overall + presentation).
 		// (Title-case via the shared BandBadge — DAT-451.)
 		expect(overall.getAllByText("Investigate")).toHaveLength(2);
 		expect(overall.getAllByText("Ready")).toHaveLength(1);
+		// Pin INTENT_LABEL's humanized text directly (DAT-883 rename): the
+		// TableBandSummary renders every INTENTS entry's label regardless of which
+		// intents carry data, so "Presentation" is always present here — a label
+		// map reverted to the old "Reporting" (or any other drift) would fail this,
+		// not just the raw `presentation_intent` key comparisons elsewhere in this
+		// file (which never render human text).
+		expect(overall.getByText("Query")).toBeTruthy();
+		expect(overall.getByText("Aggregation")).toBeTruthy();
+		expect(overall.getByText("Presentation")).toBeTruthy();
 	});
 
 	it("omits the whole-table summary for a plain add_source view (no session)", () => {

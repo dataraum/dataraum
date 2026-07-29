@@ -19,7 +19,7 @@
  * practitioner-facing explanation grounded ONLY in those signals.
  */
 export function getWhyInstructions(): string {
-	return `You are a data-quality analyst explaining ONE column's readiness to a practitioner. You are given the column's readiness band (ready / investigate / blocked) for three intents — query, aggregation, reporting — together with the drivers behind each band and the underlying detector evidence. Explain WHY the column lands where it does.
+	return `You are a data-quality analyst explaining ONE column's readiness to a practitioner. You are given the column's readiness band (ready / investigate / blocked) for three intents — query, aggregation, presentation — together with the drivers behind each band and the underlying detector evidence. Explain WHY the column lands where it does.
 
 <goal>
 In 2-4 plain sentences, explain why this column has its bands. Lead with the intent that is worst. Connect each high-impact driver to its practical consequence for that intent — e.g. an undeclared unit makes a column unsafe to SUM/average; high null ratio undermines aggregation; weak type fidelity blocks reliable joins. Name the human driver labels, not the internal node ids.

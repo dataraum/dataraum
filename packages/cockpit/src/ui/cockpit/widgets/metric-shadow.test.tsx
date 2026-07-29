@@ -47,6 +47,7 @@ const EBITDA_DAG = {
 			expression: null,
 			dependsOn: [],
 			outputStep: false,
+			validation: [],
 		},
 		{
 			id: "ebitda",
@@ -58,6 +59,13 @@ const EBITDA_DAG = {
 			expression: "operating_income + depreciation",
 			dependsOn: ["operating_income", "depreciation"],
 			outputStep: true,
+			validation: [
+				{
+					condition: "value > 0",
+					severity: "warning",
+					message: "EBITDA should be positive",
+				},
+			],
 		},
 	],
 };
@@ -111,5 +119,17 @@ describe("MetricShadowWidget", () => {
 		expect(revenue.textContent).toContain("sum");
 		const ebitda = screen.getByTestId("metric-dag-step-ebitda");
 		expect(ebitda.textContent).toContain("operating_income + depreciation");
+	});
+
+	it("shows the output step's declared check (DAT-840) — the reviewer can SEE it, not just accept it blind", () => {
+		h.queryResult = { data: EBITDA_DAG, error: undefined, isLoading: false };
+		renderWidget();
+		const ebitda = screen.getByTestId("metric-dag-step-ebitda");
+		expect(ebitda.textContent).toContain("value > 0");
+		// A step with no declared checks (revenue) shows no check badge.
+		const revenue = screen.getByTestId("metric-dag-step-revenue");
+		expect(
+			revenue.querySelector('[data-testid="step-check-badges"]'),
+		).toBeNull();
 	});
 });

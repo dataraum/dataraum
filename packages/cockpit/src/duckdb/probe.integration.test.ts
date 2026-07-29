@@ -17,37 +17,9 @@ import { join } from "node:path";
 import { DuckDBInstance } from "@duckdb/node-api";
 import { afterAll, beforeAll, describe, expect, it, vi } from "vitest";
 
-const REQUIRED_DEFAULTS: Record<string, string> = {
-	COCKPIT_DATABASE_URL:
-		process.env.COCKPIT_DATABASE_URL ??
-		"postgresql://dataraum:dataraum@127.0.0.1:5432/cockpit_db",
-	METADATA_DATABASE_URL:
-		process.env.METADATA_DATABASE_URL ??
-		"postgresql://dataraum:dataraum@127.0.0.1:5432/dataraum",
-	// Config-parse placeholder only — these suites never touch the metadata
-	// write surface (DAT-816 role split).
-	METADATA_WRITER_DATABASE_URL:
-		process.env.METADATA_WRITER_DATABASE_URL ??
-		"postgresql://dataraum:dataraum@127.0.0.1:5432/dataraum",
-	DATARAUM_WORKSPACE_ID:
-		process.env.DATARAUM_WORKSPACE_ID ?? "00000000-0000-0000-0000-000000000001",
-	DATARAUM_CONFIG_PATH:
-		process.env.DATARAUM_CONFIG_PATH ?? "/opt/dataraum/config",
-	DATARAUM_LAKE_PATH:
-		process.env.DATARAUM_LAKE_PATH ?? "s3://dataraum-lake/lake",
-	DUCKLAKE_CATALOG_URL:
-		process.env.DUCKLAKE_CATALOG_URL ??
-		"postgresql://dataraum:dataraum@127.0.0.1:5432/lake_catalog",
-	ANTHROPIC_API_KEY: process.env.ANTHROPIC_API_KEY ?? "sk-ant-test-placeholder",
-	S3_ENDPOINT: process.env.S3_ENDPOINT ?? "127.0.0.1:8333",
-	S3_ACCESS_KEY_ID: process.env.S3_ACCESS_KEY_ID ?? "dataraum",
-	S3_SECRET_ACCESS_KEY:
-		process.env.S3_SECRET_ACCESS_KEY ?? "dataraum-s3-secret",
-	S3_BUCKET: process.env.S3_BUCKET ?? "dataraum-lake",
-};
-for (const [k, v] of Object.entries(REQUIRED_DEFAULTS)) {
-	if (!process.env[k]) process.env[k] = v;
-}
+import { applyIntegrationEnv } from "#/test/integration-env";
+
+applyIntegrationEnv();
 
 // biome-ignore lint/suspicious/noExplicitAny: dynamic-imported module shape
 let probe: any;

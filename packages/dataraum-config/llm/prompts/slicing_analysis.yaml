@@ -1,13 +1,18 @@
 # Slicing Analysis Prompt
 #
-# Ranks the deterministic dimension inventory (with statistics and semantic
-# annotations merged into each column object) by analytical interest. The
-# columns shown ARE the persisted slice catalog — the ranking is enrichment
-# (curation order), never existence (DAT-725). Uses tool-based output.
+# Judges which of the deterministic dimension inventory's columns are genuine
+# BUSINESS breakdown axes. The columns shown ARE the persisted slice catalog —
+# the judgment is enrichment, never existence (DAT-725). Uses tool-based output.
+#
+# DAT-879: this prompt no longer asks for a rank. Cardinality and distribution
+# balance are now MEASURED per axis (slicing/relevance.py) and used for
+# ordering, so asking the model to weigh them was asking it to re-derive by
+# eye a number the pipeline computes exactly — and an ordinal it emitted could
+# not be compared across tables or against a numeric axis anyway.
 
 name: slicing_analysis
-version: "4.0.0"
-description: Rank the cataloged slicing dimensions by analytical interest
+version: "5.0.0"
+description: Judge which cataloged dimensions are business breakdown axes
 
 # Temperature (0.0 = deterministic, 1.0 = creative)
 temperature: 0.0
@@ -16,8 +21,9 @@ temperature: 0.0
 system_prompt: |
   <role>
   You are a data analyst specializing in data segmentation and slicing strategies.
-  Your task is to RANK an already-decided list of slicing dimensions by how
-  analytically interesting they are.
+  Your task is to judge which of an already-decided list of columns are genuine
+  BUSINESS breakdown axes — the dimensions a reader would actually ask to see a
+  number broken down by.
   </role>
 
   <context>
@@ -26,60 +32,75 @@ system_prompt: |
   grain-safe and eligible by construction (constants, near-unique keys,
   majority-NULL columns, measures, and timestamps are excluded before you see the
   list). You do NOT decide which columns become dimensions; that decision is
-  already made. You decide which of them surface FIRST when context is limited.
+  already made, and a column you leave out is NOT removed — it stays in the
+  catalog, recorded as un-judged.
+
+  You are also not being asked to rank. Each axis's cardinality and how evenly it
+  splits the data are MEASURED directly from the profile and used to order the
+  catalog, so you do not need to weigh them or estimate them by eye. Judge the
+  one thing the numbers cannot: whether a column carries business meaning as a
+  breakdown.
   </context>
 
   <goal>
-  Rank up to {max_recommendations} columns (total, across all tables) as the most
-  interesting slicing dimensions — the ones an analyst should reach for first when
-  dividing this dataset into meaningful subsets. Priority 1 = most interesting.
-  Columns you leave un-ranked stay in the catalog at a floor priority; leaving a
-  column out of your ranking never removes it.
+  Return up to {max_recommendations} columns (total, across all tables) that are
+  genuine business breakdown axes, each with an interest judgment:
+
+  - "primary": a first-choice breakdown of a headline number for this dataset —
+    the axis a reader reaches for before any other.
+  - "supporting": a real business axis, but one reached for after the primary
+    ones.
+
+  These labels are ABSOLUTE, not a ranking. Judge each column on its own merits:
+  do not spread your judgments to fill a distribution, do not limit yourself to
+  one "primary" per table, and do not let a column's position in the list matter.
+  If four columns are all genuinely first-choice axes, label all four primary.
+  If none is, label none.
   </goal>
 
-  <ranking_criteria>
-  Rank a dimension higher when it has:
+  <judgment_criteria>
+  Judge a column a business breakdown axis when it has:
 
-  1. Moderate Cardinality: Prefer dimensions with 3-20 distinct values; higher cardinality is
-     acceptable when the column is a genuine business axis (e.g. a product line or region with
-     many members).
-  2. Business Meaning: Represents a meaningful business dimension (e.g. region, product line,
+  1. Business Meaning: Represents a meaningful business dimension (e.g. region, product line,
      customer segment) rather than an internal ID or technical code.
-  3. Balanced Distribution: Values with reasonable row counts (avoid 99% in one value).
-  4. Independence: Not redundant with a higher-ranked dimension of the same table.
-     If two columns in the same table encode the same split (e.g. country_code + country_name),
-     rank one and leave the other un-ranked.
+  2. Independence: Not redundant with another dimension of the same table you already
+     returned. If two columns in the same table encode the same split (e.g. country_code +
+     country_name), return one and leave the other out.
      Shared FK dimensions across tables are fine — each table's slices contain different data.
-  5. Analytical Leverage: Partitions the MOST rows or the MOST tables (e.g. a shared
+  3. Analytical Leverage: Partitions the MOST rows or the MOST tables (e.g. a shared
      foreign-key dimension that appears in 3 tables beats a column unique to 1 table).
-  6. Insight Potential: May help explain data quality issues in related columns or give
+  4. Insight Potential: May help explain data quality issues in related columns or give
      additional context about the data and business processes.
-  </ranking_criteria>
 
-  <rank_low_or_skip>
-  Leave OUT of your ranking (they remain cataloged at the floor priority):
+  Do NOT judge on cardinality or on how evenly the values are distributed. Both
+  are measured exactly and applied for you. A dimension with many members or a
+  skewed distribution is not thereby a worse business axis — it just measures
+  lower, which is already accounted for.
+  </judgment_criteria>
+
+  <leave_out>
+  Leave OUT (they remain cataloged, recorded as un-judged):
   - High-cardinality identifiers (IDs, names, emails, hashes) even if VARCHAR
-  - Derived or redundant encodings of a dimension you already ranked (e.g. country_code + country_name)
-  - Boolean flags with extreme skew (>95% one value)
+  - Derived or redundant encodings of a dimension you already returned (e.g. country_code + country_name)
   - Free-text or description fields
-  </rank_low_or_skip>
+  </leave_out>
 
   <enriched_columns>
   IMPORTANT: Some tables have enriched views with additional dimension columns from joined tables.
   These columns are marked with "is_enriched_dimension": true in the columns list.
 
   Enriched columns (from dimension tables like regions, categories, customer types) are often
-  EXCELLENT high-priority dimensions because they:
+  EXCELLENT breakdown axes because they:
   - Add business context from related master data
   - Enable geographic, categorical, or hierarchical analysis
   - Are specifically designed for analytical grouping
 
   They are flagged "is_enriched_dimension": true in each table's columns list. When a table has
-  an enriched_view_name, prioritize considering its enriched columns in your ranking.
+  an enriched_view_name, be sure to consider its enriched columns.
   </enriched_columns>
 
   <time_axis>
-  Besides ranking dimensions, name each table's TIME AXIS via time_columns: the column
+  Besides judging dimensions, name each table's TIME AXIS via time_columns: the column
   recording WHEN each row's event occurred (booking/transaction/observation date) —
   NOT attribute dates like due_date or valid_until, and not record metadata.
 
@@ -96,11 +117,11 @@ system_prompt: |
   </time_axis>
 
   <output_rules>
-  - Order recommendations by global priority (1 = most interesting across the entire dataset)
-  - For each ranked dimension, note which other tables it could join/filter
-  - Rank FEWER, higher-impact dimensions over many marginal ones — un-ranked
-    columns are not lost, they surface later
-  - Return empty recommendations if no dimension stands out
+  - Return order carries NO meaning — the catalog is ordered by measured relevance
+  - For each dimension you return, note which other tables it could join/filter
+  - Return FEWER, genuinely-business dimensions over many marginal ones — columns
+    you leave out are not lost, they stay cataloged as un-judged
+  - Return empty recommendations if no dimension is a business breakdown axis
   </output_rules>
 
   Emit your response in the required output structure; emitting it ends the turn.
@@ -108,14 +129,15 @@ system_prompt: |
 # User prompt - provides data context
 user_prompt: |
   <task>
-  Rank the most interesting slicing dimensions from the catalog below,
-  across all {num_tables} table(s).
+  Judge which of the cataloged dimensions below are genuine business breakdown
+  axes, across all {num_tables} table(s).
   </task>
 
   <schema_and_statistics>
   Each table includes column names, types, distinct value counts, top values,
   null rates, and semantic annotations where available. Every listed column is
-  already a cataloged dimension — you rank, you do not select.
+  already a cataloged dimension — you judge its business meaning, you do not
+  select which columns are cataloged.
 
   Columns with "is_enriched_dimension": true come from joined dimension tables
   (format: "fk_column__dimension_column"). Treat them on equal footing with
@@ -128,7 +150,7 @@ user_prompt: |
   axes (empty when none were identified; then check enriched columns flagged
   "is_dimension_time_column").
 
-  Emit the required output structure with your ranking and the
+  Emit the required output structure with your interest judgments and the
   time_columns judgments.
 
 # Input variable definitions
@@ -146,6 +168,6 @@ inputs:
     required: true
 
   max_recommendations:
-    description: Maximum number of ranked dimensions across all tables
+    description: Maximum number of judged dimensions across all tables
     required: false
     default: "6"

@@ -134,7 +134,9 @@ class TableContext:
     grain_columns: list[str] = field(default_factory=list)
     # DAT-565: all declared time axes, served from the graph's temporal_coverage
     # edge (never the raw TableEntity JSON — that loses the enriched-layer anchors
-    # and carries no observed window).
+    # and carries no observed window). Like every other graph-served section, an
+    # UNREACHABLE graph serves none: empty here, and the document renders no time
+    # axis rather than a windowless one.
     time_axes: list[TimeAxisContext] = field(default_factory=list)
     # DAT-565: recurring identities (would-be FKs) — [{"column", "note"}, ...].
     identity_columns: list[dict[str, Any]] = field(default_factory=list)

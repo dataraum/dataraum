@@ -803,7 +803,6 @@ def _judge_alias_identity(
     *,
     table_name: str,
     pairs: list[tuple[str, str]],
-    scan: _ViewScan,
     frame: pl.DataFrame,
     meanings: dict[str, str],
 ) -> dict[tuple[str, str], AliasIdentityVerdict]:
@@ -816,12 +815,18 @@ def _judge_alias_identity(
     candidates: list[dict[str, object]] = []
     for i, (a, b) in enumerate(pairs):
         pair_meanings = {c: meanings[c] for c in (a, b) if c in meanings}
+        # No cardinality is served (DAT-671): the two sides' distinct counts are
+        # EQUAL by construction — that is what a bijection means, and the prompt
+        # states the bijection as the premise it must not score ("NOT that the 1:1
+        # holds; it always does"). Shipping the number restates the excluded
+        # premise as evidence. Names, meanings and paired samples are the whole
+        # evidence base for the identity question.
         candidates.append(
             {
                 "ref": str(i),
                 "table": table_name,
-                "a": {"name": a, "distinct": scan.d2[a], "samples": _col_samples(frame, a)},
-                "b": {"name": b, "distinct": scan.d2[b], "samples": _col_samples(frame, b)},
+                "a": {"name": a, "samples": _col_samples(frame, a)},
+                "b": {"name": b, "samples": _col_samples(frame, b)},
                 "meanings": pair_meanings,
             }
         )
@@ -1135,7 +1140,7 @@ def _view_structures(
     merge_conf: dict[frozenset[str], float] = {}
     id_verdicts = (
         _judge_alias_identity(
-            judge, table_name=table_name, pairs=to_judge, scan=scan, frame=frame, meanings=meanings
+            judge, table_name=table_name, pairs=to_judge, frame=frame, meanings=meanings
         )
         if to_judge and judge is not None
         else {}

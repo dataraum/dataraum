@@ -74,7 +74,10 @@ class EnrichmentAgent(LLMFeature):
         Args:
             session: Database session
             context_data: Pre-loaded context containing:
-                - tables: Table metadata with entity classifications
+                - tables: Table metadata with entity classifications (SERVED —
+                  names only; the model addresses everything by name)
+                - table_identity: table_name → {table_id, duckdb_path}; the
+                  resolution map for the answer, never served to the model
                 - annotations: Semantic annotations per column
                 - confirmed_relationships: LLM-confirmed relationships
                 - existing_views: Already-created enriched views
@@ -214,21 +217,16 @@ class EnrichmentAgent(LLMFeature):
         """
         recommendations: list[EnrichmentRecommendation] = []
 
-        # Build lookup maps
-        table_map = {t["table_name"]: t for t in context_data.get("tables", [])}
-
-        # Build column lookup: (table_name, column_name) -> column_info
-        column_map: dict[tuple[str, str], dict[str, Any]] = {}
-        for table in context_data.get("tables", []):
-            for col in table.get("columns", []):
-                key = (table["table_name"], col["column_name"])
-                column_map[key] = col
+        # Name → physical identity (DAT-671). The model was served names only, so
+        # this map — NOT the served ``tables`` list — is where a returned name
+        # becomes a table_id + duckdb_path. A name the map does not know is a
+        # fabricated table and is skipped loud below.
+        identity: dict[str, dict[str, str]] = context_data.get("table_identity", {})
 
         # Convert recommendations from Pydantic output
         for dataset in output.main_datasets:
             fact_table_name = dataset.table_name
-            fact_table_info = table_map.get(fact_table_name, {})
-            fact_table_id = fact_table_info.get("table_id", "")
+            fact_table_id = identity.get(fact_table_name, {}).get("table_id", "")
 
             if not fact_table_id:
                 logger.warning(
@@ -251,9 +249,9 @@ class EnrichmentAgent(LLMFeature):
 
             for enrichment in dataset.recommended_enrichments:
                 dim_table_name = enrichment.related_table
-                dim_table_info = table_map.get(dim_table_name, {})
-                dim_table_id = dim_table_info.get("table_id", "")
-                dim_duckdb_path = dim_table_info.get("duckdb_path", "")
+                dim_identity = identity.get(dim_table_name, {})
+                dim_table_id = dim_identity.get("table_id", "")
+                dim_duckdb_path = dim_identity.get("duckdb_path", "")
 
                 if not dim_table_id or not dim_duckdb_path:
                     logger.warning(
@@ -301,7 +299,6 @@ class EnrichmentAgent(LLMFeature):
 
         result = EnrichmentAnalysisResult(
             recommendations=recommendations,
-            summary=output.summary,
             model_name=model_name,
         )
 

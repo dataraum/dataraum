@@ -53,11 +53,28 @@ def test_binder_renders_with_declared_inputs() -> None:
             "spec_name": "n",
             "spec_description": "d",
             "check_type": "constraint",
-            "parameters": "None",
             "schema": "<tables></tables>",
         },
     )
     assert system and user
+
+
+def test_binder_is_never_served_the_tolerance(binder: PromptTemplate) -> None:
+    """The pass threshold is the EVALUATOR's, not the SQL author's (DAT-671).
+
+    ``tolerance`` decides a verdict from the rows this SQL returns
+    (``deviation <= tolerance``, ADR-0017) — it is applied AFTER execution, never
+    inside the query. The binder's output contract already forbids the boolean
+    verdict a served threshold invites, so the old ``parameters`` slot (which
+    carried the tolerance and nothing else) could only tempt the author to break
+    it. Gone from both sides: no slot in the prompt, no key in the context.
+    """
+    assert "parameters" not in (binder.inputs or {})
+    body = (binder.system_prompt or "") + (binder.user_prompt or "")
+    assert "{parameters}" not in body
+    # The RULE stays and is now unopposed: the prompt names the tolerance only to
+    # forbid applying it, and no longer hands over the number to apply.
+    assert "do NOT apply the tolerance or return a" in _flat(body)
 
 
 def test_induction_existence_loophole_is_closed(induction: PromptTemplate) -> None:

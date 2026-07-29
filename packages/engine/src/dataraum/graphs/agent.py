@@ -1728,30 +1728,32 @@ class GraphAgent(LLMFeature):
             return None
 
     def _graph_to_yaml(self, graph: TransformationGraph) -> str:
-        """Serialize graph to YAML for LLM context."""
-        # Convert graph to dict for YAML serialization
+        """Serialize the ONE leaf being grounded — never the metric around it.
+
+        This serializer has a single caller (``_generate_sql``), which has already
+        failed loud unless ``graph`` is a single-extract mini-graph. That mini-graph
+        is ``dataclasses.replace(metric_graph, steps={one_leaf})``
+        (``node_warming.build_mini_graph``), so every graph-level field it still
+        carries belongs to the PARENT METRIC, not to the leaf. Serving them was the
+        DAT-671 finding: grounding ``accounts_payable`` arrived under
+        ``name: Cash Conversion Cycle``, ``unit: days``, a ``days_in_period``
+        parameter and interpretation bands reading "Excellent - collecting before
+        paying suppliers" — a whole metric's identity attached to one SUM. The
+        concept's OWN definition is served at the right level, once, by
+        ``<dataset_context>``'s Business Concepts block.
+
+        What survives is what the prompt's own block description names: the step's
+        type, source (standard_field / statement / declared predicate), aggregation
+        and declared validations. ``graph_id`` rides along as the snippet's
+        provenance key (``graph:{graph_id}``) — which metric warmed this node, a
+        fact about the node rather than a claim about the leaf.
+
+        ``expression`` and ``depends_on`` are not serialized either: an EXTRACT leaf
+        has neither (formula composition is deterministic and never reaches here),
+        so both rendered as ``null`` / ``[]`` on every prompt ever dumped.
+        """
         graph_dict: dict[str, Any] = {
             "graph_id": graph.graph_id,
-            "version": graph.version,
-            "metadata": {
-                "name": graph.metadata.name,
-                "description": graph.metadata.description,
-                "category": graph.metadata.category,
-            },
-            "output": {
-                "type": graph.output.output_type.value if graph.output else None,
-                "metric_id": graph.output.metric_id if graph.output else None,
-                "unit": graph.output.unit if graph.output else None,
-            },
-            "parameters": [
-                {
-                    "name": p.name,
-                    "type": p.param_type,
-                    "default": p.default,
-                    "description": p.description,
-                }
-                for p in graph.parameters
-            ],
             "dependencies": {
                 step_id: {
                     "type": step.step_type.value,
@@ -1771,9 +1773,7 @@ class GraphAgent(LLMFeature):
                     }
                     if step.source
                     else None,
-                    "expression": step.expression,
                     "aggregation": step.aggregation,
-                    "depends_on": step.depends_on,
                     # Declared post-execution expectations (DAT-792): served to the
                     # authoring LLM so its grounding is consistent with what the
                     # catalogue declares about the value (e.g. `value > 0`). The
@@ -1799,19 +1799,6 @@ class GraphAgent(LLMFeature):
                 for step_id, step in graph.steps.items()
             },
         }
-
-        if graph.interpretation:
-            graph_dict["interpretation"] = {
-                "ranges": [
-                    {
-                        "min": r.min_value,
-                        "max": r.max_value,
-                        "label": r.label,
-                        "description": r.description,
-                    }
-                    for r in graph.interpretation.ranges
-                ]
-            }
 
         return yaml.dump(graph_dict, default_flow_style=False, allow_unicode=True)
 

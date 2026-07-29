@@ -10,9 +10,15 @@
 # with a distinct_values_note stating the split. The rules below tell the model
 # what each of the three states (complete / disclosed prefix / absent) licenses,
 # and where a joined dimension column's values live.
+#
+# v3.4.0 (DAT-671): the `parameters` slot is GONE. It carried one thing — the
+# spec's tolerance — and the tolerance is the EVALUATOR's verdict parameter
+# (`deviation <= tolerance`, ADR-0017), applied to the rows this SQL returns and
+# never inside them. The output contract below already forbids the boolean verdict
+# a served threshold invites, so the slot could only tempt the author to break it.
 
 name: validation_sql
-version: "3.3.0"
+version: "3.4.0"
 description: >
   Generate DuckDB SQL for validation checks (contracted deviation/magnitude output),
   honoring the catalog's table-grain facts: role/grain/temporal semantics are
@@ -284,7 +290,6 @@ user_prompt: |
   <name>{spec_name}</name>
   <description>{spec_description}</description>
   <check_type>{check_type}</check_type>
-  <parameters>{parameters}</parameters>
   {sql_hints}
   {expected_outcome}
   </validation_spec>
@@ -333,10 +338,6 @@ inputs:
 
   check_type:
     description: Type of check (balance, comparison, constraint, aggregate)
-    required: true
-
-  parameters:
-    description: JSON-formatted parameters for the check
     required: true
 
   sql_hints:

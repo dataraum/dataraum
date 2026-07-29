@@ -97,11 +97,8 @@ class BusinessCycleAnalysis(BaseModel):
     high_value_cycles: int = 0
     overall_cycle_health: float = 0.0  # 0-1 score
 
-    # LLM interpretation
-    business_summary: str = ""  # Overall description of the business model
-    detected_processes: list[str] = Field(default_factory=list)
+    # LLM interpretation — the phase's disclosure channel (PhaseResult.warnings)
     data_quality_observations: list[str] = Field(default_factory=list)
-    recommendations: list[str] = Field(default_factory=list)
 
     # Metadata
     llm_model: str | None = None
@@ -257,15 +254,15 @@ class BusinessCycleAnalysisOutput(BaseModel):
     entity_flows: list[EntityFlowEntryOutput] = Field(
         description="Entity flows (one row per entity per cycle, referencing cycle_name); [] if none",
     )
-    business_summary: str = Field(
-        description="Overall interpretation of the business model and its cycles"
-    )
-    detected_processes: list[str] = Field(
-        description="Business processes identified, e.g., 'Order-to-Cash'; [] when none",
-    )
+    # ``data_quality_observations`` is the ONE narrative field with a consumer:
+    # ``business_cycles_phase`` extends ``PhaseResult.warnings`` with it, and
+    # warnings are the phase's disclosure channel. The three that rode beside it
+    # — business_summary / detected_processes / recommendations — were REQUIRED of
+    # the model, never asked for by the prompt, and landed only in
+    # ``PhaseResult.outputs``, which the activity boundary discards (``PhaseOutcome``
+    # threads ``declared`` and nothing else). Deleted in DAT-671: constrained
+    # decoding pays for every required field, and prose nobody reads is the most
+    # expensive kind.
     data_quality_observations: list[str] = Field(
         description="Data quality issues noticed during analysis; [] when none",
-    )
-    recommendations: list[str] = Field(
-        description="Suggestions for improving data completeness or cycle tracking; [] when none",
     )

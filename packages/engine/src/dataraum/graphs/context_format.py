@@ -12,9 +12,23 @@ from __future__ import annotations
 from typing import TYPE_CHECKING, Any
 
 from dataraum.core.logging import get_logger
+from dataraum.graphs.additivity import (
+    AVERAGE,
+    DISTINCT_COUNT,
+    MIN_MAX,
+    RATIO,
+    SNAPSHOT_COUNT,
+    STOCK,
+    AbstainReason,
+    AdditivityStatus,
+    AxisKind,
+    AxisVerdict,
+)
+from dataraum.graphs.additivity_db_models import AXIS_KEY_ALL
 from dataraum.graphs.context_models import (
     _NON_CATEGORICAL_ROLES,
     ColumnContext,
+    ConceptAdditivity,
     ConceptReconciliation,
     GraphExecutionContext,
     GroundingContext,
@@ -351,14 +365,20 @@ def _append_reporting_calendar(lines: list[str], context: GraphExecutionContext)
 
 
 def _append_concepts(lines: list[str], context: GraphExecutionContext) -> None:
-    """Append the concept graph (DAT-734): definitions + edges + groundings.
+    """Append the concept graph (DAT-734): definitions + edges + verdicts + groundings.
 
     The traversal core served as structure. Definition surface (description /
     indicators / excludes — the DAT-616 value-grounding aid, incl. traps like
     ``Cost Recovery Income`` being revenue despite "cost") rides each concept;
-    the graph neighbourhood (part_of / disjoint_with / reconciles_with) and the
-    concept's PRIOR GROUNDINGS (relation + filter + value expression + used
-    columns; failures discriminated with the reason) follow as data lines.
+    the graph neighbourhood (part_of / disjoint_with / reconciles_with), the
+    per-axis ADDITIVITY verdicts of the last promoted run (has_additivity,
+    DAT-857/868 — the gate a composed extract is later judged by, so the author
+    sees it while authoring), and the concept's PRIOR GROUNDINGS (relation +
+    filter + value expression + used columns; failures discriminated with the
+    reason) follow as data lines.
+
+    Both run-observed sections — reconciliation and additivity — sit ahead of
+    the groundings they qualify.
     """
     if not context.concepts:
         return
@@ -374,6 +394,20 @@ def _append_concepts(lines: list[str], context: GraphExecutionContext) -> None:
         "several groundings is measured on several relations, and `reconciles` means those "
         "computations must tie out — each entry states whether the last completed run "
         "actually checked that, and what it observed."
+    )
+    lines.append("")
+    lines.append(
+        "`aggregation` reports how the last promoted run judged this concept's measurement "
+        "under aggregation, per axis: `additive` (the parts sum to the total), "
+        "`semi_additive` (each bucket is meaningful, their SUM is not), "
+        "`non_additive_recompute` (the value must be recomputed per bucket from its "
+        "carriers), or a named abstention. The unnamed axis is the rule for every axis of "
+        "its kind; a named column refines it. The verdict is DERIVED from the grounding's "
+        "own aggregate and the stock/flow classification of the columns it reads — so it "
+        "follows from how the concept is grounded: an AVG, a COUNT(DISTINCT), an inline "
+        "ratio, or a point-in-time balance each remove an axis this concept can afterwards "
+        "no longer be broken down by. A concept with no `aggregation` entry was not judged "
+        "by the last promoted run; only grounded MEASURE concepts are judged."
     )
     lines.append("")
     for concept in context.concepts:
@@ -411,6 +445,9 @@ def _append_concepts(lines: list[str], context: GraphExecutionContext) -> None:
                 else f"reconciles with: {rec.partner}"
             )
             lines.append(f"  - {subject}{tol} — {_reconciliation_state(rec)}")
+        if concept.additivity:
+            lines.append("  - aggregation (last promoted run):")
+            lines.extend(f"    - {line}" for line in _additivity_lines(concept.additivity))
         healthy = [g for g in concept.groundings if not g.failed]
         failed = [g for g in concept.groundings if g.failed]
         if healthy:
@@ -476,6 +513,126 @@ def _reconciliation_state(rec: ConceptReconciliation) -> str:
         f"evaluated: observed delta {rec.observed_delta:g} ({relative:.3g} relative){scope}"
         " — no tolerance is declared, so this is a measurement, not a failure"
     )
+
+
+#: What a non-additive measurement DOES, phrased for the grounding author (the
+#: reader here writes the extract; it is not the drill's refusal text, which is the
+#: cockpit's own wording for a user). Keyed on ``graphs.additivity``'s constants —
+#: that module owns the vocabulary, so a reason it adds later surfaces here as its
+#: RAW token (visible, diagnosable) rather than as a silently dropped clause.
+_ADDITIVITY_REASON: dict[str, str] = {
+    STOCK: "sums a point-in-time balance, so adding period buckets double-counts",
+    SNAPSHOT_COUNT: (
+        "counts over a periodic-snapshot fact, which restates the same population each period"
+    ),
+    RATIO: "combines measures by division, or by a product of measures",
+    AVERAGE: "averages — an average of averages is not the average",
+    DISTINCT_COUNT: "counts distinct values, whose per-slice sets overlap",
+    MIN_MAX: "takes a min/max, which does not sum",
+}
+
+#: Why an axis could not be judged — the typed abstention in words. Same
+#: raw-token fallback, and the same reason for it.
+_ADDITIVITY_ABSTENTION: dict[str, str] = {
+    AbstainReason.UNKNOWN_TEMPORAL.value: (
+        "it aggregates a column with no stock/flow classification"
+    ),
+    AbstainReason.UNKNOWN_AGGREGATE.value: "its aggregate is outside the classifier's doctrine",
+    AbstainReason.UNRESOLVED_GROUNDING.value: "it has no healthy grounding to classify",
+    AbstainReason.RELATION_OUTSIDE_ANALYSIS.value: (
+        "it reads a relation outside the current analysis"
+    ),
+    AbstainReason.MATERIALIZATION_CONFLICT.value: "its stock/flow evidence contradicts itself",
+    AbstainReason.MISSING_EXTRACT.value: (
+        "one of the measures it is built from could not be classified"
+    ),
+    AbstainReason.NO_CATALOGUE_RUN.value: "the workspace had no promoted analysis run",
+    AbstainReason.GRAPH_PARSE_FAILED.value: "its definition could not be parsed",
+}
+
+
+def _additivity_axis_label(axis: ConceptAdditivity) -> str:
+    """Name the axis a verdict governs, class rows in words and refinements by column."""
+    if axis.axis_key != AXIS_KEY_ALL:
+        return f'on "{axis.axis_key}" ({axis.axis_kind})'
+    if axis.axis_kind == AxisKind.TIME.value:
+        return "over time"
+    if axis.axis_kind == AxisKind.CATEGORICAL.value:
+        return "by category"
+    # An axis kind this renderer predates. Name it rather than drop the verdict.
+    return f"over {axis.axis_kind}"
+
+
+def _judgement(axis: ConceptAdditivity) -> tuple[str, str | None, str | None, str | None]:
+    """Everything a verdict SAYS, minus which axis it says it about.
+
+    The one home for "do these two rows carry the same judgement?" — every
+    explanation-bearing field is in it. A partial tuple is the trap: for an
+    ABSTAINED row ``verdict`` and ``reason`` are both ``None`` by the
+    ``AxisAdditivity`` invariant, so any comparison that omits
+    ``abstain_reason`` collapses every abstention onto one value and would
+    report two rows abstaining for DIFFERENT named reasons as identical.
+    """
+    return (axis.status, axis.verdict, axis.reason, axis.abstain_reason)
+
+
+def _additivity_lines(axes: list[ConceptAdditivity]) -> list[str]:
+    """One concept's per-axis verdicts, class rows first, explained once each.
+
+    A concrete axis usually REFINES its class row only by carrying an observed
+    cadence — the resolver writes a per-column time row precisely to state that
+    — so repeating the class row's explanation verbatim underneath it would
+    make the common case mostly duplicated prose. Where a refinement carries
+    the IDENTICAL judgement (:func:`_judgement`) the explanation is therefore
+    written once, on the class row.
+
+    What is never elided is the VERDICT: every line states its own, so a reader
+    resolving most-specific-first (the ``resolveAxisVerdict`` contract, which
+    reads exactly ONE row) still gets the whole answer from the line it lands
+    on. Only the shared prose is inherited, and only upward, to a line the
+    ordering guarantees it has already passed.
+    """
+    class_judgement = {
+        axis.axis_kind: _judgement(axis) for axis in axes if axis.axis_key == AXIS_KEY_ALL
+    }
+    out: list[str] = []
+    for axis in axes:
+        inherits = axis.axis_key != AXIS_KEY_ALL and class_judgement.get(
+            axis.axis_kind
+        ) == _judgement(axis)
+        out.append(_additivity_state(axis, explain=not inherits))
+    return out
+
+
+def _additivity_state(axis: ConceptAdditivity, *, explain: bool = True) -> str:
+    """One (concept × axis) verdict as a line of the served document.
+
+    The distinction the wording holds, mirroring ``_reconciliation_state``: an
+    axis nobody could judge is NOT an axis that fails to sum. An abstention says
+    "not judged" and names why; a classified non-additive verdict names what the
+    measurement does that stops it summing. ``additive`` carries no reason — it
+    reconciles, so there is nothing it fails to do.
+
+    ``explain=False`` drops only the prose clause (see ``_additivity_lines``);
+    the verdict itself always renders.
+    """
+    label = _additivity_axis_label(axis)
+    if axis.status == AdditivityStatus.ABSTAINED.value:
+        if not explain:
+            return f"{label} — not judged"
+        raw = axis.abstain_reason or ""
+        why = _ADDITIVITY_ABSTENTION.get(raw, raw or "no reason was recorded")
+        return f"{label} — not judged: {why}"
+    rendered = f"{label} — {axis.verdict or 'no verdict recorded'}"
+    if explain and axis.verdict != AxisVerdict.ADDITIVE.value and axis.reason:
+        rendered += f": {_ADDITIVITY_REASON.get(axis.reason, axis.reason)}"
+    if axis.bucket_grain:
+        # The cadence the DATA supports — the fact a concrete time row usually
+        # exists to carry. Stated on any verdict that has one: it bounds how
+        # finely the axis can be bucketed at all, independently of whether the
+        # buckets may then be summed.
+        rendered += f"; finest bucket the data supports: {axis.bucket_grain}"
+    return rendered
 
 
 def _format_grounding(g: GroundingContext) -> str:

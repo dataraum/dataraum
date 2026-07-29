@@ -56,7 +56,7 @@ def test_groundings_fold_with_uses_and_where() -> None:
         _row(snippet_id="sn_1", role="measure", column_name="amount", table_id="t1"),
     ]
     out = _assemble_concept_contexts(
-        [("revenue", "measure")], [], {}, [_grounding_row()], uses, {}, _TABLES, {}
+        [("revenue", "measure")], [], {}, [_grounding_row()], uses, {}, _TABLES, {}, []
     )
     assert len(out) == 1
     g = out[0].groundings[0]
@@ -67,7 +67,9 @@ def test_groundings_fold_with_uses_and_where() -> None:
 
 def test_healthy_grounding_without_relation_skipped_loud() -> None:
     rows = [_grounding_row(relation=None, select_expr=None, where_predicates=None)]
-    out = _assemble_concept_contexts([("revenue", "measure")], [], {}, rows, [], {}, _TABLES, {})
+    out = _assemble_concept_contexts(
+        [("revenue", "measure")], [], {}, rows, [], {}, _TABLES, {}, []
+    )
     assert out[0].groundings == []
 
 
@@ -81,7 +83,9 @@ def test_failed_grounding_served_with_failure_keys() -> None:
             failure_reason="boom",
         )
     }
-    out = _assemble_concept_contexts([("revenue", "measure")], [], {}, rows, [], prov, _TABLES, {})
+    out = _assemble_concept_contexts(
+        [("revenue", "measure")], [], {}, rows, [], prov, _TABLES, {}, []
+    )
     g = out[0].groundings[0]
     assert g.failed is True
     assert g.failure_mode == "execution_failed"
@@ -92,7 +96,7 @@ def test_failed_grounding_served_with_failure_keys() -> None:
 def test_uses_with_unresolvable_table_endpoint_dropped_not_crashed() -> None:
     uses = [_row(snippet_id="sn_1", role="measure", column_name="amount", table_id="t_gone")]
     out = _assemble_concept_contexts(
-        [("revenue", "measure")], [], {}, [_grounding_row()], uses, {}, _TABLES, {}
+        [("revenue", "measure")], [], {}, [_grounding_row()], uses, {}, _TABLES, {}, []
     )
     assert out[0].groundings[0].uses == []
 
@@ -113,6 +117,7 @@ def test_concept_edge_buckets_and_ordering() -> None:
         {},
         _TABLES,
         {},
+        [],
     )
     ap = next(c for c in out if c.name == "ap")
     wc = next(c for c in out if c.name == "wc")
@@ -134,7 +139,7 @@ def test_where_predicates_non_list_json_degrades_loud_not_crash() -> None:
     for bad in ("null", '"a string"', "42"):
         rows = [_grounding_row(where_predicates=bad)]
         out = _assemble_concept_contexts(
-            [("revenue", "measure")], [], {}, rows, [], {}, _TABLES, {}
+            [("revenue", "measure")], [], {}, rows, [], {}, _TABLES, {}, []
         )
         g = out[0].groundings[0]
         assert g.where == []
@@ -149,7 +154,7 @@ def test_unresolved_concept_provenance_row_dropped_not_crashed() -> None:
         "sn_orphan": _row(concept="expenses", failed=False, failure_mode=None, failure_reason=None)
     }
     out = _assemble_concept_contexts(
-        [("revenue", "measure")], [], {}, [_grounding_row()], [], prov, _TABLES, {}
+        [("revenue", "measure")], [], {}, [_grounding_row()], [], prov, _TABLES, {}, []
     )
     served = {g.snippet_id for c in out for g in c.groundings}
     assert "sn_orphan" not in served
@@ -162,7 +167,7 @@ def test_concept_order_is_input_order_and_multi_grounding_sorted() -> None:
         _grounding_row(snippet_id="sn_a", statement="trial_balance"),
         _grounding_row(snippet_id="sn_x", statement="cash_flow", failed=True),
     ]
-    out = _assemble_concept_contexts([("revenue", None)], [], {}, rows, [], {}, _TABLES, {})
+    out = _assemble_concept_contexts([("revenue", None)], [], {}, rows, [], {}, _TABLES, {}, [])
     ids = [g.snippet_id for g in out[0].groundings]
     # healthy first (failed sorts last), then (relation, snippet_id)
     assert ids == ["sn_a", "sn_b", "sn_x"]
@@ -182,7 +187,9 @@ def test_evaluated_tie_out_rides_the_assertion() -> None:
             "evaluated_pairs": 1,
         }
     }
-    out = _assemble_concept_contexts([("ap", "measure")], edges, {}, [], [], {}, _TABLES, observed)
+    out = _assemble_concept_contexts(
+        [("ap", "measure")], edges, {}, [], [], {}, _TABLES, observed, []
+    )
 
     (rec,) = out[0].reconciles_with
     assert rec.status == "evaluated"
@@ -194,12 +201,104 @@ def test_evaluated_tie_out_rides_the_assertion() -> None:
 def test_an_unevaluated_assertion_carries_no_observation() -> None:
     """Absent evidence stays absent — never folded into an implied agreement."""
     edges = [_row(from_name="ap", predicate="reconciles_with", tolerance=None, to_name="ap")]
-    out = _assemble_concept_contexts([("ap", "measure")], edges, {}, [], [], {}, _TABLES, {})
+    out = _assemble_concept_contexts([("ap", "measure")], edges, {}, [], [], {}, _TABLES, {}, [])
 
     (rec,) = out[0].reconciles_with
     assert rec.status is None
     assert rec.observed_delta is None
     assert rec.pairs == 0
+
+
+def _additivity_row(**overrides: Any) -> SimpleNamespace:
+    base: dict[str, Any] = {
+        "concept_name": "revenue",
+        "axis_kind": "time",
+        "axis_key": "*",
+        "status": "classified",
+        "verdict": "semi_additive",
+        "reason": "stock",
+        "abstain_reason": None,
+        "bucket_grain": None,
+    }
+    base.update(overrides)
+    return _row(**base)
+
+
+class TestAdditivityFold:
+    """has_additivity rows folded onto their concept (DAT-671 R4)."""
+
+    def test_verdicts_land_on_the_concept_class_row_before_refinements(self) -> None:
+        """A concrete axis REFINES the class row, so it must be read after it."""
+        rows = [
+            _additivity_row(axis_kind="time", axis_key="posting_period", bucket_grain="month"),
+            _additivity_row(axis_kind="categorical", verdict="additive", reason=None),
+            _additivity_row(axis_kind="time", axis_key="*"),
+        ]
+        out = _assemble_concept_contexts(
+            [("revenue", "measure")], [], {}, [], [], {}, _TABLES, {}, rows
+        )
+
+        assert [(a.axis_kind, a.axis_key) for a in out[0].additivity] == [
+            ("categorical", "*"),
+            ("time", "*"),
+            ("time", "posting_period"),
+        ]
+        refined = out[0].additivity[-1]
+        assert refined.verdict == "semi_additive"
+        assert refined.reason == "stock"
+        assert refined.bucket_grain == "month"
+
+    def test_a_concept_with_no_verdict_carries_an_empty_list(self) -> None:
+        """Never judged is not judged-and-additive: absence stays absence."""
+        out = _assemble_concept_contexts(
+            [("revenue", "measure"), ("expenses", "measure")],
+            [],
+            {},
+            [],
+            [],
+            {},
+            _TABLES,
+            {},
+            [_additivity_row(concept_name="revenue")],
+        )
+
+        assert len(out[1].additivity) == 0
+        assert out[1].name == "expenses"
+
+    def test_abstention_keeps_its_typed_reason_and_no_verdict(self) -> None:
+        rows = [
+            _additivity_row(
+                status="abstained",
+                verdict=None,
+                reason=None,
+                abstain_reason="unknown_temporal",
+            )
+        ]
+        out = _assemble_concept_contexts(
+            [("revenue", "measure")], [], {}, [], [], {}, _TABLES, {}, rows
+        )
+
+        (axis,) = out[0].additivity
+        assert axis.status == "abstained"
+        assert axis.verdict is None
+        assert axis.abstain_reason == "unknown_temporal"
+
+    def test_verdict_for_an_unserved_concept_drops_loud(self) -> None:
+        """The two reads are scoped by DIFFERENT verticals — ``og_has_additivity``
+        rides ``workspace_settings.active_vertical`` while the served concept list
+        rides the runtime vertical the caller passed. A verdict for a concept this
+        context does not carry has nowhere honest to go, so it drops (warned)
+        rather than being attached to a neighbouring name."""
+        rows = [
+            _additivity_row(concept_name="revenue"),
+            _additivity_row(concept_name="marketing_spend"),
+        ]
+        out = _assemble_concept_contexts(
+            [("revenue", "measure")], [], {}, [], [], {}, _TABLES, {}, rows
+        )
+
+        assert [c.name for c in out] == ["revenue"]
+        assert len(out[0].additivity) == 1
 
 
 class TestReadReconciliationRows:

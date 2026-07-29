@@ -122,13 +122,20 @@ export const ValidationSpecSchema = z.object({
 				"'aggregate' (an aggregate must fall within bounds). Pick the branch " +
 				"whose semantics match; the description + guidance shape WHAT it checks.",
 		),
+	// `.min(0)` mirrors the engine's `ge=0` (ValidationSpec): a negative tolerance is
+	// unsatisfiable under ADR-0017 and is frame induction's "not declared" SENTINEL,
+	// never a threshold — this is the second of the two value boundaries that must
+	// refuse to read it as one (the first is the engine model; the sentinel itself
+	// lives only in `InducedValidation` and dies in `toProposedValidation`).
 	tolerance: z
 		.number()
+		.min(0)
 		.optional()
 		.describe(
 			"The declared pass threshold: the check passes when the computed " +
 				"deviation is <= this value (ADR-0017's one `deviation <= tolerance` " +
-				"judgement, applied to every check_type). Omit to use the engine's default.",
+				"judgement, applied to every check_type). Non-negative — 0 means exact " +
+				"agreement. Omit to use the engine's default.",
 		),
 	guidance: z
 		.string()

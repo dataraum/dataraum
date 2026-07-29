@@ -17,13 +17,14 @@
 //
 // Why the migration was gated on a live probe rather than done mechanically:
 // these bytes are compiled into a decoding grammar, and its limits are only
-// observable on a real request (see `induction-schema.contract.test.ts`). The
-// probe ran the production `induceNative` call shape against this schema and
-// the rewritten prompt — it compiled, and the model spent the sentinel space
-// as intended (0.01 on a balance check, 0 on a constraint admitting no
-// violating rows, -1 on the one check it could not threshold). The change
-// also DE-RISKED the grammar: dropping `parameters` removed this schema's one
-// union-typed property.
+// observable on a real request (see `induction-schema.contract.test.ts`). ONE
+// probe ran, on the production `induceNative` call shape against this schema
+// and the rewritten prompt. It compiled — that part is settled, it is a
+// property of the bytes. The sentinel behaviour it also showed (0.01 on a
+// balance check, 0 on a constraint admitting no violating rows, -1 on the one
+// check the model could not threshold) is a SINGLE RUN over a two-column
+// fixture: encouraging, not calibration. The change also DE-RISKED the grammar:
+// dropping `parameters` removed this schema's one union-typed property.
 //
 // Classification vocabularies (e.g. which `account_type` values count as
 // assets) used to ride `parameters` as `string_list` entries. They belong in
@@ -37,8 +38,15 @@
 // over a non-negative deviation, so a negative threshold is unsatisfiable and
 // cannot collide with a value the model might mean; `0` CAN be meant (exact
 // agreement / zero violating rows), which is why `0` cannot be the sentinel.
-// `toProposedValidation` decodes both engine-nullable sentinels by OMITTING the
+// `toProposedValidation` decodes every engine-NULLABLE sentinel by OMITTING the
 // field, so the engine sees `None` and applies its own `DEFAULT_TOLERANCE`.
+//
+// The sentinel is safe BECAUSE it is unsatisfiable — which means no boundary
+// downstream may accept it as a value. This schema is the only place `-1` is
+// legal; it dies in `toProposedValidation`, and both typed boundaries past it
+// now reject a negative outright (`ValidationSpec`'s `ge=0` engine-side,
+// `ValidationSpecSchema`'s `.min(0)` in validation-spec.ts). A `-1` that
+// reached the evaluator would grade a PERFECT result as failed.
 //
 // SCHEMA BUDGET: 0 optional properties, 0 union-typed properties, no recursion.
 
@@ -132,20 +140,36 @@ export const InducedValidations = z.strictObject({
  * THE CONVERSION BOUNDARY: the induced shape -> the overlay payload.
  *
  * Field-for-field identical now that both sides carry the typed check
- * definition; the only work left is DECODING the two sentinels the schema
- * forces on nullable engine fields. `tolerance: -1` and `guidance: ""` mean
- * "not declared", and the payload says that by OMITTING the property —
- * `ValidationSpec` types both as nullable and reads a missing `tolerance` as
- * its `DEFAULT_TOLERANCE`, whereas a literal `-1` would gate every check to
- * failure. Every other field passes through as the model emitted it.
+ * definition; the only work left is DECODING the sentinels the schema forces on
+ * fields the engine types as NULLABLE — all three of them: `tolerance: -1`,
+ * `guidance: ""`, `expected_outcome: ""`. Each means "not declared", and the
+ * payload says that by OMITTING the property, so the typed row keeps NULL (the
+ * same conversion the concept family does in frame.ts). `tags` /
+ * `relevant_cycles` are deliberately NOT in that set: the engine defaults them
+ * to an empty list, so `[]` and absent are the same row — there is no null to
+ * preserve.
+ *
+ * `tolerance` is the one that MATTERS rather than merely tidies. Absent reads as
+ * the engine's `DEFAULT_TOLERANCE`; a literal `-1` reaching the engine would
+ * grade a perfect result as failed, since a deviation is never negative. Both
+ * value boundaries downstream now refuse it outright (`ValidationSpec`'s `ge=0`,
+ * `ValidationSpecSchema`'s `.min(0)`) — this decoder is what makes sure they
+ * never see it.
+ *
+ * The `>= 0` test is deliberately LAXER than the prompt, which says "-1, and
+ * only -1". Any negative decodes to absent on purpose: the prompt is guidance to
+ * a model, not a guarantee, and a `-0.5` slipping through should land on the
+ * documented "no threshold declared" path rather than on the loud-failure path
+ * meant for genuine corruption. Do not tighten this to `!== -1`.
  */
 export function toProposedValidation(
 	induced: InducedValidation,
 ): ProposedValidation {
-	const { tolerance, guidance, ...rest } = induced;
+	const { tolerance, guidance, expected_outcome, ...rest } = induced;
 	return {
 		...rest,
 		...(tolerance >= 0 ? { tolerance } : {}),
 		...(guidance !== "" ? { guidance } : {}),
+		...(expected_outcome !== "" ? { expected_outcome } : {}),
 	};
 }

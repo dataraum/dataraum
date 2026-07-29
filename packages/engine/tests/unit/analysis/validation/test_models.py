@@ -88,6 +88,16 @@ class TestNativeTypedWireShape:
         assert spec.tolerance == 0.001
         assert "account_type in ('asset','assets')" in (spec.guidance or "")
 
+    def test_negative_tolerance_is_refused(self) -> None:
+        """``ge=0``: a negative tolerance is unsatisfiable under ADR-0017, so it is
+        induction's "not declared" SENTINEL and never a threshold. The sentinel is
+        safe BECAUSE unsatisfiable — therefore this boundary must not read it as a
+        value. Probe-proved consequence if it did: -1 grades a PERFECT result as
+        failed. ``load_all_validation_specs``'s per-row catch turns this raise into
+        a logged skip of the one check, rather than a silently mis-graded run."""
+        with pytest.raises(ValidationError):
+            _spec(tolerance=-1)
+
     def test_legacy_parameters_key_fails_loud(self) -> None:
         """The structural guarantee: with no fold left, ``extra="forbid"`` makes
         a residual legacy payload raise at construction instead of silently

@@ -2,13 +2,13 @@
 // DAT-880's close-out).
 //
 // Both sides now carry the engine's typed check definition, so the conversion
-// is a pass-through EXCEPT for the two sentinels constrained decoding forces on
-// fields the engine types as nullable: `tolerance: -1` and `guidance: ""` mean
-// "not declared" and must reach the payload as ABSENT properties. That decode
-// is the whole surface worth testing, and the round-trip below is now a real
-// one — before the migration the induced tolerance was silently lost at this
-// parse boundary, which is what made deleting the engine's legacy fold look
-// safe when it was not.
+// is a pass-through EXCEPT for the sentinels constrained decoding forces on the
+// three fields the engine types as NULLABLE: `tolerance: -1`, `guidance: ""`
+// and `expected_outcome: ""` all mean "not declared" and must reach the payload
+// as ABSENT properties. That decode is the whole surface worth testing, and the
+// round-trip below is now a real one — before the migration the induced
+// tolerance was silently lost at this parse boundary, which is what made
+// deleting the engine's legacy fold look safe when it was not.
 
 import { describe, expect, it } from "vitest";
 
@@ -74,6 +74,28 @@ describe("toProposedValidation — sentinel decode at the conversion boundary", 
 		expect(v).not.toHaveProperty("guidance");
 	});
 
+	it("omits `expected_outcome` on the empty sentinel too — every nullable field decodes", () => {
+		// The engine types all three of tolerance/guidance/expected_outcome as
+		// nullable, so all three decode the same way. `tags`/`relevant_cycles` do
+		// NOT: they default to an empty list, so [] and absent are one row.
+		const v = toProposedValidation(
+			trialBalance({ expected_outcome: "", tags: [], relevant_cycles: [] }),
+		);
+
+		expect(v).not.toHaveProperty("expected_outcome");
+		expect(v.tags).toEqual([]);
+		expect(v.relevant_cycles).toEqual([]);
+	});
+
+	it("decodes ANY negative tolerance to absent, not just the documented -1", () => {
+		// Deliberately laxer than the prompt's "-1, and only -1": the prompt is
+		// guidance to a model, not a guarantee, and a stray negative belongs on the
+		// "no threshold declared" path rather than tripping the downstream `ge=0`.
+		const v = toProposedValidation(trialBalance({ tolerance: -0.5 }));
+
+		expect(v).not.toHaveProperty("tolerance");
+	});
+
 	it("passes guidance prose through verbatim", () => {
 		// Classification vocabularies ride here now that `parameters` is gone —
 		// the binding agent reads this string, so it must not be reshaped.
@@ -96,7 +118,16 @@ describe("toProposedValidation — sentinel decode at the conversion boundary", 
 		// the typed target. Parsing used to drop the induced tolerance on the floor
 		// (it arrived under legacy keys this schema does not declare); it now
 		// survives as the typed field, which is what let the engine's fold go.
-		const parsed = ProposedValidation.parse(
+		//
+		// `.strict()` HERE, at the assertion, not on the schema: `ValidationSpecSchema`
+		// must stay non-strict for the vertical-strip. Strictness makes this test the
+		// place producer drift surfaces — add a field to `InducedValidation` without
+		// declaring it on the spec schema and this REDS, instead of the field silently
+		// vanishing into a payload the engine's `extra="forbid"` then per-row-skips.
+		// The engine's frame-payload pin is hand-written and cannot see that drift.
+		// Mutation-verified: adding a probe field to `InducedValidation` reds exactly
+		// this test.
+		const parsed = ProposedValidation.strict().parse(
 			toProposedValidation(trialBalance({ tolerance: 0.05 })),
 		);
 

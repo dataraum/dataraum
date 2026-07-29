@@ -26,9 +26,14 @@
 //     leaking it into another vertical's induction is exactly the cross-
 //     vertical leakage the epic's band-6 goal forbids), so they propose from
 //     the schema + concepts alone, same as every vertical.
-//   - declare: an edited set → written verbatim, no LLM. This is how the
-//     ModelFrame widget's accept/edit round-trips: the agent re-invokes frame
-//     with the edited concepts and/or validations and/or cycles and/or metrics.
+//   - declare: an edited set → written verbatim, no LLM. The designed path for
+//     the ModelFrame widget's accept/edit round-trip — NOT CURRENTLY REACHABLE,
+//     by either route: `frame` is in no toolstack (registry.ts's `toolsByKind`
+//     covers connect/stage/analyse, none of which lists it), so no agent can
+//     re-invoke it; and its one production caller, `server/stage-frame.ts`,
+//     only ever drives the induce path — it passes no edited set. Built and
+//     wired, awaiting the widget. Treat any claim that user-edited specs flow
+//     through here today as unfounded until a caller actually passes `edited`.
 // Either way each member is persisted as a vertical-tagged overlay row and
 // returned for the ModelFrame widget to render.
 //

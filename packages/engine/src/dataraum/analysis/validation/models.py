@@ -129,7 +129,15 @@ class ValidationSpec(BaseModel):
     # `expected_formula` rows never reach that table, only the overlay ⊕ layer. This
     # union is a LABEL the ADR-0017 evaluator never branches on.
     check_type: ValidationCheckType | Literal["expected_formula"]
-    tolerance: float | None = None  # ADR-0017 pass threshold; None ⇒ DEFAULT_TOLERANCE
+    # ADR-0017 pass threshold; None ⇒ DEFAULT_TOLERANCE. ``ge=0`` because a negative
+    # tolerance is UNSATISFIABLE under that rule (``deviation <= tolerance`` over a
+    # non-negative deviation) — it is frame induction's "not declared" sentinel
+    # (validation-induction.ts), never a threshold, and being unsatisfiable is
+    # exactly why the sentinel is safe. So no boundary may accept it as a value: a
+    # leaked literal raises here and ``load_all_validation_specs``'s per-row catch
+    # degrades it to a logged skip — one check fails loud, rather than every check
+    # silently grading a perfect result as failed.
+    tolerance: float | None = Field(default=None, ge=0)
 
     # Advisory SQL-binding hint prose (the former sql_hints) + what a pass looks like.
     guidance: str | None = None

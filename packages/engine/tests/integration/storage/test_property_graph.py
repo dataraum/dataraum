@@ -254,7 +254,7 @@ def _seed(engine: Engine) -> None:
             f"VALUES ('{rid}', '{RUN}', '{ft}', '{fc}', '{tt}', '{tc}', "
             f"'foreign_key', 'many-to-one', 0.9, 'judge', 'llm', '{TS}')"
         )
-    # has_dimension: three facts each sliced by their own account_id FK, all resolving
+    # slice_definitions: three facts each sliced by their own account_id FK, all resolving
     # the referenced identity dimension_table_id='t2' (the accounts dim). journal (t1)
     # and statement (t4) slice the SAME attribute (account_type) → a CONFORMED pair
     # (an alignable drill-across axis). account_group (t3) slices a DIFFERENT attribute
@@ -1328,35 +1328,6 @@ def test_derived_from_unmaterialized_view_has_no_edge(graph_engine: Engine) -> N
         sources = {r.vname for r in conn.execute(text(sql))}
     assert sources == {"enriched_journal", "enriched_ledger"}
     assert "enriched_paylog" not in sources
-
-
-def test_has_dimension_edge(graph_engine: Engine) -> None:
-    """has_dimension: each fact points at its slice column, CARRYING the referenced
-    identity (DAT-756) — dimension_table_id resolves to the shared accounts dim."""
-    sql = (
-        f"SELECT tname, cname, dim FROM GRAPH_TABLE ({_graph_ref()} "
-        "MATCH (t IS table_node)-[e IS has_dimension]->(c IS column_node) "
-        "COLUMNS (t.table_name AS tname, c.column_name AS cname, "
-        "e.dimension_table_id AS dim))"
-    )
-    with graph_engine.connect() as conn:
-        rows = {(r.tname, r.cname, r.dim) for r in conn.execute(text(sql))}
-    # All three facts slice their own account_id, each bound to the accounts dim (t2);
-    # journal + statement additionally carry role-playing bill-to/ship-to and
-    # seg1/seg2 FKs (DAT-788). journal also carries a FOLDED own-column slice
-    # (region_flat, NULL dim identity — DAT-867): a has_dimension edge with NULL
-    # dimension_table_id, the OBT axis the folded dim-member leg reads.
-    assert rows == {
-        ("journal", "account_id", "t2"),
-        ("statement", "account_id", "t2"),
-        ("account_group", "account_id", "t2"),
-        ("journal", "billto_acct", "t2"),
-        ("statement", "shipto_acct", "t2"),
-        ("journal", "seg1_acct", "t2"),
-        ("statement", "seg2_acct", "t2"),
-        ("journal", "region_flat", None),
-        ("statement", "region_flat", None),
-    }
 
 
 def test_scoped_by_enumerates_the_default_validity_scope(graph_engine: Engine) -> None:

@@ -562,19 +562,6 @@ class EnrichedViewsPhase(BasePhase):
                     f"was dropped rather than shipped"
                 )
 
-            # Build evidence with LLM reasoning if available
-            evidence: dict[str, Any] = {}
-            if llm_recommendations:
-                for rec in llm_recommendations.recommendations:
-                    if rec.fact_table_id == fact_table.table_id:
-                        evidence = {
-                            "llm_reasoning": rec.reasoning,
-                            "relationship_role": rec.relationship_role,
-                            "enrichment_columns": rec.enrichment_columns,
-                            "model_name": llm_recommendations.model_name,
-                        }
-                        break
-
             # Register every served column (f.* + dims) under the enriched table so the
             # catalog describes the view completely (DAT-811); latest-only substrate,
             # reconciled by view_name with dim profiles preserved across re-runs.
@@ -681,7 +668,6 @@ class EnrichedViewsPhase(BasePhase):
             # the cockpit's drill/list-tables tools), and it still carries "verified"
             # honestly for a fact whose row_count was unmeasurable.
             view_record.is_grain_verified = is_grain_verified
-            view_record.evidence = evidence if evidence else None
             view_record.view_table_id = view_table.table_id if view_table else None
 
             views_created += 1

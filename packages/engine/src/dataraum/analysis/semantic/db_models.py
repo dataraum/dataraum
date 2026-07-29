@@ -101,7 +101,7 @@ class ConceptEdgePredicate(StrEnum):
     """The typed relation a concept edge asserts (DAT-729).
 
     The operating-model graph's *vocabulary* edges — concept → concept, distinct
-    from the physical ``references`` / ``has_dimension`` edges over tables/columns.
+    from the physical ``refs`` / ``temporal_coverage`` edges over tables/columns.
 
     - ``PART_OF`` — mereological composition, DIRECTED: the source concept is a
       component that rolls up into the target (``accounts_payable`` part_of

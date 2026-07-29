@@ -271,7 +271,7 @@ def stage_induced_validations(
     upsert(
         session,
         InductionRun,
-        [{"run_id": run_id, "vertical": vertical, "proposed": len(specs)}],
+        [{"run_id": run_id, "vertical": vertical}],
         index_elements=["run_id"],
     )
     rows = [_staged_row_values(run_id, vertical, spec) for spec in specs]

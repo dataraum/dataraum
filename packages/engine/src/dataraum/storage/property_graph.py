@@ -62,7 +62,6 @@ reification).** Vertices/edges:
                                             role-separated referenced axis and the
                                             DAT-867 folded (own-column) axis
     refs               table → table     [relationships]      FK topology (conformed dims excluded)
-    has_dimension      table → column    [slice_definitions]  a fact's slice cols + dim identity
     derived_from       table → table     [enriched_views]     view → fact + dim bases
     concept_edge       concept → concept [concept_edges]      part_of/disjoint/reconciles
     conformed_dimension table → table    [slice_definitions ▸ bus_matrix] two facts sharing a dimension AXIS in the SAME role (DAT-756/788)
@@ -186,7 +185,6 @@ _ELEMENT_VIEWS: tuple[str, ...] = (
     "og_grounding",
     "og_period_grain",
     "og_references",
-    "og_has_dimension",
     "og_derived_from",
     "og_concept_edges",
     "og_conformed_dimension",
@@ -581,24 +579,6 @@ def _element_view_sql(name: str) -> str:
             f"WHERE r.relationship_type IN ('foreign_key', 'hierarchy')\n"
             f"  AND r.detection_method != 'candidate';"
         )
-    if name == "og_has_dimension":
-        # has_dimension edge (table → column): a fact table's slice (dimension)
-        # columns, CARRYING the resolved referenced-dimension identity (DAT-756):
-        # dimension_table_id (the FK-target dim table — NULL for a folded slice),
-        # dimension_attribute (the level), fk_role (the FK column). This is where the
-        # edge "binds to identity": two facts whose has_dimension edges share
-        # (dimension_table_id, dimension_attribute) reference one conformed dimension,
-        # which the og_conformed_dimension edge derives. slice_id is the per-run local
-        # edge key.
-        return (
-            f"CREATE VIEW {READ_TOKEN}.og_has_dimension AS\n"
-            f"SELECT slice_id::text AS slice_id, table_id::text AS table_id,\n"
-            f"       column_id::text AS column_id, column_name, slice_type,\n"
-            f"       slice_relevance, slice_interest,\n"
-            f"       dimension_table_id::text AS dimension_table_id,\n"
-            f"       dimension_attribute, fk_role\n"
-            f"FROM {READ_TOKEN}.current_slice_definitions;"
-        )
     if name == "og_derived_from":
         # derived_from edge (view table → base table): an enriched view derives from
         # its fact plus each exposed dimension table (dimension_table_ids JSON,
@@ -630,7 +610,7 @@ def _element_view_sql(name: str) -> str:
     if name == "og_conformed_dimension":
         # conformed_dimension edge (table → table): two facts sharing a dimension AXIS
         # (DAT-756, rebuilding the reverted DAT-729 edge on referenced identity).
-        # Derived by self-joining slice (has_dimension) rows on the SAME resolved
+        # Derived by self-joining ``current_slice_definitions`` rows on the SAME resolved
         # identity — (dimension_table_id, dimension_attribute), NEVER column names —
         # of DIFFERENT tables, THEN gated on the DAT-788 ROLE identity.
         #
@@ -894,8 +874,8 @@ def _element_view_sql(name: str) -> str:
     if name == "og_temporal_coverage":
         # temporal_coverage edge (table → column, DAT-730): one edge per (typed
         # relation × DECLARED time column) exposing the PERSISTED
-        # ``temporal_column_profiles`` coverage as PGQ-queryable structure — parallel
-        # to og_has_dimension (table → column). The ROLE home is
+        # ``temporal_column_profiles`` coverage as PGQ-queryable structure, table →
+        # column. The ROLE home is
         # ``table_entities.time_columns`` (the event/attribute + single-anchor JSON,
         # enforced at the LLM seam): unnested to name each declared time column with
         # its ``role`` / ``aspect`` / ``declared_anchor`` / authored ``note``. Role and
@@ -1326,12 +1306,6 @@ def _property_graph_sql() -> str:
         f"      LABEL refs\n"
         f"      PROPERTIES (cardinality, relationship_type, confidence, confirmation_source,\n"
         f"                  from_column_id, to_column_id),\n"
-        f"    {READ_TOKEN}.og_has_dimension KEY (slice_id)\n"
-        f"      SOURCE KEY (table_id) REFERENCES og_tables (table_id)\n"
-        f"      DESTINATION KEY (column_id) REFERENCES og_columns (column_id)\n"
-        f"      LABEL has_dimension\n"
-        f"      PROPERTIES (column_name, slice_type, slice_relevance, slice_interest,\n"
-        f"                  dimension_table_id, dimension_attribute, fk_role),\n"
         f"    {READ_TOKEN}.og_derived_from KEY (edge_key)\n"
         f"      SOURCE KEY (view_table_id) REFERENCES og_tables (table_id)\n"
         f"      DESTINATION KEY (base_table_id) REFERENCES og_tables (table_id)\n"

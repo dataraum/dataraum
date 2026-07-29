@@ -12,7 +12,6 @@ DROP VIEW IF EXISTS __READ__.og_concepts;
 DROP VIEW IF EXISTS __READ__.og_grounding;
 DROP VIEW IF EXISTS __READ__.og_period_grain;
 DROP VIEW IF EXISTS __READ__.og_references;
-DROP VIEW IF EXISTS __READ__.og_has_dimension;
 DROP VIEW IF EXISTS __READ__.og_derived_from;
 DROP VIEW IF EXISTS __READ__.og_concept_edges;
 DROP VIEW IF EXISTS __READ__.og_conformed_dimension;
@@ -120,14 +119,6 @@ SELECT relationship_id::text AS relationship_id,
 FROM __READ__.current_relationships r
 WHERE r.relationship_type IN ('foreign_key', 'hierarchy')
   AND r.detection_method != 'candidate';
-
-CREATE VIEW __READ__.og_has_dimension AS
-SELECT slice_id::text AS slice_id, table_id::text AS table_id,
-       column_id::text AS column_id, column_name, slice_type,
-       slice_relevance, slice_interest,
-       dimension_table_id::text AS dimension_table_id,
-       dimension_attribute, fk_role
-FROM __READ__.current_slice_definitions;
 
 CREATE VIEW __READ__.og_derived_from AS
 SELECT (ev.view_id || '_fact')::text AS edge_key,
@@ -602,12 +593,6 @@ CREATE PROPERTY GRAPH __READ__.operating_model
       LABEL refs
       PROPERTIES (cardinality, relationship_type, confidence, confirmation_source,
                   from_column_id, to_column_id),
-    __READ__.og_has_dimension KEY (slice_id)
-      SOURCE KEY (table_id) REFERENCES og_tables (table_id)
-      DESTINATION KEY (column_id) REFERENCES og_columns (column_id)
-      LABEL has_dimension
-      PROPERTIES (column_name, slice_type, slice_relevance, slice_interest,
-                  dimension_table_id, dimension_attribute, fk_role),
     __READ__.og_derived_from KEY (edge_key)
       SOURCE KEY (view_table_id) REFERENCES og_tables (table_id)
       DESTINATION KEY (base_table_id) REFERENCES og_tables (table_id)

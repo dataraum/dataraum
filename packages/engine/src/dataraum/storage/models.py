@@ -75,7 +75,6 @@ class Source(Base):
     # stage on the cockpit side.
     stage: Mapped[str | None] = mapped_column(String, nullable=True)
     backend: Mapped[str | None] = mapped_column(String, nullable=True)
-    discovered_schema: Mapped[dict[str, Any] | None] = mapped_column(JSON, nullable=True)
     archived_at: Mapped[datetime | None] = mapped_column(DateTime, nullable=True)
 
     # Relationships

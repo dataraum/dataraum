@@ -196,7 +196,6 @@ CREATE TABLE induction_runs (
 	row_id VARCHAR NOT NULL, 
 	run_id VARCHAR NOT NULL, 
 	vertical VARCHAR NOT NULL, 
-	proposed INTEGER NOT NULL, 
 	created_at TIMESTAMP WITHOUT TIME ZONE NOT NULL, 
 	CONSTRAINT pk_induction_runs PRIMARY KEY (row_id), 
 	CONSTRAINT uq_induction_run UNIQUE (run_id)
@@ -296,26 +295,6 @@ CREATE TABLE metric_parameters (
 
 CREATE UNIQUE INDEX uq_metric_parameter_active ON metric_parameters (vertical, graph_id, name) WHERE superseded_at IS NULL;
 
-CREATE TABLE metric_unit_grain (
-	unit_grain_id VARCHAR NOT NULL, 
-	run_id VARCHAR NOT NULL, 
-	target_kind VARCHAR NOT NULL, 
-	target_key VARCHAR NOT NULL, 
-	axis VARCHAR NOT NULL, 
-	entity_value VARCHAR NOT NULL, 
-	value NUMERIC, 
-	reconciles BOOLEAN NOT NULL, 
-	recompute BOOLEAN NOT NULL, 
-	created_at TIMESTAMP WITH TIME ZONE NOT NULL, 
-	CONSTRAINT pk_metric_unit_grain PRIMARY KEY (unit_grain_id), 
-	CONSTRAINT uq_metric_unit_grain_entity UNIQUE (target_kind, target_key, axis, entity_value, run_id), 
-	CONSTRAINT ck_metric_unit_grain_target_kind CHECK (target_kind IN ('measure', 'metric'))
-);
-
-CREATE INDEX ix_metric_unit_grain_run_id ON metric_unit_grain (run_id);
-
-CREATE INDEX ix_metric_unit_grain_target_key ON metric_unit_grain (target_key);
-
 CREATE TABLE metrics (
 	metric_id VARCHAR NOT NULL, 
 	vertical VARCHAR NOT NULL, 
@@ -346,7 +325,6 @@ CREATE TABLE sources (
 	updated_at TIMESTAMP WITHOUT TIME ZONE NOT NULL, 
 	stage VARCHAR, 
 	backend VARCHAR, 
-	discovered_schema JSON, 
 	archived_at TIMESTAMP WITHOUT TIME ZONE, 
 	CONSTRAINT pk_sources PRIMARY KEY (source_id), 
 	CONSTRAINT uq_sources_name UNIQUE (name)
@@ -594,7 +572,6 @@ CREATE TABLE enriched_views (
 	dimension_table_ids JSON, 
 	dimension_columns JSON, 
 	is_grain_verified BOOLEAN NOT NULL, 
-	evidence JSON, 
 	created_at TIMESTAMP WITHOUT TIME ZONE NOT NULL, 
 	CONSTRAINT pk_enriched_views PRIMARY KEY (view_id), 
 	CONSTRAINT uq_enriched_view_fact_table UNIQUE (fact_table_id), 

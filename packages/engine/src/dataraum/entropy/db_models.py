@@ -229,12 +229,21 @@ Index("idx_readiness_target", EntropyReadinessRecord.target)
 class ClaimWitnessRecord(Base):
     """One witness's opinion on a single canonical claim (ADR-0009, DAT-457).
 
-    The persisted, run-versioned substrate the pooling engine
-    (:mod:`dataraum.entropy.pooling`) reads: one row per
-    ``(target, claim_field, witness_id)`` holding that witness's probability
-    distribution over the claim space plus its measured reliability. The pooled
-    ``(conflict, ignorance)`` outcome is an :class:`EntropyObjectRecord`; these
-    rows are the provenance behind it — loud, not buried in evidence JSON.
+    One row per ``(target, claim_field, witness_id)`` holding that witness's
+    probability distribution over the claim space plus its measured reliability.
+    The pooled ``(conflict, ignorance)`` outcome is an
+    :class:`EntropyObjectRecord`; these rows are the provenance behind it —
+    loud, not buried in evidence JSON.
+
+    **Who reads it (DAT-671 R6, wire-or-delete).** Nothing in this repo does:
+    :mod:`dataraum.entropy.pooling` computes in memory from live detector output
+    and never selects these rows (the previous wording here claimed otherwise —
+    it described an intent, not the code), and no cockpit surface queries the
+    mirror. Its ONE reader is the eval oracle,
+    ``dataraum-eval/calibration/tools/measure.py``, which needs the per-witness
+    distribution + reliability to calibrate pooling weights — a named consumer
+    under ADR-0024 d3, which is why the table stays. Deleting it is a
+    cross-repository change.
 
     Adjudication entropy only. The statistical/surprise detectors
     (``null_ratio``/``benford``) measure ``D_KL(observed || reference)`` and

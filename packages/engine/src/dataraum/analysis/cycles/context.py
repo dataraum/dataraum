@@ -37,6 +37,7 @@ from dataraum.analysis.relationships.graph_topology import (
 from dataraum.analysis.relationships.utils import load_defined_relationships
 from dataraum.analysis.semantic.db_models import SemanticAnnotation, TableEntity, TableRole
 from dataraum.analysis.semantic.utils import load_column_concepts
+from dataraum.analysis.served_columns import served_columns
 from dataraum.analysis.slicing.curation import curated_slices
 from dataraum.analysis.slicing.db_models import SliceDefinition
 from dataraum.analysis.statistics.db_models import StatisticalProfile
@@ -204,8 +205,12 @@ def build_cycle_detection_context(
     # entity a flow involves, so the judging LLM must see them instead of
     # inheriting a name-starved annotation's hedge. Structural gate only —
     # derived from served metadata, never from name patterns or value shapes.
+    # This map is also the allow-list `_served_identity_columns` checks LLM-named
+    # identity columns against, so the surrogate exclusion (DAT-878) has to apply
+    # here too: an identity column is a business column, and a `_sk__*` that
+    # passed the physically-exists gate would be served back with value samples.
     columns_by_table: dict[str, set[str]] = {
-        t.table_name: {c.column_name for c in t.columns} for t in tables
+        t.table_name: {c.column_name for c in served_columns(t.columns)} for t in tables
     }
     served_identity: dict[str, list[dict[str, Any]]] = {
         ent_table_name: _served_identity_columns(
@@ -286,7 +291,9 @@ def build_cycle_detection_context(
         # per relationship × measure column, the measure selection being this
         # builder's pinned annotations (semantic_role == "measure").
         ranges: list[dict[str, Any]] = []
-        for measure_col in sorted(from_tbl.columns, key=lambda c: c.column_position):
+        for measure_col in sorted(
+            served_columns(from_tbl.columns), key=lambda c: c.column_position
+        ):
             ann = annotations.get(measure_col.column_id)
             if ann is None or ann.semantic_role != "measure":
                 continue
@@ -320,7 +327,7 @@ def build_cycle_detection_context(
     table_info = []
     for t in tables:
         columns = []
-        for c in t.columns:
+        for c in served_columns(t.columns):
             col_info: dict[str, Any] = {
                 "name": c.column_name,
                 "type": c.resolved_type or c.raw_type,
@@ -555,7 +562,12 @@ def build_cycle_detection_context(
     # 9. Summary statistics
     context["summary"] = {
         "total_tables": len(tables),
-        "total_columns": sum(len(t.columns) for t in tables),
+        # Served, not catalogued — and deliberately NOT the DAT-622 treatment below.
+        # That case labels a catalogued-vs-shown gap because a curated-out slice is a
+        # real column of the user's dataset. A mint-owned surrogate is not a column of
+        # the dataset at all, so counting it here would inflate the "Columns: N" line
+        # this renders into — the same prompt whose per-table column lists exclude it.
+        "total_columns": sum(len(served_columns(t.columns)) for t in tables),
         "total_relationships": len(rel_list),
         "conformed_meetings_found": len(conformed_list),
         # The CATALOGUED total, not the served count (DAT-622): reporting the

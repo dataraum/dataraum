@@ -732,3 +732,44 @@ class TestPersistenceContract:
                 detection_source="g3",
                 needs_confirmation=False,
             )
+
+
+class TestViewColumnsServing:
+    """DAT-878: the FD scan never sees a mint-owned surrogate.
+
+    This module is the worst possible consumer of one. A surrogate is a
+    deterministic hash of its own components, so it is a PERFECT functional
+    dependency with them BY CONSTRUCTION — it would surface as a drilldown or alias
+    candidate on every run, and the identity judge would be asked to reason about a
+    column whose sample values are raw md5 hex.
+    """
+
+    def test_surrogate_excluded_from_view_columns(
+        self, duckdb_conn: duckdb.DuckDBPyConnection
+    ) -> None:
+        from dataraum.analysis.hierarchies.processor import _view_columns
+        from dataraum.analysis.relationships.surrogate import SURROGATE_PREFIX
+
+        surrogate = f"{SURROGATE_PREFIX}zip__city"
+        duckdb_conn.execute(
+            "CREATE OR REPLACE TABLE v_dim AS SELECT * FROM (SELECT 1 AS zip, 2 AS city)"
+        )
+        # The enriched view carries the fact's surrogates through its `f.*` passthrough.
+        duckdb_conn.execute(
+            'CREATE OR REPLACE TABLE v_dim AS SELECT *, md5("zip"::VARCHAR) '
+            f'AS "{surrogate}" FROM (SELECT * FROM v_dim)'
+        )
+        raw = [r[0] for r in duckdb_conn.execute("DESCRIBE v_dim").fetchall()]
+        assert surrogate in raw, "fixture must reproduce the physical view shape"
+
+        got = _view_columns(duckdb_conn, "v_dim")
+
+        assert got == ["zip", "city"]
+
+    def test_unqueryable_view_still_returns_none(
+        self, duckdb_conn: duckdb.DuckDBPyConnection
+    ) -> None:
+        """The skip-and-log contract survives the routing through describe_served."""
+        from dataraum.analysis.hierarchies.processor import _view_columns
+
+        assert _view_columns(duckdb_conn, "no_such_view") is None

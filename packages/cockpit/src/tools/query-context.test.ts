@@ -62,6 +62,52 @@ const concepts: SchemaConceptRow[] = [
 	},
 ];
 
+describe("formatSchema — surrogate join keys (DAT-878)", () => {
+	// The engine mints `_sk__*` hash columns onto the TYPED tables to cure composite
+	// keys, and they ride into every enriched view via its `f.*` passthrough — so both
+	// cockpit schema paths see them. They are machinery, not analysable attributes.
+	const withSurrogate: SchemaColumnRow[] = [
+		...columnRows,
+		{
+			tableId: "t1",
+			columnId: "c4",
+			name: "_sk__konto__belegnummer",
+			resolvedType: "VARCHAR",
+		},
+	];
+
+	it("excludes the surrogate from the served column list", () => {
+		const block = formatSchema(tables, withSurrogate, concepts);
+		expect(block).not.toContain("_sk__konto__belegnummer");
+	});
+
+	it("keeps the table's real columns", () => {
+		// Guards against the filter degenerating into a blanket drop.
+		const block = formatSchema(tables, withSurrogate, concepts);
+		expect(block).toContain("Betrag");
+		expect(block).toContain("Datum");
+		expect(block).toContain("account_type");
+	});
+
+	it("does not match a column that merely CONTAINS the prefix", () => {
+		// The predicate is a strict prefix test, mirroring the engine: a substring
+		// match would be a guess about user data.
+		const block = formatSchema(
+			tables,
+			[
+				{
+					tableId: "t1",
+					columnId: "c5",
+					name: "beleg_sk__nummer",
+					resolvedType: "VARCHAR",
+				},
+			],
+			[],
+		);
+		expect(block).toContain("beleg_sk__nummer");
+	});
+});
+
 describe("formatSchema", () => {
 	it("addresses each table as lake.<layer>.<name>", () => {
 		const block = formatSchema(tables, columnRows, concepts);

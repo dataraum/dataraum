@@ -10,7 +10,11 @@ import { describe, expect, it, vi } from "vitest";
 vi.mock("#/config", () => ({ config: {} }));
 vi.mock("#/db/metadata/client", () => ({ metadataDb: {} }));
 
-import { extractGroupedColumns, findNearUniqueGroupings } from "./grain-note";
+import {
+	extractGroupedColumns,
+	findNearUniqueGroupings,
+	nearUniqueNames,
+} from "./grain-note";
 
 // The shape `json_serialize_sql` emits: GROUP BY items live in `group_expressions`
 // on EVERY query node (outer + each CTE/subquery). A bare column is COLUMN_REF with
@@ -103,5 +107,36 @@ describe("findNearUniqueGroupings", () => {
 
 	it("is a no-op against an empty near-unique set", () => {
 		expect(findNearUniqueGroupings(["region"], new Set())).toEqual([]);
+	});
+});
+
+describe("nearUniqueNames — surrogate join keys (DAT-878)", () => {
+	// The mint writes a StatisticalProfile for every column it mints, and a surrogate
+	// is a hash of a composite key — so a dimension-side one is near-unique by
+	// construction and WOULD clear the threshold. This is a live exclusion, not a
+	// defensive one.
+	const surrogate = "_sk__account__business_id";
+
+	it("excludes a near-unique surrogate", () => {
+		const got = nearUniqueNames([
+			{ columnName: surrogate, cardinalityRatio: 1.0 },
+			{ columnName: "order_id", cardinalityRatio: 1.0 },
+		]);
+		expect(got.has(surrogate)).toBe(false);
+		expect(got.has("order_id")).toBe(true);
+	});
+
+	it("still excludes coarse columns, surrogate or not", () => {
+		const got = nearUniqueNames([
+			{ columnName: "region", cardinalityRatio: 0.0002 },
+		]);
+		expect(got.size).toBe(0);
+	});
+
+	it("does not match a column that merely CONTAINS the prefix", () => {
+		const got = nearUniqueNames([
+			{ columnName: "beleg_sk__nummer", cardinalityRatio: 1.0 },
+		]);
+		expect(got.has("beleg_sk__nummer")).toBe(true);
 	});
 });

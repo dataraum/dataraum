@@ -48,6 +48,7 @@ import { loadConceptGraph } from "./concept-graph-load";
 import { loadNearUniqueColumns } from "./grain-note";
 import { type DriverRanking, lookDrivers } from "./look-drivers";
 import { projectTableEntity, type TableEntity } from "./look-table";
+import { isSurrogateColumn } from "./surrogate";
 
 /** The clean, analysis-ready layer a question is answered over. */
 const TYPED_LAYER = "typed";
@@ -155,6 +156,14 @@ export interface SchemaConceptRow {
  * Tables sorted by physical name, columns by name — deterministic. Each column
  * shows its resolved type and, when the semantic run mapped one, its
  * `[meaning: …]`. Empty workspace → a one-line note.
+ *
+ * Mint-owned surrogate join keys are excluded here (DAT-878). This is the ONE
+ * chokepoint both schema paths funnel through — the enriched `DESCRIBE` and the
+ * typed metadata read — so the filter cannot be present on one and missing on the
+ * other. The Relationships block is deliberately NOT filtered: after a composite
+ * key is cured the surrogate pair IS the relationship, so it stays visible there
+ * as the join evidence it legitimately is. Same split as the engine
+ * (`analysis/served_columns.py`): filter what is SERVED, never what is JOINED.
  */
 export function formatSchema(
 	tableRows: SchemaTableRow[],
@@ -172,6 +181,7 @@ export function formatSchema(
 
 	const columnsByTable = new Map<string, SchemaColumnRow[]>();
 	for (const col of columnRows) {
+		if (isSurrogateColumn(col.name)) continue;
 		const list = columnsByTable.get(col.tableId);
 		if (list) list.push(col);
 		else columnsByTable.set(col.tableId, [col]);

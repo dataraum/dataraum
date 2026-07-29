@@ -28,6 +28,7 @@ from sqlalchemy.orm import Session
 from structlog.testing import capture_logs
 
 from dataraum.analysis.relationships.db_models import Relationship
+from dataraum.analysis.relationships.surrogate import SURROGATE_PREFIX
 from dataraum.analysis.semantic.db_models import SemanticAnnotation, TableEntity
 from dataraum.analysis.slicing.db_models import SliceDefinition
 from dataraum.analysis.slicing.models import SlicingAnalysisResult
@@ -1772,3 +1773,43 @@ class TestDeterministicInventory:
         # never the judgment. The measured case is pinned below.
         assert ranked.slice_relevance is None
         assert floor.slice_relevance is None
+
+
+class TestBuildContextDataSurrogates:
+    """DAT-878: mint-owned ``_sk__*`` join keys never reach the slice inventory."""
+
+    def test_fact_side_surrogate_is_not_a_slice_candidate(
+        self, session: Session, duckdb_conn: duckdb.DuckDBPyConnection
+    ) -> None:
+        """A fact-side surrogate is excluded at the LOAD, not left to the gates.
+
+        This is the site where the leak outlives the prompt: ``_build_context_data``'s
+        survivors are also the persisted ``SliceDefinition`` inventory, and BOTH
+        downstream gates pass a fact-side surrogate — ``_pre_filter_columns`` only
+        drops near-unique columns (an FK surrogate carries the DIMENSION's
+        cardinality, so it is nowhere near unique on the fact grain), and
+        ``_exclude_non_dimension_roles`` is deliberately fail-open for unannotated
+        columns, which every surrogate is. Seeded with no StatisticalProfile and no
+        SemanticAnnotation precisely so it would survive both if the load did not
+        exclude it.
+        """
+        seeded = _seed(session)
+        fact: Table = seeded["fact"]
+        session.add(
+            Column(
+                table_id=fact.table_id,
+                column_name=f"{SURROGATE_PREFIX}invoice_id__line_no",
+                column_position=99,
+                resolved_type="VARCHAR",
+            )
+        )
+        session.flush()
+
+        data = SlicingPhase()._build_context_data(
+            _ctx(session, duckdb_conn, [fact.table_id]), [fact]
+        )
+
+        by_name = _columns_by_name(data["tables"][0])
+        assert not [n for n in by_name if n.startswith(SURROGATE_PREFIX)]
+        # The ordinary fact columns still arrive — the filter is not a blanket drop.
+        assert "amount" in by_name

@@ -25,6 +25,7 @@ from dataraum.analysis.semantic.db_models import (
     TableEntity,
 )
 from dataraum.analysis.semantic.utils import load_column_concepts
+from dataraum.analysis.served_columns import served_columns
 from dataraum.analysis.slicing.curation import curated_slices
 from dataraum.analysis.slicing.db_models import SliceDefinition
 from dataraum.analysis.temporal.db_models import TemporalColumnProfile
@@ -411,7 +412,11 @@ def _format_table_schema(
         time_facts = {tc["column"]: tc for tc in entity.time_columns if tc.get("column")}
 
     columns = []
-    for col in table.columns:
+    # Mint-owned surrogate join keys are machinery, not columns a validation rule
+    # can be written about (DAT-878). The relationship endpoints rendered elsewhere
+    # in this prompt keep resolving through `column_id_to_info`, which is a separate
+    # unfiltered read — a surrogate pair still shows up there as the join it is.
+    for col in served_columns(table.columns):
         col_info: dict[str, Any] = {
             "column_name": col.column_name,
             "data_type": col.resolved_type or col.raw_type,

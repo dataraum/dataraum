@@ -33,11 +33,13 @@ from uuid import uuid4
 from sqlalchemy import delete, select
 
 from dataraum.analysis.relationships.db_models import Relationship
+from dataraum.analysis.relationships.surrogate import is_surrogate_column
 from dataraum.analysis.relationships.utils import (
     load_defined_relationships,
     load_suppressed_relationship_pairs,
 )
 from dataraum.analysis.semantic.db_models import SemanticAnnotation, TableEntity, TableRole
+from dataraum.analysis.served_columns import served_columns
 from dataraum.analysis.statistics.db_models import StatisticalProfile
 from dataraum.analysis.statistics.profiler import _profile_column_stats_parallel
 from dataraum.analysis.typing.db_models import MaterializationRecipe
@@ -102,6 +104,52 @@ def _unchanged_considered_pairs(
         if rel is None or basis == rel.cardinality:
             out.add(pair)
     return out
+
+
+def _served_join_payloads(
+    joins_with_ids: list[tuple[DimensionJoin, tuple[str, str]]],
+) -> list[tuple[DimensionJoin, tuple[str, str]]]:
+    """Drop mint-owned surrogates from each join's SERVED payload (DAT-878).
+
+    A join's payload is ``include_columns`` — the dimension columns it adds to the
+    view. Its LEGS (``fact_fk_column`` / ``dim_pk_column``) are the join itself and
+    stay untouched: after a composite key is cured, those legs ARE the surrogate
+    pair. Served vs joined, applied to one object.
+
+    This is the ENFORCEMENT point, and it has to exist separately from the clean
+    candidate list the enrichment agent is shown, for two reasons:
+
+    - the **inherit** path replays a prior view's ``exposed_dimension_joins``
+      VERBATIM with no run filter, so a warm workspace whose pre-fix enrichment
+      picked a ``_sk__*`` would re-create it on every run forever; and
+    - nothing validates the model's ``include_columns`` against the candidate list
+      it was shown, so a clean prompt is prevention, not a guarantee.
+
+    It runs before persistence as well as before the view SQL, so the CLEANED spec
+    is what gets stored — a warm workspace self-heals at its next enrichment run
+    instead of carrying the leak forward.
+
+    Why it must be caught here rather than downstream: the builder renames a joined
+    dimension column to ``{fact_fk}__{col}``, so a surrogate that survives lands as
+    ``{fk}___sk__…`` — which no longer matches the prefix predicate and is
+    undetectable from that point on.
+
+    Args:
+        joins_with_ids: surviving ``(join, column-pair)`` tuples.
+
+    Returns:
+        The same tuples, in order, with surrogate payload columns removed.
+    """
+    return [
+        (
+            replace(
+                join,
+                include_columns=[c for c in join.include_columns if not is_surrogate_column(c)],
+            ),
+            pair,
+        )
+        for join, pair in joins_with_ids
+    ]
 
 
 def _lake_fqn(layer: str, bare: str) -> str:
@@ -403,6 +451,8 @@ class EnrichedViewsPhase(BasePhase):
                 if self._join_preserves_grain(ctx.duckdb_conn, fact_table, fact_fqn, join)
             ]
             joins_dropped += len(fqn_joins_with_ids) - len(surviving)
+
+            surviving = _served_join_payloads(surviving)
 
             # Persistence + the view SQL now reflect the survivors only.
             joins_with_ids = surviving
@@ -956,6 +1006,22 @@ class EnrichedViewsPhase(BasePhase):
         """Build context data for the enrichment agent."""
         table_ids = [t.table_id for t in typed_tables]
 
+        # SERVED vs JOINED, resolved ONCE for this whole function (DAT-878).
+        # `served_by_table` is everything the enrichment agent is shown and reasons
+        # about; `columns_by_table` stays unfiltered for the DimensionJoin endpoint
+        # reads further down, where a cured composite's legs ARE the surrogate pair.
+        # Deriving both from one expression is the point — three separate reads feed
+        # this prompt, and a per-read filter is one someone drops.
+        #
+        # Serving a clean list is PREVENTION, not a guarantee: nothing validates the
+        # model's `include_columns` against the list it was shown, and the inherit
+        # path replays a persisted view's joins verbatim. Enforcement therefore also
+        # lives on each surviving join's `include_columns` in `_run`. It matters
+        # because a surrogate that reaches `include_columns` becomes a served column
+        # named "{fact_fk}__{_sk__…}", which no longer matches the prefix predicate
+        # and so cannot be detected anywhere downstream.
+        served_by_table = {tid: served_columns(cols) for tid, cols in columns_by_table.items()}
+
         # Build tables with entity info
         fact_table_ids = {e.table_id for e in fact_entities}
         tables_data = []
@@ -966,7 +1032,7 @@ class EnrichedViewsPhase(BasePhase):
                     "column_name": col.column_name,
                     "resolved_type": col.resolved_type,
                 }
-                for col in columns_by_table.get(table.table_id, [])
+                for col in served_by_table.get(table.table_id, [])
             ]
             tables_data.append(
                 {
@@ -979,11 +1045,15 @@ class EnrichedViewsPhase(BasePhase):
                 }
             )
 
-        # Build semantic annotations
+        # Build semantic annotations — SERVED (rendered into the prompt), so both the
+        # id set and the name lookup read `served_by_table`. A surrogate carries no
+        # SemanticAnnotation today, but only because a filter in ANOTHER module keeps
+        # it un-annotated; reading the served map makes that structural here instead
+        # of borrowed.
         annotations_data = []
         ann_stmt = select(SemanticAnnotation).where(
             SemanticAnnotation.column_id.in_(
-                [col.column_id for cols in columns_by_table.values() for col in cols]
+                [col.column_id for cols in served_by_table.values() for col in cols]
             )
         )
         annotations = ctx.session.execute(ann_stmt).scalars().all()
@@ -991,7 +1061,7 @@ class EnrichedViewsPhase(BasePhase):
         # Map column_id to column info for lookup
         column_id_to_info: dict[str, dict[str, str]] = {}
         for table in typed_tables:
-            for col in columns_by_table.get(table.table_id, []):
+            for col in served_by_table.get(table.table_id, []):
                 column_id_to_info[col.column_id] = {
                     "table_name": table.table_name,
                     "column_name": col.column_name,

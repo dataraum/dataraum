@@ -155,10 +155,10 @@ def served_membership(
     ids (DAT-865) — the vocabulary ``relevant_conventions`` is judged against, kept
     as a ``_norm(id) → canonical id`` map so a tolerated variant canonicalizes at save.
 
-    Surrogate-column membership is inconsistent across serving sites (this
-    context's ``columns`` is surrogate-free since DAT-878, but other physical
-    schema views the SQL/validation agents also read are not) — seam decision
-    pending (W1-f).
+    Mint-owned surrogate columns are absent from this membership set, and now
+    uniformly so: every serving site the SQL/validation agents read goes through
+    the ``analysis/served_columns`` seam, including the physical DESCRIBE paths
+    that could not filter through the ORM.
     """
     membership = Membership(conventions={_norm(c): c for c in conventions})
     for table in context.tables:

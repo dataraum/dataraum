@@ -1120,7 +1120,7 @@ def format_context_for_prompt(
                     if distinct is not None and distinct > len(values)
                     else ""
                 )
-                lines.append(f"  Values{count_note}: {', '.join(values)}")
+                lines.append(f"  Values{count_note}: {', '.join(str(v) for v in values)}")
             lines.append("")
 
     # Derived (numeric) relationships — completion signals a status column can't carry
@@ -1180,7 +1180,8 @@ def format_context_for_prompt(
         for cls_entry in rel.get("conditioned_label_samples", []):
             lines.append(
                 f"    {rel['from_table']}.{cls_entry['column']} "
-                f"({rel['from_column']}-joined rows only): " + ", ".join(cls_entry["samples"])
+                f"({rel['from_column']}-joined rows only): "
+                + ", ".join(str(s) for s in cls_entry["samples"])
             )
         for range_entry in rel.get("conditioned_measure_ranges", []):
             lines.append(
@@ -1258,6 +1259,10 @@ def format_context_for_prompt(
             if col.get("business_description"):
                 lines.append(f"    {col['business_description']}")
             if col.get("sample_values"):
-                lines.append(f"    samples: {', '.join(col['sample_values'])}")
+                # prompt_samples/truncate_sample_value preserve NATIVE typing (the
+                # semantic agents' JSON must show numbers as numbers) — every TEXT
+                # renderer owns its own str conversion, or numeric values crash
+                # the join (business_cycles smoke, 2026-07-29).
+                lines.append(f"    samples: {', '.join(str(s) for s in col['sample_values'])}")
 
     return "\n".join(lines)

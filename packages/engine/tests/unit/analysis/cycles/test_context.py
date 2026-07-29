@@ -1638,3 +1638,58 @@ def test_an_enriched_axis_the_context_advertises_is_actually_citeable(
     kept, rejections = verify_cycles([_cycle("INV-1")], ctx)
     assert kept == []
     assert "INV-1" in rejections[0]
+
+
+def test_format_context_renders_numeric_data_values_in_every_text_join() -> None:
+    """The shared sample serving preserves NATIVE typing (numbers stay numbers
+    for the semantic agents' JSON), so every text join in this renderer owns
+    its own str conversion. Numeric sample values, slice values, and
+    conditioned label samples crashed the business_cycles smoke (2026-07-29)
+    — this pins all three join sites at once."""
+    context = {
+        "tables": [
+            {
+                "table_name": "journal_lines",
+                "row_count": 3,
+                "columns": [
+                    {
+                        "name": "entry_no",
+                        "semantic_role": "identifier",
+                        "sample_values": [1001, 1002, 1003],
+                    }
+                ],
+            }
+        ],
+        "slice_definitions": [
+            {
+                "table_name": "journal_lines",
+                "column_name": "period",
+                "slice_type": "categorical",
+                "values": [2024, 2025],
+                "value_count": 2,
+                "value_counts": [],
+                "confidence": None,
+                "business_context": None,
+                "priority": 1000,
+            }
+        ],
+        "relationships": [
+            {
+                "from_table": "journal_lines",
+                "from_column": "account_id",
+                "to_table": "chart_of_accounts",
+                "to_column": "account_id",
+                "cardinality": "N:1",
+                "relationship_type": "foreign_key",
+                "confidence": 1.0,
+                "conditioned_label_samples": [{"column": "account_code", "samples": [4000, 4100]}],
+                "conditioned_measure_ranges": [],
+            }
+        ],
+    }
+
+    rendered = format_context_for_prompt(context)
+
+    assert "samples: 1001, 1002, 1003" in rendered
+    assert "Values: 2024, 2025" in rendered
+    assert "4000, 4100" in rendered

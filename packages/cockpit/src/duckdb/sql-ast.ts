@@ -354,11 +354,14 @@ const selectListOf = (node: AstNode): unknown[] =>
  * `cte_map.map[].key` and in a reference's `table_name` (probed), and resolves
  * the two case-insensitively.
  *
- * Only plain `SELECT` bodies are kept. A set-operation body (`UNION`, and so
- * every `WITH RECURSIVE`) has no single projection to resolve a name against,
- * and a `WITH r(a, b) AS (…)` column re-naming is positional rather than by
- * name — both are simply absent from the scope, which makes every reference to
- * them stop resolving instead of resolving wrongly.
+ * Only plain `SELECT` bodies are kept. A set-operation body has no single
+ * projection to resolve a name against, and a `WITH r(a, b) AS (…)` column
+ * re-naming is positional rather than by name — both are simply absent from
+ * the scope, which makes every reference to them stop resolving instead of
+ * resolving wrongly. A genuinely recursive CTE is excluded by that first rule
+ * and not by the `RECURSIVE` keyword: its body is the `UNION` of a base and a
+ * recursive term. `WITH RECURSIVE` on a body that never recurses parses as an
+ * ordinary `SELECT_NODE` (probed) and resolves like the ordinary CTE it is.
  */
 function cteScope(
 	node: AstNode,
@@ -388,8 +391,10 @@ function cteScope(
  * A CTE reference parses as an unqualified `BASE_TABLE` (resolution is a
  * bind-time catalog lookup), so both qualifiers must be empty — a real
  * `lake.typed.x` can never be mistaken for one — and the name must be in
- * scope. `FROM cte(a, b)` re-names the columns positionally, which no
- * name-keyed resolution can follow, so it is refused with the rest.
+ * scope. Positional column re-naming, which no name-keyed resolution can
+ * follow, is refused in both its spellings: `FROM r AS z(a, b)` by the
+ * `column_name_alias` check here, and the bare `FROM r(a, b)` by not parsing
+ * as a `BASE_TABLE` at all (both probed).
  */
 function soleCteSource(
 	node: AstNode,
@@ -459,19 +464,20 @@ function columnLineage(
 }
 
 /**
- * Does this node re-project its source's rows UNCHANGED — every item a plain
- * column reference, or one bare star?
+ * Is every item of this projection a plain column reference or one bare star —
+ * nothing COMPUTED?
  *
- * Only then can the relation it reads speak for the result's grain. A computed
- * item may be an AGGREGATE that rolls the whole relation into a single scalar
- * row (`SELECT SUM(total) FROM revenue` is emphatically not "already broken out
- * by account"), and telling an aggregate from a scalar function needs the
- * bind-time classification the parse tree does not carry — `aggregatedColumns`
- * pays a catalog read for exactly that answer, which this pure, synchronous
- * read cannot. A `RENAME`/`REPLACE` star is refused for the same reason in the
- * other direction: it re-spells what it re-projects.
+ * The first half of the licence to inherit a relation's grain (the second is
+ * `carriesGrainColumns`). A computed item may be an AGGREGATE that rolls the
+ * whole relation into a single scalar row (`SELECT SUM(total) FROM revenue` is
+ * emphatically not "already broken out by account"), and telling an aggregate
+ * from a scalar function needs the bind-time classification the parse tree does
+ * not carry — `aggregatedColumns` pays a catalog read for exactly that answer,
+ * which this pure, synchronous read cannot. A `RENAME`/`REPLACE` star is
+ * refused for the same reason in the other direction: it re-spells what it
+ * re-projects.
  */
-function reprojectsUnchanged(node: AstNode): boolean {
+function projectsOnlyColumns(node: AstNode): boolean {
 	const list = selectListOf(node);
 	if (list.length === 0) return false;
 	return list.every((raw) => {
@@ -485,6 +491,42 @@ function reprojectsUnchanged(node: AstNode): boolean {
 			Array.isArray(item.replace_list) && item.replace_list.length > 0;
 		return !renamed && !replaced;
 	});
+}
+
+/**
+ * Does this projection still carry every column the relation's grain is made
+ * of? The second half of the licence to inherit it (strict review, DAT-671 R6).
+ *
+ * Dropping a grain column COLLAPSES rows: `WITH r AS (… GROUP BY account,
+ * region) SELECT DISTINCT region FROM r` is one row per region, and inheriting
+ * `account` there would grey a genuinely offerable axis with the words "already
+ * breaks out the result". `SELECT region FROM r` is the same claim with the
+ * de-duplication left to the eye. So a grain name the CTE itself EXPOSES must
+ * be exposed here too, or the hop is refused outright.
+ *
+ * A star carries the whole output by construction, so it always qualifies —
+ * including `EXCLUDE`, which drops a COLUMN without collapsing a row: the
+ * result is still at that grain, it just no longer shows it.
+ *
+ * A grain name the CTE does NOT expose (`SELECT SUM(x) FROM t GROUP BY region`
+ * — grouped by a column it never projects) is not checked: nothing downstream
+ * could carry it, and the rows are at that grain regardless.
+ */
+function carriesGrainColumns(
+	node: AstNode,
+	body: AstNode,
+	grain: ReadonlySet<string>,
+): boolean {
+	if (
+		selectListOf(node).some((raw) => asNode(raw)?.class === "STAR") // carries all
+	) {
+		return true;
+	}
+	for (const name of grain) {
+		if (itemExposing(body, name) === null) continue;
+		if (itemExposing(node, name) === null) return false;
+	}
+	return true;
 }
 
 /**
@@ -651,25 +693,34 @@ function identifiersFromSelectNode(
  * in this order:
  *
  *  1. The node's OWN grouping (`identifiersFromSelectNode`).
- *  2. When it has none of its own and it re-projects a single CTE unchanged
- *     (`reprojectsUnchanged`), THAT CTE's answer. `WITH revenue AS (… GROUP BY
- *     1) SELECT account, total FROM revenue ORDER BY total DESC` is one row per
- *     account however ungrouped its outer statement looks, so offering
- *     `account` as a fresh slice would re-group a result already at that grain
- *     — the tautological re-slice the greying exists to disclose. Refusing the
- *     hop for a computed projection is what keeps `SELECT SUM(total) FROM
- *     revenue` — a scalar rollup, broken out by nothing — from inheriting a
- *     grain it just collapsed.
- *  3. Every OTHER name the columns from (1)/(2) are known by, taken from each
- *     projected item's `columnLineage`. This is what lets ONE set answer the
- *     greying question on every compose path (ADR-0024 decision 2): tier A
- *     names an axis by the RESULT's spelling (`account`), the parts and node
- *     paths name it by the CATALOG's (`account_id__name`), and a set holding
- *     both greys the same column on both rather than only where the spellings
- *     happen to coincide.
+ *  2. When it has none of its own and it re-projects a single CTE without
+ *     collapsing it (`projectsOnlyColumns` + `carriesGrainColumns`), THAT CTE's
+ *     answer. `WITH revenue AS (… GROUP BY 1) SELECT account, total FROM
+ *     revenue ORDER BY total DESC` is one row per account however ungrouped its
+ *     outer statement looks, so offering `account` as a fresh slice would
+ *     re-group a result already at that grain — the tautological re-slice the
+ *     greying exists to disclose. The two conditions are what keep a projection
+ *     that COLLAPSED the CTE from inheriting a grain it no longer has: a
+ *     computed item may be an aggregate rolling it into one scalar row, and a
+ *     dropped grain column merges the rows underneath it.
+ *  3. Every OTHER name the columns from (1)/(2) are known by, taken from the
+ *     `columnLineage` of the item that ESTABLISHED each of them. This is what
+ *     lets ONE set answer the greying question on every compose path (ADR-0024
+ *     decision 2): tier A names an axis by the RESULT's spelling (`account`),
+ *     the parts and node paths name it by the CATALOG's (`account_id__name`),
+ *     and a set holding both greys the same column on both rather than only
+ *     where the spellings happen to coincide.
  *
  * Names are collected, never invented: every entry came off a `COLUMN_REF`, an
  * `AS` alias, or an ordinal resolved against the projection.
+ *
+ * The one irreducible cost of holding two namespaces in one set: if a result
+ * groups by `x AS y` and the fact ALSO catalogues a different column literally
+ * named `y`, that other column is greyed on the catalog-named paths. It takes
+ * an alias that collides exactly with another catalogued dimension of the same
+ * fact, and it costs a disclosed (never silent) over-grey — against a
+ * systematic MISS on every aliased base statement if the source spelling were
+ * dropped.
  */
 function grainSpellings(
 	node: AstNode,
@@ -679,31 +730,53 @@ function grainSpellings(
 	const spellings = identifiersFromSelectNode(node);
 	if (spellings.size === 0) {
 		const cte = soleCteSource(node, scope);
-		if (cte !== null && !visited.has(cte.key) && reprojectsUnchanged(node)) {
-			for (const name of grainSpellings(
+		if (cte !== null && !visited.has(cte.key) && projectsOnlyColumns(node)) {
+			const inner = grainSpellings(
 				cte.body,
 				cteScope(cte.body, scope),
 				new Set([...visited, cte.key]),
-			)) {
-				spellings.add(name);
+			);
+			if (carriesGrainColumns(node, cte.body, inner)) {
+				for (const name of inner) spellings.add(name);
 			}
 		}
 	}
 	if (spellings.size === 0) return spellings;
 
-	// Fixed against the grain set as it stands here: a projection is another
-	// spelling of an already-broken-out column, never a way to become one.
-	const lower = new Set([...spellings].map((n) => n.toLowerCase()));
-	for (const raw of selectListOf(node)) {
-		const item = asNode(raw);
-		if (item === null) continue;
-		const exposed = selectItemName(item);
-		const chain = [
-			...(exposed === null ? [] : [exposed]),
-			...columnLineage(item, node, scope, visited),
-		];
-		if (!chain.some((n) => lower.has(n.toLowerCase()))) continue;
-		for (const n of chain) spellings.add(n);
+	// The other spellings come from the ONE item that establishes each grain
+	// name, never from any item whose own name happens to collide with it. That
+	// distinction is the whole correctness of this step: in
+	// `SELECT a AS b, b AS c FROM t GROUP BY 1` the grain is item0 (aliased `b`,
+	// really the column `a`), while item1 projects the DIFFERENT column `b`
+	// under the name `c` and is not grouped at all. Matching every item's
+	// lineage against a flat name set greys `c` — a real, offerable axis
+	// disabled with the words "already breaks out the result", which is false.
+	// (Senior review, DAT-671 R6; the shape is pinned in the tests below.)
+	for (const name of [...spellings]) {
+		// The item the result EXPOSES under this name — the grain came from the
+		// projection, so this is the usual case. First wins on the (pathological,
+		// unaddressable) duplicate-alias projection.
+		const exposed = itemExposing(node, name);
+		if (exposed !== null) {
+			for (const n of columnLineage(exposed, node, scope, visited)) {
+				spellings.add(n);
+			}
+			continue;
+		}
+		// Otherwise the grain named a column the projection re-spells — a
+		// `GROUP BY account_id__name` over `… AS account`, or a name lifted out of
+		// a CTE body. The item that PROJECTS that column carries the result's own
+		// spelling for it.
+		for (const raw of selectListOf(node)) {
+			const item = asNode(raw);
+			if (item === null) continue;
+			const chain = columnLineage(item, node, scope, visited);
+			if (!chain.some((n) => n.toLowerCase() === name.toLowerCase())) continue;
+			const own = selectItemName(item);
+			if (own !== null) spellings.add(own);
+			for (const n of chain) spellings.add(n);
+			break;
+		}
 	}
 	return spellings;
 }

@@ -257,6 +257,28 @@ describe("existingIdentifierColumns", () => {
 		expect(names).toEqual(new Set(["account", "account_id__name"]));
 	});
 
+	// Senior review, DAT-671 R6. The other spellings must come from the item that
+	// ESTABLISHED the grain, never from an item whose own source name collides
+	// with it: here item0 groups the column `a` under the name `b`, while item1
+	// projects the DIFFERENT column `b` under the name `c` and is not grouped at
+	// all. Greying `c` would disable a real axis with the words "already breaks
+	// out the result".
+	it("does not grey a second column whose NAME collides with the grouped one's alias", async () => {
+		expect(
+			await existingIdentifierColumns(
+				"SELECT a AS b, b AS c FROM lake.typed.current_orders_enriched GROUP BY 1",
+			),
+		).toEqual(new Set(["b", "a"]));
+	});
+
+	it("greys both when both are grouped, in both spellings", async () => {
+		expect(
+			await existingIdentifierColumns(
+				"SELECT a AS b, b AS c FROM lake.typed.current_orders_enriched GROUP BY 1, 2",
+			),
+		).toEqual(new Set(["b", "a", "c"]));
+	});
+
 	it("resolves an aliased grouping column named by its SOURCE in the GROUP BY", async () => {
 		// `GROUP BY account_id__name` over `… AS account`: the grouping names the
 		// base column, the result column carries the alias. Both are the same
@@ -289,6 +311,35 @@ describe("existingIdentifierColumns", () => {
 				`${groupedCte}SELECT * FROM revenue`,
 			);
 			expect(names).toEqual(new Set(["account", "account_id__name"]));
+		});
+
+		// Strict review, DAT-671 R6: dropping a grain column COLLAPSES the rows,
+		// so the CTE's grain is no longer the result's. Both spellings of that
+		// mistake — the explicit de-duplication and the implicit one — must
+		// refuse the hop rather than grey an axis that genuinely still splits
+		// the result.
+		it("does NOT inherit a grain the projection collapsed", async () => {
+			const twoKeyCte =
+				"WITH revenue AS (SELECT account_id__name AS account, region_id__name AS region, " +
+				"SUM(total_amount) AS total FROM lake.typed.current_orders_enriched GROUP BY 1, 2) ";
+			expect(
+				await existingIdentifierColumns(
+					`${twoKeyCte}SELECT DISTINCT region FROM revenue`,
+				),
+			).toEqual(new Set());
+			expect(
+				await existingIdentifierColumns(
+					`${twoKeyCte}SELECT region, total FROM revenue`,
+				),
+			).toEqual(new Set());
+			// …and inherits it when the projection carries BOTH grain columns.
+			expect(
+				await existingIdentifierColumns(
+					`${twoKeyCte}SELECT account, region, total FROM revenue`,
+				),
+			).toEqual(
+				new Set(["account", "account_id__name", "region", "region_id__name"]),
+			);
 		});
 
 		it("does NOT inherit it through a computed projection — that may be a rollup", async () => {

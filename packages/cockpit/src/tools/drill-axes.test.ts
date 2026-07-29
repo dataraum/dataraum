@@ -303,12 +303,13 @@ describe("markAlreadyInResult (DAT-671 slice-menu curation)", () => {
 		expect(out[1].disabledReason).toBeNull();
 	});
 
-	it("passes axes through unchanged when existing is null (structural read couldn't decide)", () => {
-		const axes = [axis("account_id__name")];
-		expect(markAlreadyInResult(axes, null)).toBe(axes);
-	});
-
-	it("passes axes through unchanged when existing is empty (nothing already sliced)", () => {
+	// One case, not two, since DAT-671 R5: "the structural read couldn't decide"
+	// and "nothing is already sliced" both arrive here as an EMPTY set, because
+	// `alreadyInResult` absorbs `existingIdentifierColumns`'s null into the union
+	// it returns. They were always the same behaviour — pass everything through,
+	// never guess — and they are now the same value too, so this parameter is no
+	// longer nullable.
+	it("passes axes through unchanged when nothing is known to be already sliced", () => {
 		const axes = [axis("account_id__name")];
 		expect(markAlreadyInResult(axes, new Set())).toBe(axes);
 	});

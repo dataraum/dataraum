@@ -165,20 +165,26 @@ export interface DrillAxis {
 	 *  `driverGain`: node/measure path only, always null on tier A. */
 	hierarchyNext: string | null;
 	/** DAT-671 ("we should not slice on already existing slices," grey-out
-	 *  amendment): set when this axis's column NAME already matches one of the
-	 *  result's own non-measure identifier columns — the result is already
-	 *  broken out by this dimension (a GROUP BY it already carries, read
-	 *  structurally off the base statement — `sql-ast.ts`'s
-	 *  `existingIdentifierColumns`), so slicing by it again would be a no-op
-	 *  re-group. The item stays in the menu (never removed) but renders
-	 *  DISABLED with this reason. `null` when offered normally — either the
-	 *  axis genuinely isn't already in the result, or the determination
-	 *  couldn't decide structurally (never a guess): the post-execution fold
-	 *  probe (`drill-sql.ts`'s `foldsNothing`, tier-A only) remains the net for
-	 *  what this schema/name-only check misses on that path. Populated on the
-	 *  tier-A and parts-at-source (answer) paths only — the metric/measure node
-	 *  path (`resolveDrillAxes`) never re-wraps an already-drilled statement, so
-	 *  it stays null there. */
+	 *  amendment): set when the result is ALREADY broken out by this dimension,
+	 *  so slicing by it again would be a no-op re-group. Two structural signals
+	 *  feed it, unioned in one place (`drill-axes.ts`'s `alreadyInResult`): the
+	 *  base statement's own GROUP BY / projection, read off the SQL text
+	 *  (`sql-ast.ts`'s `existingIdentifierColumns`), and the drill stack the
+	 *  asking grid has already applied. The item stays in the menu (never
+	 *  removed) but renders DISABLED with this reason.
+	 *
+	 *  `null` when offered normally — either the axis genuinely isn't already in
+	 *  the result, or neither signal was available and the determination could
+	 *  not decide (never a guess): the post-execution fold probe
+	 *  (`drill-sql.ts`'s `foldsNothing`, tier-A only) remains the net for what
+	 *  this schema/name-only check misses on that path.
+	 *
+	 *  Populated on ALL THREE compose paths since DAT-671 R5. The node path has
+	 *  no base statement to read (it recomposes from clause parts rather than
+	 *  wrapping a statement), so only the applied stack can set it there — but
+	 *  set it it does, which is what retired the grid's own local grey-out: that
+	 *  branch disabled the item without ever setting this field, so a greyed
+	 *  entry carried no inline reason and no tooltip. */
 	disabledReason: string | null;
 	/** DAT-857: why this DATE column is offered without a grain. Set only when the
 	 *  engine's per-(target × axis) verdict withheld the bucketing — `temporal` is

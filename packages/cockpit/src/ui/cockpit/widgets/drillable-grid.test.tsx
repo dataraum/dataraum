@@ -143,6 +143,12 @@ const ndjsonResponse = (columns: string[], row: unknown[]) =>
 		{ status: 200, headers: { "Content-Type": "application/x-ndjson" } },
 	);
 
+/** The server's grey-out phrasing (`drill-axes.ts`'s ALREADY_AT_GRAIN_REASON).
+ *  Written out rather than imported: that module pulls the metadata client and
+ *  config at import time, which a jsdom widget test has no business booting. */
+const ALREADY_REASON =
+	"already at this grain — this column already breaks out the result";
+
 function stubFetch(axesResponse?: unknown) {
 	composeQueue = [];
 	composeBodies = [];
@@ -154,15 +160,34 @@ function stubFetch(axesResponse?: unknown) {
 		vi.fn(async (url: RequestInfo | URL, init?: RequestInit) => {
 			const u = String(url);
 			if (u.endsWith("/api/drill/axes")) {
-				return jsonResponse(
-					axesResponse ?? {
-						axes: [
-							axis("region"),
-							axis("product"),
-							axis("entry_id__date", "date"),
-						],
-					},
+				const body = JSON.parse(String(init?.body ?? "null")) as {
+					steps?: { kind: string; column: string }[];
+				} | null;
+				const served = (axesResponse ?? {
+					axes: [
+						axis("region"),
+						axis("product"),
+						axis("entry_id__date", "date"),
+					],
+				}) as { axes: DrillAxis[] };
+				// Model what the server now does (DAT-671 R5): the request carries
+				// the grid's applied stack, and an axis it is already sliced by comes
+				// back DISABLED WITH ITS REASON. The grid greys nothing locally
+				// anymore, so a stub that ignored `steps` would let these tests pass
+				// against behaviour production does not have.
+				const sliced = new Set(
+					(body?.steps ?? [])
+						.filter((s) => s.kind === "slice")
+						.map((s) => s.column),
 				);
+				return jsonResponse({
+					...served,
+					axes: served.axes.map((a) =>
+						a.disabledReason === null && sliced.has(a.column)
+							? { ...a, disabledReason: ALREADY_REASON }
+							: a,
+					),
+				});
 			}
 			if (u.endsWith("/api/run-sql")) {
 				const body = JSON.parse(String(init?.body ?? "null")) as {
@@ -373,15 +398,60 @@ const lastSteps = () =>
 
 describe("DrillableGrid — time grain", () => {
 	it("on TIER A a temporal axis slices RAW — there is no raw date left to bucket", async () => {
-		// Tier A wraps an already-aggregated result, so `/api/drill/compose`
-		// rejects a grained step. A structural limit, not a doctrinal one.
-		renderGrid();
+		// The PRODUCTION tier-A shape, both halves: no drill source (compose wraps
+		// the result) and the tier-A axes request. It matters that they agree —
+		// the grid no longer has a `grainable = source !== undefined` gate to
+		// catch a mismatch, and does not need one (DAT-671 R5): the tier-A
+		// resolver gates with no verdict target at all, so its date axis arrives
+		// already grain-STRIPPED and carrying the reason. The raw slice below is
+		// therefore a DATA outcome, which is exactly what ADR-0024 decision 2
+		// asks of a capability difference between paths.
+		renderGrid(
+			undefined,
+			undefined,
+			{
+				axes: [
+					{
+						...axis("entry_id__date", null),
+						temporalWithheldReason:
+							"Time grain withheld: this result carries no identity the engine has classified",
+					},
+				],
+			},
+			{ axesRequest: { resultSql: BASE_SQL } },
+		);
 		await sliceBy("entry_id__date", "SQL_RAW");
 		expect(lastSteps()).toEqual([{ kind: "slice", column: "entry_id__date" }]);
 		// A plain removable pill, not the grain chip.
 		expect(
 			screen.getByTestId("drill-step-slice-entry_id__date").textContent,
 		).not.toContain("Month");
+	});
+
+	// The other half of the same rule, and the one R5 added: the absence is
+	// SPOKEN. Before, tier A returned `temporal: null` with no explanation at
+	// all, so a date column simply had no grain control and no reason why.
+	it("says WHY the tier-A date carries no grain, in the menu", async () => {
+		renderGrid(
+			undefined,
+			undefined,
+			{
+				axes: [
+					{
+						...axis("entry_id__date", null),
+						temporalWithheldReason:
+							"Time grain withheld: this result carries no identity the engine has classified",
+					},
+				],
+			},
+			{ axesRequest: { resultSql: BASE_SQL } },
+		);
+		const button = screen.getByTestId<HTMLButtonElement>("drill-slice-button");
+		await waitFor(() => expect(button.disabled).toBe(false));
+		fireEvent.click(button);
+		expect(
+			(await screen.findByTestId("drill-axis-entry_id__date")).textContent,
+		).toContain("no identity the engine has classified");
 	});
 
 	// DAT-671 R2: grain follows the DATA, not the path. An answer that recomposes
@@ -716,6 +786,32 @@ describe("DrillableGrid — already-in-result grey-out (DAT-671)", () => {
 		expect(enabledItem.getAttribute("data-disabled")).toBeFalsy();
 	});
 
+	// Senior review (DAT-671 R5): the greying is the SERVER's answer now, and it
+	// lands one metadata round-trip after a drill commits — `keepPreviousData`
+	// deliberately holds the previous menu meanwhile, so inside that window the
+	// just-sliced item is still enabled and clickable. Appending blindly would put
+	// two `{kind:"slice", column:X}` entries in the stack, which collide on the
+	// step chip's `slice:${column}` React key and make a remove-by-index click
+	// delete only one of them. The step stack is this component's own invariant,
+	// so `slice()` enforces it regardless of network timing.
+	it("re-slicing an already-sliced column is a NO-OP, whatever the menu says", async () => {
+		// The stub is told to grey NOTHING, which is exactly the state the widget
+		// sees for that one round-trip.
+		renderGrid(undefined, undefined, {
+			axes: [axis("region"), axis("product")],
+		});
+		await sliceBy("region", "SQL1");
+		expect(composeBodies).toHaveLength(1);
+
+		fireEvent.click(screen.getByTestId("drill-slice-button"));
+		fireEvent.click(await screen.findByTestId("drill-axis-region"));
+		// No second compose fired…
+		await waitFor(() => expect(composeQueue.length).toBe(0));
+		expect(composeBodies).toHaveLength(1);
+		// …and the stack still holds exactly one chip for the column.
+		expect(screen.getAllByTestId("drill-step-slice-region")).toHaveLength(1);
+	});
+
 	it("clicking the disabled item does not fire a compose call", async () => {
 		renderGrid(undefined, undefined, {
 			axes: [axis("region", null, { disabledReason: "already at this grain" })],
@@ -856,10 +952,18 @@ describe("DrillableGrid — hierarchy descent suggestion", () => {
 		);
 		await screen.findByTestId("drill-step-slice-product");
 
+		// AWAITED, because since DAT-671 R5 this is the SERVER's answer: the
+		// applied stack rides the axes request and comes back with `product`
+		// disabled. The grid holds the previous menu until it lands
+		// (keepPreviousData) rather than blanking, so the suggestion disappears
+		// one metadata round-trip later — not synchronously as it did when the
+		// grid decided this locally.
 		fireEvent.click(screen.getByTestId("drill-slice-button"));
-		expect(
-			screen.queryByTestId("drill-hierarchy-suggestion-product"),
-		).toBeNull();
+		await waitFor(() =>
+			expect(
+				screen.queryByTestId("drill-hierarchy-suggestion-product"),
+			).toBeNull(),
+		);
 	});
 });
 
@@ -963,8 +1067,13 @@ describe("DrillableGrid — Haiku guidance fallback", () => {
 		fireEvent.click(await screen.findByTestId("drill-suggest-guidance"));
 
 		await waitFor(() => expect(guidanceQueue.length).toBe(1));
-		const sent = guidanceBodies[0] as { axes: unknown[] };
+		const sent = guidanceBodies[0] as { axes: unknown[]; totalAxes: number };
 		expect(sent.axes.length).toBe(MAX_GUIDANCE_AXES);
+		// DAT-671 R5: …and SAYS how many there were. This layer is the only one
+		// that can — the route's schema rejects an over-cap payload, so the
+		// server can never count what it was not sent, and a model handed eight
+		// of thirteen with no note writes as though it had seen the menu.
+		expect(sent.totalAxes).toBe(MAX_GUIDANCE_AXES + 5);
 		guidanceQueue.shift()?.(jsonResponse({ suggestions: [] }));
 	});
 

@@ -66,12 +66,24 @@ export interface AxisGuidanceSuggestion {
 export async function suggestAxisGuidance(
 	measureLabel: string,
 	axes: UnmeasuredAxisInput[],
+	totalAxes?: number,
 ): Promise<AxisGuidanceSuggestion[]> {
 	const capped = axes.slice(0, MAX_GUIDANCE_AXES);
 	const wanted = new Set(capped.map((a) => a.column));
+	// DAT-671 R5: say when this is a SUBSET. The count cannot be recovered server
+	// side — the route's schema rejects anything over MAX_GUIDANCE_AXES, so an
+	// over-cap menu never arrives whole — which is why the caller sends it. A
+	// pure-substrate node routinely has more dimensions than this, and a model
+	// shown eight of twenty-three with no note will happily write as though it
+	// had seen the lot. Names the number AND forbids the inference, the way the
+	// engine's CuratedSlices.note does.
+	const subsetNote =
+		totalAxes !== undefined && totalAxes > capped.length
+			? `\n\nNOTE: these are ${capped.length} of ${totalAxes} candidate dimensions on this result — the rest were not sent to you. Say nothing that implies this is the complete set of ways to break the measure down.`
+			: "";
 	const userContent = `MEASURE: ${measureLabel}\n\nDIMENSIONS (column, type):\n${capped
 		.map((a) => `- ${a.column} (${a.sliceType})`)
-		.join("\n")}`;
+		.join("\n")}${subsetNote}`;
 
 	// Bounds the call itself (fold-in #5): a hung model must not hold the
 	// route handler's connection open forever — the SAME reason

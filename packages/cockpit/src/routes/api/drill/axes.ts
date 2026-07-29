@@ -8,13 +8,19 @@
 //   - `metricKey` / `standardField` → the node's own extracts + the engine's
 //     additivity verdict for that target;
 //   - `partsSources` → an answer's PROVEN clause parts: same relation→fact→
-//     catalog resolution as a metric, time grain always withheld (an ad-hoc
-//     concept has no persisted verdict);
+//     catalog resolution as a metric, and since DAT-671 R2 the same verdict
+//     resolution too — the grain follows the answer's identity, not its path;
 //   - `resultSql` → tier A: the axes must be COLUMNS OF THE RESULT, so the
 //     statement is DESCRIBEd here (bind + plan, no execution) and the catalog is
 //     intersected with what it projects. Doing the DESCRIBE server-side keeps
 //     the client from having to wait for the grid's own stream header before it
 //     can ask what it may slice.
+//
+// `steps` rides along on ALL THREE (DAT-671 R5), never as a path selector: the
+// asking grid's already-applied drill stack is what lets the server grey an
+// axis the result is already broken out by, WITH its reason. It used to reach
+// only the parts path, so on the other two the grid disabled the item locally
+// and explained nothing — the client-side grey-out this deleted.
 
 import { createFileRoute } from "@tanstack/react-router";
 import { z } from "zod";
@@ -53,10 +59,11 @@ const BodySchema = z
 			.min(1)
 			.max(16)
 			.optional(),
-		// The drill stack the asking grid has ALREADY applied (DAT-671 R2), so the
-		// server can grey what is already sliced instead of the client disabling a
-		// menu item with no explanation. Carried alongside `partsSources` like
-		// `baseSql`, not a path selector.
+		// The drill stack the asking grid has ALREADY applied (DAT-671 R2, all
+		// three paths since R5), so the server can grey what is already sliced
+		// instead of the client disabling a menu item with no explanation. An
+		// auxiliary field like `baseSql`, never a path selector — hence outside
+		// the `.refine()` below.
 		steps: z
 			.array(
 				z.object({
@@ -116,6 +123,7 @@ export const Route = createFileRoute("/api/drill/axes")({
 								metricKey !== undefined
 									? { metricKey }
 									: { standardField: standardField as string },
+								parsed.data.steps,
 							),
 						);
 					}
@@ -165,7 +173,11 @@ export const Route = createFileRoute("/api/drill/axes")({
 						});
 					}
 					return Response.json(
-						await resolveAdHocDrillAxes(described.columns, resultSql),
+						await resolveAdHocDrillAxes(
+							described.columns,
+							resultSql,
+							parsed.data.steps,
+						),
 					);
 				} catch (err) {
 					console.error("drill axes failed", err);

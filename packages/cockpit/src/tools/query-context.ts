@@ -735,10 +735,31 @@ export interface RelationshipBlockRow {
  * Each line is a directly usable JOIN predicate (`<from>."col" = <to>."col"`) plus the
  * cardinality/type and, when the edge fans out, the SUM-double-counts caution. Empty →
  * a one-line note.
+ *
+ * `omitted` is how many CONFIRMED relationships were dropped because an endpoint
+ * would not resolve (DAT-671 R5). It has to be said, and this block is the one
+ * place that can say it: the instruction below tells the model that an unlisted
+ * join must not be invented — "abstain or state the limitation". So a silently
+ * dropped edge does not merely go unmentioned, it converts into a confident,
+ * false abstention about data the workspace HAS. Naming the count and the reason
+ * (the engine's `CuratedSlices.note` rule) turns that back into a knowable gap.
+ *
+ * REQUIRED, not defaulted (senior review): the disclosure's whole failure mode is
+ * being absent, so a caller must state the count — including stating zero. A
+ * default would let a future call site compile clean while silently dropping it.
  */
-export function formatRelationships(rows: RelationshipBlockRow[]): string {
+export function formatRelationships(
+	rows: RelationshipBlockRow[],
+	omitted: number,
+): string {
+	// Written for a model reader: the reason matters as much as the number,
+	// because "3 omitted" alone invites the assumption that they were junk.
+	const omittedNote =
+		omitted > 0
+			? `\n\n(${omitted} confirmed ${omitted === 1 ? "relationship is" : "relationships are"} NOT listed: an endpoint table or column is no longer under the promoted analysis head, so no runnable join predicate could be formed. That is a gap in what can be addressed here, not a claim that no path exists.)`
+			: "";
 	if (rows.length === 0) {
-		return "<relationships>\n(No confirmed relationships between tables.)\n</relationships>";
+		return `<relationships>\n(No confirmed relationships between tables.)${omittedNote}\n</relationships>`;
 	}
 	const lines = rows
 		.map((r) => {
@@ -763,7 +784,7 @@ export function formatRelationships(rows: RelationshipBlockRow[]): string {
 		"are shown; these paths still reach it (join lake.typed.<dim>). Ground EVERY join " +
 		"on a pair listed here; if the join you need isn't listed, do not invent one — " +
 		"abstain or state the limitation.\n\n" +
-		`${lines.join("\n")}\n` +
+		`${lines.join("\n")}${omittedNote}\n` +
 		"</relationships>"
 	);
 }
@@ -796,7 +817,7 @@ export async function buildRelationshipsBlock(): Promise<string> {
 			r.toTableId &&
 			r.toColumnId,
 	);
-	if (defined.length === 0) return formatRelationships([]);
+	if (defined.length === 0) return formatRelationships([], 0);
 
 	// Resolve endpoint table addresses + column names in one pass each (no N+1).
 	const tableIds = new Set<string>();
@@ -849,7 +870,10 @@ export async function buildRelationshipsBlock(): Promise<string> {
 		const fromColumn = colNameById.get(r.fromColumnId as string);
 		const toColumn = colNameById.get(r.toColumnId as string);
 		// A dropped endpoint (stale id) can't form a usable JOIN predicate — skip it
-		// rather than render a half-resolved, un-runnable line.
+		// rather than render a half-resolved, un-runnable line. COUNTED, not just
+		// skipped (DAT-671 R5): the block instructs the model to abstain on any
+		// join it cannot find here, so an unmentioned drop becomes a confident
+		// false abstention. `formatRelationships` states the total.
 		if (!fromAddress || !toAddress || !fromColumn || !toColumn) continue;
 		blockRows.push({
 			fromAddress,
@@ -866,7 +890,7 @@ export async function buildRelationshipsBlock(): Promise<string> {
 					: null,
 		});
 	}
-	return formatRelationships(blockRows);
+	return formatRelationships(blockRows, defined.length - blockRows.length);
 }
 
 // --- Table entities (DAT-607) ----------------------------------------------------

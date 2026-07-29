@@ -306,6 +306,187 @@ function selectItemName(item: unknown): string | null {
 	return null;
 }
 
+// --- CTE resolution (DAT-671 R6) ---------------------------------------------
+//
+// The common agent-authored answer is CTE-SHAPED:
+//
+//   WITH revenue AS (SELECT account_id__name AS account, SUM(credit) AS total
+//                      FROM lake.typed.current_journal_lines_enriched
+//                     WHERE account_id__account_type = 'revenue' GROUP BY 1)
+//   SELECT account, total FROM revenue ORDER BY total DESC
+//
+// Read one hop over the OUTER projection, `account` is a column of `revenue`
+// and nothing more. The catalog holds `account_id__name`, so nothing matched
+// and a result with a visible dimension in it offered NO AXES AT ALL — the
+// same class of loss as the bare alias J7 pins, one level further in. The
+// alias is not a new column, and the statement itself says in its own
+// `cte_map` which column it is a new name FOR.
+//
+// Resolution follows that chain and stops at the first thing it cannot prove:
+// a node resolves through a CTE only when it reads exactly ONE relation and
+// that relation is a CTE this statement declares. A join, a subquery, a table
+// function, a `FROM cte(a, b)` positional re-naming, a set-operation CTE body
+// and an unresolvable name all stop it, leaving the column to speak for itself
+// exactly as before. The bound is the visited set: every hop consumes a
+// distinct CTE name, and DuckDB rejects a cyclic non-recursive WITH outright.
+
+/** A parse-tree object (never an array — DuckDB's node lists are arrays). */
+type AstNode = Record<string, unknown>;
+
+function asNode(value: unknown): AstNode | null {
+	return typeof value === "object" && value !== null && !Array.isArray(value)
+		? (value as AstNode)
+		: null;
+}
+
+function asSelectNode(value: unknown): AstNode | null {
+	const node = asNode(value);
+	return node !== null && node.type === "SELECT_NODE" ? node : null;
+}
+
+const selectListOf = (node: AstNode): unknown[] =>
+	Array.isArray(node.select_list) ? node.select_list : [];
+
+/**
+ * The CTE bodies a node may reference: the ones it declares itself over the
+ * ones its enclosing scope declared, since an inner `WITH` shadows an outer
+ * name. Keys are lower-cased — DuckDB preserves identifier case in
+ * `cte_map.map[].key` and in a reference's `table_name` (probed), and resolves
+ * the two case-insensitively.
+ *
+ * Only plain `SELECT` bodies are kept. A set-operation body (`UNION`, and so
+ * every `WITH RECURSIVE`) has no single projection to resolve a name against,
+ * and a `WITH r(a, b) AS (…)` column re-naming is positional rather than by
+ * name — both are simply absent from the scope, which makes every reference to
+ * them stop resolving instead of resolving wrongly.
+ */
+function cteScope(
+	node: AstNode,
+	inherited: ReadonlyMap<string, AstNode>,
+): Map<string, AstNode> {
+	const scope = new Map(inherited);
+	const cteMap = asNode(node.cte_map);
+	const entries = cteMap === null ? null : cteMap.map;
+	if (!Array.isArray(entries)) return scope;
+	for (const raw of entries) {
+		const entry = asNode(raw);
+		if (entry === null || typeof entry.key !== "string") continue;
+		const value = asNode(entry.value);
+		if (value === null) continue;
+		if (Array.isArray(value.aliases) && value.aliases.length > 0) continue;
+		const query = asNode(value.query);
+		const body = query === null ? null : asSelectNode(query.node);
+		if (body === null) continue;
+		scope.set(entry.key.toLowerCase(), body);
+	}
+	return scope;
+}
+
+/**
+ * The ONE CTE a node reads `FROM`, or null when it reads anything else.
+ *
+ * A CTE reference parses as an unqualified `BASE_TABLE` (resolution is a
+ * bind-time catalog lookup), so both qualifiers must be empty — a real
+ * `lake.typed.x` can never be mistaken for one — and the name must be in
+ * scope. `FROM cte(a, b)` re-names the columns positionally, which no
+ * name-keyed resolution can follow, so it is refused with the rest.
+ */
+function soleCteSource(
+	node: AstNode,
+	scope: ReadonlyMap<string, AstNode>,
+): { key: string; body: AstNode } | null {
+	const from = asNode(node.from_table);
+	if (from === null || from.type !== "BASE_TABLE") return null;
+	if (typeof from.table_name !== "string") return null;
+	if (from.catalog_name !== "" || from.schema_name !== "") return null;
+	if (
+		Array.isArray(from.column_name_alias) &&
+		from.column_name_alias.length > 0
+	) {
+		return null;
+	}
+	const key = from.table_name.toLowerCase();
+	const body = scope.get(key);
+	return body === undefined ? null : { key, body };
+}
+
+/** The select item that exposes `name` — its `AS` alias, else its own bare
+ *  column name — case-insensitively, or null when none does. */
+function itemExposing(node: AstNode, name: string): AstNode | null {
+	const wanted = name.toLowerCase();
+	for (const raw of selectListOf(node)) {
+		const item = asNode(raw);
+		if (item === null) continue;
+		const exposed = selectItemName(item);
+		if (exposed !== null && exposed.toLowerCase() === wanted) return item;
+	}
+	return null;
+}
+
+/**
+ * Every name one projected column is known by, outermost first: the column this
+ * item references, then the name that column carries inside each CTE it came
+ * through, ending at the base column the underlying relation actually holds.
+ * `["account", "account_id__name"]` for the shape above; `["region_id__name"]`
+ * for an ordinary reference to a real table's column.
+ *
+ * EMPTY for a computed projection — `SUM(credit) AS total` is a projection of
+ * no single column, and inventing one would be the SQL inference this module
+ * refuses.
+ */
+function columnLineage(
+	item: AstNode,
+	node: AstNode,
+	scope: ReadonlyMap<string, AstNode>,
+	visited: ReadonlySet<string>,
+): string[] {
+	if (item.class !== "COLUMN_REF") return [];
+	const base = bareColumn(item.column_names);
+	if (base === null) return [];
+	const cte = soleCteSource(node, scope);
+	if (cte === null || visited.has(cte.key)) return [base];
+	const inner = itemExposing(cte.body, base);
+	if (inner === null) return [base];
+	return [
+		base,
+		...columnLineage(
+			inner,
+			cte.body,
+			cteScope(cte.body, scope),
+			new Set([...visited, cte.key]),
+		),
+	];
+}
+
+/**
+ * Does this node re-project its source's rows UNCHANGED — every item a plain
+ * column reference, or one bare star?
+ *
+ * Only then can the relation it reads speak for the result's grain. A computed
+ * item may be an AGGREGATE that rolls the whole relation into a single scalar
+ * row (`SELECT SUM(total) FROM revenue` is emphatically not "already broken out
+ * by account"), and telling an aggregate from a scalar function needs the
+ * bind-time classification the parse tree does not carry — `aggregatedColumns`
+ * pays a catalog read for exactly that answer, which this pure, synchronous
+ * read cannot. A `RENAME`/`REPLACE` star is refused for the same reason in the
+ * other direction: it re-spells what it re-projects.
+ */
+function reprojectsUnchanged(node: AstNode): boolean {
+	const list = selectListOf(node);
+	if (list.length === 0) return false;
+	return list.every((raw) => {
+		const item = asNode(raw);
+		if (item === null) return false;
+		if (item.class === "COLUMN_REF") return true;
+		if (item.class !== "STAR") return false;
+		const renamed =
+			Array.isArray(item.rename_list) && item.rename_list.length > 0;
+		const replaced =
+			Array.isArray(item.replace_list) && item.replace_list.length > 0;
+		return !renamed && !replaced;
+	});
+}
+
 /**
  * What each projected column of a result is a projection OF (DAT-671 R2):
  * `result name → base column`, for the plain column references in the outer
@@ -328,12 +509,19 @@ function selectItemName(item: unknown): string | null {
  * module refuses — so it is simply absent, and the caller falls back to the
  * result's own spelling.
  *
- * ONE HOP, no star-wrapper unwrap (unlike `existingIdentifierColumns`, whose
- * hop is about an outer GROUP BY): a `SELECT * RENAME (...)` wrap RENAMES what
- * it re-projects, so reading the inner list would attribute inner names to
- * outer columns that no longer carry them. An empty map is the honest answer
- * there — the caller then matches on the result's own spelling exactly as it
- * did before.
+ * THROUGH CTE BODIES (DAT-671 R6): the rename an agent writes usually happens
+ * one level in — `WITH revenue AS (SELECT account_id__name AS account …)
+ * SELECT account … FROM revenue` — so the source is resolved transitively down
+ * the CTE chain (`columnLineage`), and this map holds the base column at the
+ * end of it, not the CTE's own output name. That is the name the catalog
+ * holds, which is the whole point of the lookup.
+ *
+ * No star-wrapper unwrap (unlike `existingIdentifierColumns`, whose hop is
+ * about an outer GROUP BY): a `SELECT * RENAME (...)` wrap RENAMES what it
+ * re-projects, so reading the inner list would attribute inner names to outer
+ * columns that no longer carry them. An empty map is the honest answer there —
+ * the caller then matches on the result's own spelling exactly as it did
+ * before.
  */
 export async function projectedSourceColumns(
 	sql: string,
@@ -362,14 +550,19 @@ export async function projectedSourceColumns(
 	) {
 		return out;
 	}
-	const selectList = (node as Record<string, unknown>).select_list;
+	const selectNode = node as AstNode;
+	const selectList = selectNode.select_list;
 	if (!Array.isArray(selectList)) return out;
+	const scope = cteScope(selectNode, new Map());
 	for (const item of selectList) {
 		if (typeof item !== "object" || item === null) continue;
 		const obj = item as Record<string, unknown>;
 		if (obj.class !== "COLUMN_REF") continue;
-		const source = bareColumn(obj.column_names);
-		if (source === null) continue;
+		// The LAST name of the lineage: the base column, however many CTE
+		// renames stand between it and this projection.
+		const lineage = columnLineage(obj, selectNode, scope, new Set());
+		const source = lineage[lineage.length - 1];
+		if (source === undefined) continue;
 		const name = selectItemName(obj);
 		// First spelling wins — a result projecting the same column twice is
 		// already ambiguous to address, and picking deterministically beats
@@ -381,10 +574,11 @@ export async function projectedSourceColumns(
 
 /**
  * Read the GROUP BY / projection identifiers off ONE already-validated
- * SELECT_NODE (pure, no further hops) — the shared core `existingIdentifierColumns`
- * applies to either the top-level node directly, or the ONE inner node a
- * star-wrapper hop unwraps to (see below). GROUP BY ALL / ordinal positions /
- * ungrouped-is-empty are exactly as described on the exported function.
+ * SELECT_NODE (pure, this node only) — the innermost step of
+ * `existingIdentifierColumns`, applied to the top-level node, to the ONE inner
+ * node a star-wrapper hop unwraps to, or to a CTE body (see `grainSpellings`).
+ * GROUP BY ALL / ordinal positions / ungrouped-is-empty are exactly as
+ * described on the exported function.
  */
 function identifiersFromSelectNode(
 	selectNode: Record<string, unknown>,
@@ -452,6 +646,69 @@ function identifiersFromSelectNode(
 }
 
 /**
+ * Every SPELLING of the columns this node's result is already broken out by —
+ * the shared core of `existingIdentifierColumns` (DAT-671 R6). Three sources,
+ * in this order:
+ *
+ *  1. The node's OWN grouping (`identifiersFromSelectNode`).
+ *  2. When it has none of its own and it re-projects a single CTE unchanged
+ *     (`reprojectsUnchanged`), THAT CTE's answer. `WITH revenue AS (… GROUP BY
+ *     1) SELECT account, total FROM revenue ORDER BY total DESC` is one row per
+ *     account however ungrouped its outer statement looks, so offering
+ *     `account` as a fresh slice would re-group a result already at that grain
+ *     — the tautological re-slice the greying exists to disclose. Refusing the
+ *     hop for a computed projection is what keeps `SELECT SUM(total) FROM
+ *     revenue` — a scalar rollup, broken out by nothing — from inheriting a
+ *     grain it just collapsed.
+ *  3. Every OTHER name the columns from (1)/(2) are known by, taken from each
+ *     projected item's `columnLineage`. This is what lets ONE set answer the
+ *     greying question on every compose path (ADR-0024 decision 2): tier A
+ *     names an axis by the RESULT's spelling (`account`), the parts and node
+ *     paths name it by the CATALOG's (`account_id__name`), and a set holding
+ *     both greys the same column on both rather than only where the spellings
+ *     happen to coincide.
+ *
+ * Names are collected, never invented: every entry came off a `COLUMN_REF`, an
+ * `AS` alias, or an ordinal resolved against the projection.
+ */
+function grainSpellings(
+	node: AstNode,
+	scope: ReadonlyMap<string, AstNode>,
+	visited: ReadonlySet<string>,
+): Set<string> {
+	const spellings = identifiersFromSelectNode(node);
+	if (spellings.size === 0) {
+		const cte = soleCteSource(node, scope);
+		if (cte !== null && !visited.has(cte.key) && reprojectsUnchanged(node)) {
+			for (const name of grainSpellings(
+				cte.body,
+				cteScope(cte.body, scope),
+				new Set([...visited, cte.key]),
+			)) {
+				spellings.add(name);
+			}
+		}
+	}
+	if (spellings.size === 0) return spellings;
+
+	// Fixed against the grain set as it stands here: a projection is another
+	// spelling of an already-broken-out column, never a way to become one.
+	const lower = new Set([...spellings].map((n) => n.toLowerCase()));
+	for (const raw of selectListOf(node)) {
+		const item = asNode(raw);
+		if (item === null) continue;
+		const exposed = selectItemName(item);
+		const chain = [
+			...(exposed === null ? [] : [exposed]),
+			...columnLineage(item, node, scope, visited),
+		];
+		if (!chain.some((n) => lower.has(n.toLowerCase()))) continue;
+		for (const n of chain) spellings.add(n);
+	}
+	return spellings;
+}
+
+/**
  * Is this node EXACTLY `SELECT * [RENAME (...)|EXCLUDE (...)] FROM (<subquery>)`
  * — a bare star projection (with only RENAME/EXCLUDE modifiers, never a
  * computed replace/expr), no WHERE/HAVING/QUALIFY/SAMPLE/ORDER-BY-LIMIT, over
@@ -502,24 +759,30 @@ function isStarWrapperNode(node: Record<string, unknown>): boolean {
  * projected column) are the axes that would be a tautological re-slice — the
  * result is already at that grain for them.
  *
- * ONE-HOP, by design (the amendment's hard line: no nested-CTE walking, no
- * rewriting) — with exactly ONE special case: when the outer node is nothing
- * but OUR OWN `SELECT * RENAME (...) FROM (<subquery>)` re-label wrap
- * (`isStarWrapperNode`, `drill-sql.ts`'s `composeDrill` — DAT-671 drilled-
- * projection hygiene), the hop reads THAT wrap's inner subquery instead of the
- * wrap itself. Without this, a report that was drilled, then MINTED as a
- * child (freezing the re-labeled wrap as `report.sql`), would re-open with its
- * own grain looking ungrouped — the wrap's outer `SELECT *` carries no GROUP
- * BY of its own, only its inner subquery does — reintroducing the exact
- * tautological-reslice offer one level down. Still one hop, never a walk: the
- * inner node's OWN `select_list`/`group_expressions` are read directly, never
- * checked for a FURTHER wrapper — a wrap-of-a-wrap (or any inner shape that
- * isn't a plain `SELECT_NODE`) returns `null`, not a second unwrap and not an
- * asserted-empty guess. Every OTHER statement — a CTE (`cte_map` is never
- * touched, so `WITH x AS (...) SELECT ... GROUP BY ...` resolves off its own
- * outer `select_list`/`group_expressions` regardless of the CTE), a set
- * operation (UNION/INTERSECT/EXCEPT), more than one statement, or a parse
- * failure — is read (or refused) exactly as before.
+ * WHICH NODE DECIDES. Normally the outer one, with ONE special case: when it
+ * is nothing but OUR OWN `SELECT * RENAME (...) FROM (<subquery>)` re-label
+ * wrap (`isStarWrapperNode`, `drill-sql.ts`'s `composeDrill` — DAT-671
+ * drilled-projection hygiene), the hop reads THAT wrap's inner subquery
+ * instead of the wrap itself. Without this, a report that was drilled, then
+ * MINTED as a child (freezing the re-labeled wrap as `report.sql`), would
+ * re-open with its own grain looking ungrouped — the wrap's outer `SELECT *`
+ * carries no GROUP BY of its own, only its inner subquery does —
+ * reintroducing the exact tautological-reslice offer one level down. That hop
+ * is one, never a walk: a wrap-of-a-wrap (or any inner shape that isn't a
+ * plain `SELECT_NODE`) returns `null`, not a second unwrap and not an
+ * asserted-empty guess. A set operation (UNION/INTERSECT/EXCEPT), more than
+ * one statement, or a parse failure is refused as before.
+ *
+ * NAMED RELATIONS THE STATEMENT ITSELF DECLARES are resolved (DAT-671 R6, the
+ * one extension to the original one-hop line): the deciding node's grouping,
+ * and every column in it, are read through the `cte_map` (`grainSpellings` →
+ * `columnLineage`). This is a LOOKUP in the statement's own text, not the
+ * arbitrary nesting the amendment barred — an anonymous derived table
+ * (`FROM (SELECT …) x`) is still not followed, and a shape that cannot be
+ * proven still resolves to nothing. It matters because the CTE shape is what
+ * agents actually write: without it, `WITH revenue AS (… GROUP BY 1) SELECT
+ * account, total FROM revenue` reads as an ungrouped detail result and offers
+ * a re-slice by the very column it is already broken out by.
  *
  * A statement this can't determine returns `null`: "could not determine
  * structurally," never a guess. The caller then treats NOTHING as already-
@@ -562,9 +825,10 @@ export async function existingIdentifierColumns(
 	) {
 		return null;
 	}
-	const selectNode = node as Record<string, unknown>;
+	const selectNode = node as AstNode;
+	const scope = cteScope(selectNode, new Map());
 	if (!isStarWrapperNode(selectNode)) {
-		return identifiersFromSelectNode(selectNode);
+		return grainSpellings(selectNode, scope, new Set());
 	}
 
 	// Our own re-label wrap: hop ONCE into the real statement it wraps. A
@@ -584,7 +848,13 @@ export async function existingIdentifierColumns(
 	) {
 		return null;
 	}
-	const innerSelectNode = innerNode as Record<string, unknown>;
+	const innerSelectNode = innerNode as AstNode;
 	if (isStarWrapperNode(innerSelectNode)) return null; // multi-hop: undecided
-	return identifiersFromSelectNode(innerSelectNode);
+	// The wrapped statement sees the outer statement's CTEs as well as any of
+	// its own — the same scope its names bind in.
+	return grainSpellings(
+		innerSelectNode,
+		cteScope(innerSelectNode, scope),
+		new Set(),
+	);
 }

@@ -1,4 +1,4 @@
-// J1-J8: the practitioner journeys (DAT-671 lane R1) — the acceptance net for
+// J1-J9: the practitioner journeys (DAT-671 lane R1) — the acceptance net for
 // the graph recovery.
 //
 // WHAT MAKES THIS DIFFERENT FROM THE 2,281 UNIT TESTS
@@ -281,7 +281,7 @@ const columnsOf = (res: AxesResponse): string[] =>
 	res.axes.map((a) => a.column).sort();
 
 describe.skipIf(!jx.available)(
-	jx.describeName("DAT-671 practitioner journeys (J1-J8)"),
+	jx.describeName("DAT-671 practitioner journeys (J1-J9)"),
 	() => {
 		beforeAll(async () => {
 			routes = {
@@ -895,6 +895,87 @@ describe.skipIf(!jx.available)(
 					{ partsSources: [adHocSource] },
 				);
 				expect(axisFor(body, ENTRY_DATE_COLUMN)?.temporal).toBeNull();
+			});
+		});
+
+		// ────────────────────────────────────────────────────────────────────
+		// J9 — the CTE shape an agent actually writes
+		// ────────────────────────────────────────────────────────────────────
+		describe("J9 · a CTE-shaped answer", () => {
+			// The common agent-authored answer: name the aggregation, then read it
+			// back. J7's alias, one level in — and the whole drill menu used to die
+			// on it. Read one hop over the OUTER projection, `account` is a column
+			// of `revenue_by_account` and nothing else; the catalog holds
+			// `account_id__name`; nothing matched, and the live analyse grid said
+			// "no axes" about a result with a dimension visibly in it.
+			const cteSql =
+				"WITH revenue_by_account AS (\n" +
+				`  SELECT ${ACCOUNT_NAME_COLUMN} AS account,\n` +
+				`         ${REVENUE_SELECT_EXPR} AS revenue\n` +
+				`    FROM ${QUALIFIED_RELATION}\n` +
+				`   WHERE ${REVENUE_PREDICATE}\n` +
+				"   GROUP BY 1\n" +
+				")\n" +
+				"SELECT account, revenue FROM revenue_by_account ORDER BY revenue DESC";
+
+			it("resolves through the CTE body: the axes are offered, and each says what it is", async () => {
+				// THE LEDGER FIRST. Every affordance below is about this exact
+				// result, so it has to be the right one.
+				const rows = await runSql(cteSql);
+				expect(
+					Object.fromEntries(
+						rows.map((r) => [String(r.account), toCents(Number(r.revenue))]),
+					),
+				).toEqual(keyed(REVENUE_BY_ACCOUNT));
+
+				// TIER A — an orphan result, matched to the catalog by column. The
+				// alias was made INSIDE the CTE, so resolving it is a transitive read
+				// of the statement's own `cte_map`, never a one-hop read of the outer
+				// projection.
+				const { body: adhoc } = await postJson<AxesResponse>(
+					routes.axes,
+					"/api/drill/axes",
+					{ resultSql: cteSql },
+				);
+				// Offered in the RESULT's spelling — the only name a tier-A wrap can
+				// group by — and NOT under the catalog's, which this result does not
+				// project.
+				expect(columnsOf(adhoc)).toEqual(["account"]);
+				expect(axisFor(adhoc, ACCOUNT_NAME_COLUMN)).toBeUndefined();
+				// …and greyed WITH its reason: the CTE already grouped by it, so
+				// slicing here would re-group a result already at that grain. The
+				// outer statement carries no GROUP BY of its own — only the CTE does
+				// — which is what makes this a resolution question, not a projection
+				// one.
+				expect(axisFor(adhoc, "account")?.disabledReason).toContain("already");
+				// Nothing actionable, and every item says why — never the silent
+				// empty menu this shape used to produce.
+				expect(
+					adhoc.axes.filter((a) => a.disabledReason === null),
+				).toHaveLength(0);
+
+				// THE ANSWER PATH — the same base statement, now carrying the identity
+				// a proven declaration has. The capability difference between the two
+				// is DATA (an orphan has no verdict to read), never a path that looks
+				// less hard (ADR-0024 decision 2): the date this result never projected
+				// is offered at the engine's month cadence, and the account is greyed
+				// by the SAME determination tier A made — under the CATALOG's spelling,
+				// resolved down the same CTE chain.
+				const { body: answer } = await postJson<AxesResponse>(
+					routes.axes,
+					"/api/drill/axes",
+					{
+						partsSources: [axisSource(REVENUE_SOURCE)],
+						baseSql: cteSql,
+					},
+				);
+				const date = axisFor(answer, ENTRY_DATE_COLUMN);
+				expect(date?.disabledReason).toBeNull();
+				expect(date?.bucketGrain).toBe("month");
+				expect(answer.temporalGateSource).toBe("engine-verdict");
+				expect(axisFor(answer, ACCOUNT_NAME_COLUMN)?.disabledReason).toContain(
+					"already",
+				);
 			});
 		});
 	},

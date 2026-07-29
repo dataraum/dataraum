@@ -115,7 +115,7 @@ Older suites predating the fixture are gated on `providedByEnvironment(...)`
 and still expect a seeded compose stack; they skip unless the environment
 supplies real DSNs.
 
-## The journey workspace (J1-J8)
+## The journey workspace (J1-J9)
 
 `journeys.integration.test.ts` is the practitioner-journey acceptance net. It
 differs from every other suite here in one way that matters: it calls the

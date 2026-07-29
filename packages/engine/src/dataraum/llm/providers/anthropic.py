@@ -54,26 +54,29 @@ tracer = trace.get_tracer(__name__)
 # API had one, and it produced the malformation class this tier spent a year
 # compensating for (stringified payloads, paraphrased envelopes that silently
 # zeroed every field). A tool in this tier is now a tool the model genuinely
-# calls (``search_values``). Two request-shape changes landed with this model
-# generation that the tier must honour, or Sonnet 5 rejects the call outright:
+# calls (``search_values``).
 #
-#   * Non-default sampling params (``temperature``/``top_p``/``top_k``) return a
-#     400. Our prompt templates ask for temperature 0.0-0.1 for determinism, so
-#     on these models we OMIT ``temperature`` and rely on the constrained
-#     grammar + prompt for stable output (temperature 0 never guaranteed
-#     identical output anyway).
-#   * Thinking defaults DIFFER across the family: Sonnet 5 runs adaptive
-#     thinking ON when ``thinking`` is omitted; Opus 4.7/4.8 default it OFF.
-#     A mechanical extractor never wants it (it burns output budget the
-#     small-cap calls can't spare, and it diverges from the prior Sonnet 4.6
-#     behaviour), so the default path DISABLES it explicitly where a default-on
-#     model would otherwise think. A thinking feature (request.thinking) sends
-#     an EXPLICIT ``{"type": "adaptive"}`` instead of trusting any default.
+# This model generation's THINKING DEFAULT differs from the rest of the
+# family: Sonnet 5 runs adaptive thinking ON when ``thinking`` is omitted;
+# Opus 4.7/4.8 default it OFF (as do the older Haiku 4.5 / Sonnet 4.6). A
+# mechanical extractor never wants it (it burns output budget the small-cap
+# calls can't spare, and it diverges from the prior Sonnet 4.6 behaviour), so
+# the default path DISABLES it explicitly where a default-on model would
+# otherwise think. A thinking feature (request.thinking) sends an EXPLICIT
+# ``{"type": "adaptive"}`` instead of trusting any default — the defaults
+# differ across the family, so an omitted key would silently run a thinking
+# feature without thinking the moment a tier repoints to a default-off model.
 #
-# Older models (Haiku 4.5, Sonnet 4.6) accept temperature and default thinking
-# off, so their request shape is unchanged. Prefix match covers the undated
-# aliases and any dated snapshot.
-_TEMPERATURE_REJECTING_PREFIXES = (
+# (Sampling params — temperature/top_p/top_k — were the OTHER request-shape
+# change this generation introduced: a non-default value 400s. That stopped
+# being a request-shape branch the engine needs: DAT-889 deleted temperature
+# from ``ConversationRequest`` entirely — every prompt template asked for
+# 0.0-0.1 "for determinism" against a model family that exposes no sampling
+# knobs and never honoured it, so the field was dead config. Nothing sends a
+# sampling param now, on any model.)
+#
+# Prefix match covers the undated aliases and any dated snapshot.
+_NEW_GENERATION_PREFIXES = (
     "claude-sonnet-5",
     "claude-opus-4-7",
     "claude-opus-4-8",
@@ -92,9 +95,9 @@ _THINKING_DEFAULT_ON_PREFIXES = (
 )
 
 
-def _rejects_temperature(model: str) -> bool:
-    """True when the model 400s on a non-default sampling param."""
-    return model.startswith(_TEMPERATURE_REJECTING_PREFIXES)
+def _is_new_generation_model(model: str) -> bool:
+    """True for the family whose thinking-default behaviour needs explicit control."""
+    return model.startswith(_NEW_GENERATION_PREFIXES)
 
 
 def _thinking_defaults_on(model: str) -> bool:
@@ -327,25 +330,22 @@ class AnthropicProvider(LLMProvider):
                 "messages": messages,
             }
 
-            # Sonnet 5 / Opus 4.7-4.8 / Fable 5 reject a non-default temperature
-            # (400). Omit temperature on those; pass it through on the older
-            # models that still honour it. Thinking is per-REQUEST (DAT-603):
-            # the mechanical extractors run with it explicitly disabled (output
-            # budget + Sonnet 4.6 parity); a reasoning-heavy feature (metric
-            # grounding) opts in with an EXPLICIT {"type": "adaptive"} — never
-            # by relying on the model default, because the defaults DIFFER
-            # across the family (Sonnet 5 defaults thinking ON, Opus 4.7/4.8
-            # default OFF): an omitted key would silently run a thinking
-            # feature without thinking the moment a tier repoints to Opus.
-            # Explicit adaptive is accepted by the whole family, including the
-            # always-on Fable/Mythos.
-            if _rejects_temperature(model):
+            # Thinking is per-REQUEST (DAT-603): the mechanical extractors run
+            # with it explicitly disabled (output budget + Sonnet 4.6 parity);
+            # a reasoning-heavy feature (metric grounding) opts in with an
+            # EXPLICIT {"type": "adaptive"} — never by relying on the model
+            # default, because the defaults DIFFER across the family (Sonnet 5
+            # defaults thinking ON, Opus 4.7/4.8 default OFF): an omitted key
+            # would silently run a thinking feature without thinking the
+            # moment a tier repoints to Opus. Explicit adaptive is accepted by
+            # the whole family, including the always-on Fable/Mythos. No
+            # sampling param (temperature/top_p/top_k) is ever sent — the
+            # request model carries none (DAT-889).
+            if _is_new_generation_model(model):
                 if request.thinking:
                     kwargs["thinking"] = {"type": "adaptive"}
                 elif _thinking_defaults_on(model):
                     kwargs["thinking"] = {"type": "disabled"}
-            else:
-                kwargs["temperature"] = request.temperature
 
             if request.system:
                 # DAT-601: cache the stable prefix. Tools render before system,
@@ -406,8 +406,6 @@ class AnthropicProvider(LLMProvider):
                 "gen_ai.request.max_tokens": request.max_tokens,
                 "gen_ai.request.stream": True,
             }
-            if "temperature" in kwargs:
-                span_attributes["gen_ai.request.temperature"] = request.temperature
             if "effort" in output_config:
                 span_attributes["gen_ai.request.reasoning.level"] = request.effort
             if request.label:

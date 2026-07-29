@@ -123,6 +123,10 @@ class CatalogueSemanticsPhase(BasePhase):
             },
             records_processed=len(tables),
             records_created=stats.authored_tables + stats.authored_columns,
+            # DAT-671: the persist-side unresolvable-column disclosure (was
+            # DEBUG-only) now rides here, mirroring the semantic_per_column
+            # phase's warnings channel (DAT-890).
+            warnings=result.warnings,
             summary=(
                 f"{stats.authored_tables} table readings, "
                 f"{stats.authored_columns} column concepts "

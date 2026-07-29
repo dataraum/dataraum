@@ -25,7 +25,6 @@ class PromptTemplate(BaseModel):
     name: str
     version: str
     description: str
-    temperature: float
     # System/user split, per Anthropic API practice: the system message carries
     # the stable instructions (cacheable prefix, see providers/anthropic.py),
     # the user message carries the volatile per-call context.
@@ -89,7 +88,7 @@ class PromptRenderer:
         self._cache[name] = template
         return template
 
-    def render_split(self, template_name: str, context: dict[str, Any]) -> tuple[str, str, float]:
+    def render_split(self, template_name: str, context: dict[str, Any]) -> tuple[str, str]:
         """Render a prompt with system/user split.
 
         Args:
@@ -97,7 +96,7 @@ class PromptRenderer:
             context: Context variables for substitution
 
         Returns:
-            Tuple of (system_prompt, user_prompt, temperature)
+            Tuple of (system_prompt, user_prompt)
 
         Raises:
             ValueError: If required inputs are missing
@@ -108,7 +107,7 @@ class PromptRenderer:
 
         system = self._render_text(template.system_prompt, full_context)
         user = self._render_text(template.user_prompt, full_context)
-        return system, user, template.temperature
+        return system, user
 
     def _prepare_context(self, template: PromptTemplate, context: dict[str, Any]) -> dict[str, Any]:
         """Prepare context with defaults and validation."""

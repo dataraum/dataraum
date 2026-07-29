@@ -105,12 +105,17 @@ class BusinessCycleAgent(LLMFeature):
             table_ids,
             vertical=vertical,
             base_runs=base_runs,
+            max_sample_values=self.config.privacy.max_sample_values,
+            max_sample_value_chars=self.config.privacy.max_sample_value_chars,
         )
-        context_str = format_context_for_prompt(context)
+        context_str = format_context_for_prompt(
+            context,
+            max_sample_value_chars=self.config.privacy.max_sample_value_chars,
+        )
 
         # 2. Render prompt from template
         try:
-            system_prompt, user_prompt, temperature = self.renderer.render_split(
+            system_prompt, user_prompt = self.renderer.render_split(
                 CYCLE_DETECTION_TEMPLATE_NAME, {"context": context_str}
             )
         except Exception as e:
@@ -128,7 +133,6 @@ class BusinessCycleAgent(LLMFeature):
             label="business_cycles",
             effort=feature_config.effort,
             max_tokens=self.config.limits.max_output_tokens_per_request,
-            temperature=temperature,
             model=model,
         )
 

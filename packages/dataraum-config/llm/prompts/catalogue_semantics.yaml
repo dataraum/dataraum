@@ -12,8 +12,6 @@ name: catalogue_semantics
 version: "1.3.0"
 description: Catalogue-horizon business semantics — table readings + column concepts
 
-temperature: 0.0
-
 system_prompt: |
   You are a senior data analyst authoring the business semantics of a data
   catalogue whose structure is already settled: the relationships between its

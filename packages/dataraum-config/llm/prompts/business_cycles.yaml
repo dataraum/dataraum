@@ -7,9 +7,6 @@ name: business_cycles
 version: "2.3.0"
 description: Detect business cycles from pre-computed pipeline metadata
 
-# Temperature (low for consistent structured output)
-temperature: 0.0
-
 # System prompt - defines role and analysis methodology
 system_prompt: |
   <role>

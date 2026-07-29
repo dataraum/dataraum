@@ -119,6 +119,8 @@ def two_tables_two_runs(session):
 
 def _build(session, table_ids, *, base_runs: BaseRunMap, **kwargs):
     """Build the cycle context against an ephemeral DuckDB (row counts → None)."""
+    kwargs.setdefault("max_sample_values", 10)
+    kwargs.setdefault("max_sample_value_chars", 100)
     return build_cycle_detection_context(
         session,
         duckdb.connect(),
@@ -944,6 +946,8 @@ def test_conditioned_labels_serve_the_discriminating_distribution(
         table_ids,
         vertical="finance",
         base_runs=BaseRunMap(relationship_run_id="run-current"),
+        max_sample_values=10,
+        max_sample_value_chars=100,
     )
 
     (rel,) = ctx["relationships"]
@@ -1022,6 +1026,8 @@ def test_conditioned_labels_fail_soft_on_missing_typed_table(session) -> None:
         [a.table_id, b.table_id],
         vertical="finance",
         base_runs=BaseRunMap(relationship_run_id="run-current"),
+        max_sample_values=10,
+        max_sample_value_chars=100,
     )
     (rel,) = ctx["relationships"]
     assert "conditioned_label_samples" not in rel
@@ -1131,6 +1137,8 @@ def test_conditioned_measure_ranges_serve_the_conditioned_sign(
         base_runs=BaseRunMap(
             relationship_run_id="run-current", semantic_runs={bank_table_id: "gen-run"}
         ),
+        max_sample_values=10,
+        max_sample_value_chars=100,
     )
 
     (rel,) = ctx["relationships"]
@@ -1217,6 +1225,8 @@ def test_conditioned_measure_ranges_nan_serves_nothing(session) -> None:
         base_runs=BaseRunMap(
             relationship_run_id="run-current", semantic_runs={bank.table_id: "gen-run"}
         ),
+        max_sample_values=10,
+        max_sample_value_chars=100,
     )
     (rel,) = ctx["relationships"]
     assert "conditioned_measure_ranges" not in rel
@@ -1337,3 +1347,89 @@ def test_format_context_renders_structural_slice_without_confidence() -> None:
     assert "### facts.region" in rendered
     assert "### facts.region (confidence:" not in rendered
     assert "### facts.status (confidence: 90%)" in rendered
+
+
+def test_format_context_serves_slice_value_counts_whole_never_count_capped(
+    session,
+) -> None:
+    """DAT-671 review, second pass: value_counts is MEMBERSHIP the model must
+    cite verbatim (the business_cycles prompt: "map cycle stages from the
+    distinct values" / "compute completion rates from status value counts"),
+    and ``verify.py``'s DAT-630 membership floor rejects any citation outside
+    the served set. A frequency-ordered count cap would amputate the citable
+    space — a rare terminal state (e.g. a 3.6% ``cancelled``) can fall outside
+    a top-N by frequency and become unciteable. Served WHOLE (up to the
+    profiler's stored top-K); only each value's LENGTH is bounded.
+    """
+    long_value = "x" * 500
+    full_value_counts = [{"value": long_value, "count": 1, "percentage": 0.1}] + [
+        {"value": f"v{i:02d}", "count": 50 - i, "percentage": 2.0} for i in range(49)
+    ]
+    context = {
+        "tables": [{"table_name": "facts", "row_count": 100, "columns": []}],
+        "slice_definitions": [
+            {
+                "table_name": "facts",
+                "column_name": "status",
+                "slice_type": "categorical",
+                "values": [],
+                "value_counts": full_value_counts,
+                "value_count": 60,  # distinct exceeds even the stored top-K
+                "confidence": None,
+                "business_context": None,
+            }
+        ],
+    }
+
+    rendered = format_context_for_prompt(context, max_sample_value_chars=100)
+
+    # Every one of the 50 stored values reaches the rendered text — no count cap.
+    assert "v00" in rendered and "v48" in rendered
+    assert "50 most frequent of 60 distinct" in rendered
+    # LENGTH cap still applies: the 500-char value is truncated, not served whole.
+    assert "x" * 100 + "..." in rendered
+    assert "x" * 500 not in rendered
+    # The dict handed in is untouched (defensive: this renderer never mutates).
+    assert len(context["slice_definitions"][0]["value_counts"]) == 50
+
+
+def test_format_context_serves_the_unranked_values_fallback_whole_with_disclosure(
+    session,
+) -> None:
+    """DAT-671 review, second pass: the ``elif sd.get("values")`` fallback gets
+    the SAME membership treatment as value_counts above it — served WHOLE,
+    length-capped only — plus the "N of M distinct" disclosure it lacked
+    before, so a profiler-storage-truncated list (fewer stored than truly
+    distinct) reads the same shown-vs-distinct split as the value_counts
+    branch instead of looking like the complete set.
+    """
+    long_value = "x" * 500
+    many_values = [long_value] + [f"v{i:02d}" for i in range(49)]
+    context = {
+        "tables": [{"table_name": "facts", "row_count": 100, "columns": []}],
+        "slice_definitions": [
+            {
+                "table_name": "facts",
+                "column_name": "status",
+                "slice_type": "categorical",
+                "values": many_values,
+                "value_counts": [],  # the unranked path: no judged value_counts
+                "value_count": 200,  # profiler's stored 50 is fewer than the true distinct count
+                "confidence": None,
+                "business_context": None,
+            }
+        ],
+    }
+
+    rendered = format_context_for_prompt(context, max_sample_value_chars=100)
+
+    values_line = next(line for line in rendered.splitlines() if line.startswith("  Values"))
+    # Every one of the 50 stored values reaches the rendered text — no count cap.
+    assert "v48" in values_line
+    # The new disclosure: this fallback used to say nothing about the gap.
+    assert "(50 of 200 distinct)" in values_line
+    # LENGTH cap still applies.
+    assert "x" * 100 + "..." in values_line
+    assert "x" * 500 not in values_line
+    # The dict handed in is untouched.
+    assert len(context["slice_definitions"][0]["values"]) == 50

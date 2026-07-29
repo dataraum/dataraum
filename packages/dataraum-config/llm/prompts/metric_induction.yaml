@@ -7,7 +7,6 @@
 name: metric_induction
 version: "1.0.0"
 description: Discover computable business metrics from data schema
-temperature: 0.0
 
 system_prompt: |
   You are a business analytics expert. Given database tables with semantic

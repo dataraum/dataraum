@@ -36,7 +36,7 @@ from dataraum.analysis.relationships.graph_topology import (
 )
 from dataraum.analysis.relationships.utils import load_defined_relationships
 from dataraum.analysis.semantic.db_models import SemanticAnnotation, TableEntity, TableRole
-from dataraum.analysis.semantic.utils import load_column_concepts
+from dataraum.analysis.semantic.utils import load_column_concepts, truncate_sample_value
 from dataraum.analysis.served_columns import served_columns
 from dataraum.analysis.slicing.curation import curated_slices
 from dataraum.analysis.slicing.db_models import SliceDefinition
@@ -56,14 +56,17 @@ logger = get_logger(__name__)
 # of WHICH balance means completion stays in the LLM + cycles.yaml, never here.
 _ARITHMETIC_DERIVATIONS = frozenset({"sum", "difference", "product", "ratio"})
 
-# Entity-flow sample budget: the stored typed profile carries up to the
-# profiler's top_k inventory (hundreds of rows for a high-cardinality identity
-# column — exactly the column class served here). Entity determination needs
-# the VALUE PATTERN, not the inventory, and the cycles prompt is ONE cross-
-# table call, so only the head of the frequency-ordered list is served, each
-# value truncated like the semantic agents' samples.
-_ENTITY_FLOW_SAMPLE_BUDGET = 10
-_SAMPLE_VALUE_MAX_CHARS = 100
+# Entity-flow + slice value samples both read the stored typed profile, which
+# carries up to the profiler's top_k inventory (hundreds of rows for a
+# high-cardinality identity column — exactly the column class served here).
+# Entity determination needs the VALUE PATTERN, not the inventory, and the
+# cycles prompt is ONE cross-table call, so only the head of the
+# frequency-ordered list is served (``max_sample_values``, DAT-671 — the
+# config knob every prompt builder honours, replacing this builder's own
+# ``_ENTITY_FLOW_SAMPLE_BUDGET`` constant, which silently diverged from it on
+# a config change), each value truncated like the semantic agents' samples
+# (``max_sample_value_chars`` via ``truncate_sample_value``, replacing the
+# local ``_SAMPLE_VALUE_MAX_CHARS``/``_truncate_sample_value``).
 
 if TYPE_CHECKING:
     import duckdb
@@ -78,6 +81,8 @@ def build_cycle_detection_context(
     *,
     vertical: str,
     base_runs: BaseRunMap,
+    max_sample_values: int,
+    max_sample_value_chars: int,
 ) -> dict[str, Any]:
     """Build context for the business cycle detection agent.
 
@@ -98,6 +103,12 @@ def build_cycle_detection_context(
             each table's per-column annotations AND its typed-profile reads
             (slice value counts, entity-flow value samples). An absent pin
             reads EMPTY — fail-closed (DAT-429), never a cross-run read.
+        max_sample_values: ``privacy.max_sample_values`` — the per-column
+            value-sample COUNT cap this builder applies to both the
+            entity-flow samples and the slice definitions' value_counts
+            (DAT-671 prompt-content bounds policy).
+        max_sample_value_chars: ``privacy.max_sample_value_chars`` — the
+            per-value length cap (:func:`~dataraum.analysis.semantic.utils.truncate_sample_value`).
 
     Returns:
         Context dictionary with all pipeline metadata for cycle detection.
@@ -264,14 +275,16 @@ def build_cycle_detection_context(
                 fk=r["from_column"],
                 key=r["to_column"],
                 label_column=label_name,
-                limit=_ENTITY_FLOW_SAMPLE_BUDGET,
+                limit=max_sample_values,
             )
             if top:
                 conditioned.append(
                     {
                         "column": label_name,
                         "samples": [
-                            f"{_truncate_sample_value(value)} ({pct:.0f}%)" for value, pct in top
+                            f"{truncate_sample_value(value, max_chars=max_sample_value_chars)} "
+                            f"({pct:.0f}%)"
+                            for value, pct in top
                         ],
                     }
                 )
@@ -341,13 +354,16 @@ def build_cycle_detection_context(
             # the slice value counts use (fail-closed on a missing pin).
             if (t.table_name, c.column_name) in entity_flow_columns:
                 value_counts = _get_value_counts_for_column(
-                    session, c.column_id, run_id=base_runs.semantic_runs.get(t.table_id)
+                    session,
+                    c.column_id,
+                    run_id=base_runs.semantic_runs.get(t.table_id),
+                    limit=max_sample_values,
                 )
                 samples = [
-                    _truncate_sample_value(vc["value"])
+                    truncate_sample_value(vc["value"], max_chars=max_sample_value_chars)
                     for vc in value_counts
                     if vc.get("value") is not None
-                ][:_ENTITY_FLOW_SAMPLE_BUDGET]
+                ]
                 if samples:
                     col_info["sample_values"] = samples
             columns.append(col_info)
@@ -608,14 +624,6 @@ def _served_identity_columns(
     ]
 
 
-def _truncate_sample_value(value: Any) -> str:
-    """Stringify + truncate one served sample value (mirrors the semantic agents)."""
-    text = str(value)
-    if len(text) > _SAMPLE_VALUE_MAX_CHARS:
-        return text[:_SAMPLE_VALUE_MAX_CHARS] + "..."
-    return text
-
-
 def _qident(name: str) -> str:
     """Double-quote one DuckDB identifier (embedded quotes doubled)."""
     return '"' + name.replace('"', '""') + '"'
@@ -776,6 +784,7 @@ def _get_value_counts_for_column(
     column_id: str,
     *,
     run_id: str | None,
+    limit: int | None = None,
 ) -> list[dict[str, Any]]:
     """Get value counts from the typed statistical profile for a column.
 
@@ -784,10 +793,22 @@ def _get_value_counts_for_column(
     arbitrary coexisting run's profile, since the verify floor trusts these
     values as the workspace's value-set.
 
+    ``limit`` is ``None`` by default — UNCAPPED — because this reader serves
+    two callers with different contracts: the slice-definitions call site
+    feeds BOTH the rendered prompt (which applies its own DISPLAY cap in
+    ``format_context_for_prompt``, DAT-671) AND ``verify.py``'s DAT-630
+    membership floor, which must see the FULL stored value-set — capping it
+    here would make a genuine value outside the prompt's top-K silently read
+    as "not served" and wrongly reject an honest cycle. The entity-flow call
+    site has no such second reader, so it passes ``limit=max_sample_values``
+    to cap AT THE SOURCE (``privacy.max_sample_values``, DAT-671).
+
     Args:
         session: SQLAlchemy session.
         column_id: Column to look up.
         run_id: The table's pinned generation run; ``None`` ⇒ empty.
+        limit: Optional count cap on the returned list; ``None`` = unbounded
+            (up to the profiler's stored ``top_k_values``).
 
     Returns:
         List of {value, count, percentage} dicts, or empty list.
@@ -804,7 +825,7 @@ def _get_value_counts_for_column(
     if not profile or not profile.profile_data:
         return []
 
-    top_values = profile.profile_data.get("top_values", [])
+    top_values = profile.profile_data.get("top_values", [])[:limit]
     return [
         {
             "value": tv.get("value", ""),
@@ -815,7 +836,11 @@ def _get_value_counts_for_column(
     ]
 
 
-def format_context_for_prompt(context: dict[str, Any]) -> str:
+def format_context_for_prompt(
+    context: dict[str, Any],
+    *,
+    max_sample_value_chars: int = 100,
+) -> str:
     """Format the context dictionary as a readable string for the LLM prompt.
 
     Organizes metadata into sections that support cycle detection:
@@ -831,6 +856,22 @@ def format_context_for_prompt(context: dict[str, Any]) -> str:
 
     Args:
         context: Context dictionary from build_cycle_detection_context
+        max_sample_value_chars: ``privacy.max_sample_value_chars`` — the
+            per-value length cap applied to a slice's ``value_counts``/
+            ``values`` (via
+            :func:`~dataraum.analysis.semantic.utils.truncate_sample_value`).
+            LENGTH only — there is deliberately no COUNT cap here (DAT-671
+            review, second pass): both lists are MEMBERSHIP the model must
+            cite verbatim (the business_cycles prompt instructs it to "map
+            cycle stages from the distinct values" / "compute completion
+            rates from status value counts"), and ``verify.py``'s DAT-630
+            membership floor rejects any citation outside the served set —
+            a frequency-ordered top-K would amputate the citable space (a
+            rare terminal state falls outside a top-10 by frequency; the
+            TAIL of a wide counterparty column can BE the direction
+            evidence). Both are served WHOLE, up to the profiler's stored
+            top-K (200). Defaults to the shipped
+            ``privacy.max_sample_value_chars``.
 
     Returns:
         Formatted string suitable for LLM prompt
@@ -888,8 +929,10 @@ def format_context_for_prompt(context: dict[str, Any]) -> str:
         # string "None", matching the guarded siblings above.
         entity_type = ent.get("entity_type") or "(entity type undetermined)"
         lines.append(f"- {ent['table_name']} ({table_type}{row_str}{grain}): {entity_type}")
+        # Authored metadata prose (DAT-671 prompt-content bounds policy): not
+        # capped — the prior [:500] cut was deleted here.
         if ent.get("description"):
-            lines.append(f"  {ent['description'][:500]}")
+            lines.append(f"  {ent['description']}")
         # Recurring identity columns (DAT-565): the entity-identifying columns
         # of this table, each with the synthesis agent's one-line note. The
         # builder pre-filters the list to real columns (_served_identity_columns);
@@ -921,20 +964,39 @@ def format_context_for_prompt(context: dict[str, Any]) -> str:
             conf = sd.get("confidence")
             conf_part = f" (confidence: {conf:.0%})" if conf is not None else ""
             lines.append(f"### {sd['table_name']}.{sd['column_name']}{conf_part}")
+            # Authored evidence prose (DAT-671 prompt-content bounds policy):
+            # metadata is NOT capped — a freak-length business_context fails
+            # honestly against the phase's token budget rather than being
+            # silently truncated (the prior [:500] cut was deleted here).
             if sd.get("business_context"):
-                lines.append(f"  Context: {sd['business_context'][:500]}")
+                lines.append(f"  Context: {sd['business_context']}")
 
             # Show values with counts if available. The counts come from the
             # profiler's top-K, so their sum is the mass of the SHOWN values,
             # never the column total — labelling it "total" (as this line did)
             # told the model it was seeing the whole distribution (DAT-622).
             # State the shown-vs-distinct split whenever the two differ.
+            #
+            # NOT count-capped (DAT-671 review, second pass): this list is
+            # MEMBERSHIP the model must cite verbatim — the business_cycles
+            # prompt instructs it to "map cycle stages from the distinct
+            # values" / "compute completion rates from status value counts",
+            # and ``verify.py``'s DAT-630 membership floor rejects any
+            # citation outside the served set. A frequency-ordered top-10
+            # would amputate the citable space: a rare terminal state (a
+            # 3.6% ``cancelled``) falls outside a top-10 and becomes
+            # unciteable, and the TAIL of a wide counterparty column can BE
+            # the direction evidence. Served whole, up to the profiler's
+            # stored top-K (200) — only each value's LENGTH is bounded
+            # (``max_sample_value_chars``), never the membership count.
             value_counts = sd.get("value_counts", [])
             if value_counts:
                 shown_rows = sum(vc["count"] for vc in value_counts)
                 distinct = sd.get("value_count")
                 values_str = ", ".join(
-                    f"{vc['value']} ({vc['count']:,}, {vc['percentage']}%)" for vc in value_counts
+                    f"{truncate_sample_value(vc['value'], max_chars=max_sample_value_chars)} "
+                    f"({vc['count']:,}, {vc['percentage']}%)"
+                    for vc in value_counts
                 )
                 if distinct is not None and distinct > len(value_counts):
                     header = (
@@ -945,7 +1007,26 @@ def format_context_for_prompt(context: dict[str, Any]) -> str:
                     header = f"  Values ({shown_rows:,} rows across {len(value_counts)} values)"
                 lines.append(f"{header}: {values_str}")
             elif sd.get("values"):
-                lines.append(f"  Values: {', '.join(sd['values'])}")
+                # The unranked-path fallback (DAT-725: no LLM judgment ran, so
+                # no value_counts was built) — same underlying
+                # SliceDefinition.distinct_values and the same MEMBERSHIP
+                # contract as the value_counts branch above: served WHOLE
+                # (up to the profiler's stored top-K, 200), never count-capped
+                # — only each value's length is bounded. Discloses "N of M
+                # distinct" so a truncated-at-storage list (profiler stored
+                # fewer than the true distinct count) reads the same as the
+                # value_counts branch's shown-vs-distinct split, which this
+                # fallback lacked before (DAT-671 review, second pass).
+                values = [
+                    truncate_sample_value(v, max_chars=max_sample_value_chars) for v in sd["values"]
+                ]
+                distinct = sd.get("value_count")
+                count_note = (
+                    f" ({len(values):,} of {distinct:,} distinct)"
+                    if distinct is not None and distinct > len(values)
+                    else ""
+                )
+                lines.append(f"  Values{count_note}: {', '.join(values)}")
             lines.append("")
 
     # Derived (numeric) relationships — completion signals a status column can't carry
@@ -1078,8 +1159,10 @@ def format_context_for_prompt(context: dict[str, Any]) -> str:
             if col.get("annotation_confidence") is not None:
                 parts.append(f"annotation_confidence={col['annotation_confidence']:.2f}")
             lines.append(f"  - {', '.join(parts)}")
+            # Authored metadata prose (DAT-671 prompt-content bounds policy):
+            # not capped — the prior [:500] cut was deleted here.
             if col.get("business_description"):
-                lines.append(f"    {col['business_description'][:500]}")
+                lines.append(f"    {col['business_description']}")
             if col.get("sample_values"):
                 lines.append(f"    samples: {', '.join(col['sample_values'])}")
 

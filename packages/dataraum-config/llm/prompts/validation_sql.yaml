@@ -15,9 +15,6 @@ description: >
   so a self-referential edge on an activity table never makes existence bindable
   there (DAT-876)
 
-# Temperature (0.0 = deterministic for SQL)
-temperature: 0.0
-
 # System prompt - defines role and behavior
 system_prompt: |
   <role>

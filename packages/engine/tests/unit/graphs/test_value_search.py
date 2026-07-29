@@ -203,7 +203,7 @@ def _grounding(payload: dict) -> MagicMock:
 def _loop_agent(provider: MagicMock) -> GraphAgent:
     agent = GraphAgent.__new__(GraphAgent)
     renderer = MagicMock()
-    renderer.render_split.return_value = ("system", "user", 0.0)
+    renderer.render_split.return_value = ("system", "user")
     agent.renderer = renderer  # type: ignore[attr-defined]
     agent.provider = provider  # type: ignore[attr-defined]
     config = MagicMock()

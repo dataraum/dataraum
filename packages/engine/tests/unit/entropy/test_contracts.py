@@ -245,6 +245,28 @@ class TestContractEvaluation:
         with pytest.raises(ValueError, match="Contract not found"):
             evaluate_contract(summaries, "nonexistent_contract")
 
+    def test_dimension_violation_discloses_columns_beyond_the_shown_five(self):
+        """DAT-671: the affected-column list is capped at 5 for readability, but
+        a silent cut used to say nothing about the rest — unlike the sibling
+        ``blocked_columns`` violation (line ~577), which already discloses
+        "(+N more)". Six columns over threshold must produce the same
+        disclosure on a DIMENSION violation, not just a blocking condition."""
+        summaries = {
+            f"test_table.col{i}": _make_column_summary(
+                column_name=f"col{i}",
+                dimension_scores={"structural.types": 0.9},
+            )
+            for i in range(6)
+        }
+
+        evaluation = evaluate_contract(summaries, "regulatory_reporting")
+
+        dim_violations = [v for v in evaluation.violations if v.dimension == "structural.types"]
+        assert len(dim_violations) == 1
+        violation = dim_violations[0]
+        assert len(violation.affected_columns) == 6
+        assert "(+1 more)" in violation.details
+
 
 class TestFindBestContract:
     """Tests for find_best_contract function."""

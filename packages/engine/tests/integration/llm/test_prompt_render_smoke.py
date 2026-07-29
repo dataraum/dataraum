@@ -46,7 +46,7 @@ def test_sql_prompt_renders_and_pipes_optional_inputs(prompt_name: str, piped_ke
     )
     ctx = _ctx_for(template, **{piped_key: _MARKER})
 
-    system, user, _temperature = renderer.render_split(prompt_name, ctx)
+    system, user = renderer.render_split(prompt_name, ctx)
 
     # Real substitution happened (no KeyError) and the value reached the prompt.
     assert _MARKER in (system + user)
@@ -78,7 +78,7 @@ def test_temporal_form_coherence_rule_is_pinned(prompt_name: str, anchor: str) -
     renderer = PromptRenderer()
     template = renderer.load_template(prompt_name)
 
-    system, user, _temperature = renderer.render_split(prompt_name, _ctx_for(template))
+    system, user = renderer.render_split(prompt_name, _ctx_for(template))
 
     assert anchor in (system + user), (
         f"{prompt_name}: the DAT-874 temporal-form coherence rule (anchor "

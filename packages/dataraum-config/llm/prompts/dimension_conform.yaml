@@ -11,7 +11,6 @@
 name: dimension_conform
 version: "1.0.0"
 description: Cross-fact conformed-dimension identity + role judgment (DAT-762)
-temperature: 0.1
 
 system_prompt: |
   <role>

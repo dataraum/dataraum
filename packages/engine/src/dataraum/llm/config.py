@@ -103,11 +103,20 @@ class LLMPrivacy(BaseModel):
     distinct from the profiler's ``top_k_values`` (200) storage budget. Every
     prompt builder applies it; the name-pattern redaction that used to sit
     beside it was a data-egress no-op and was deleted with ``llm/privacy.py``.
+
+    ``max_sample_value_chars`` is the length bound on ONE served value's
+    rendered text (DAT-671 prompt-content bounds policy: cap corpus DATA
+    VALUES, never authored metadata prose). It replaces four independently
+    drifting local constants (``_SAMPLE_MAX_CHARS``, ``_SAMPLE_VALUE_MAX_CHARS``,
+    and the semantic agents' own ``_truncate_sample``, all pinned at 100) —
+    every builder serving a raw corpus value now reads this one knob via
+    ``analysis.semantic.utils.truncate_sample_value``/``prompt_samples``.
     """
 
     model_config = ConfigDict(extra="forbid")
 
     max_sample_values: int = 10
+    max_sample_value_chars: int = 100
 
 
 class LLMConfig(BaseModel):

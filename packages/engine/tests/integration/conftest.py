@@ -620,5 +620,5 @@ def mock_llm_provider() -> MagicMock:
 def mock_prompt_renderer() -> MagicMock:
     """Mock prompt renderer."""
     renderer = MagicMock()
-    renderer.render_split.return_value = ("System prompt", "User prompt", 0.0)
+    renderer.render_split.return_value = ("System prompt", "User prompt")
     return renderer

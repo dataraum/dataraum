@@ -195,13 +195,16 @@ def _ok_response(
 
 
 class TestConverseRequestShape:
-    """converse shapes the request per the model's sampling/thinking contract.
+    """converse shapes the request per the model's thinking contract.
 
-    Sonnet 5 / Opus 4.7-4.8 / Fable 5 reject a non-default ``temperature`` (400)
-    and default adaptive thinking ON; the engine's forced-tool extraction tier
-    wants neither. Older models keep the temperature passthrough and no thinking
-    param. These assert the exact kwargs handed to ``messages.create`` — the gap
-    that let the Sonnet 5 swap ship a request that 400s against the live API.
+    Sonnet 5 / Opus 4.7-4.8 / Fable 5 default adaptive thinking ON (or,
+    Fable/Mythos, always-on); the engine's forced-tool extraction tier wants
+    neither. These assert the exact kwargs handed to ``messages.create`` —
+    the gap that let the Sonnet 5 swap ship a request that 400s against the
+    live API. No request ever carries a sampling param (temperature/top_p/
+    top_k): ``ConversationRequest`` has no such field (DAT-889) — the prompt
+    templates asked for one against a model family that exposes none and
+    never honoured it.
     """
 
     def _capture(
@@ -218,42 +221,30 @@ class TestConverseRequestShape:
         provider.converse(
             ConversationRequest(
                 messages=[Message(role="user", content="hi")],
-                temperature=0.0,
                 model=model,
                 thinking=thinking,
             )
         ).unwrap()
         return captured
 
-    def test_sonnet_5_omits_temperature_and_disables_thinking(
-        self, monkeypatch: pytest.MonkeyPatch
-    ) -> None:
+    def test_sonnet_5_disables_thinking_by_default(self, monkeypatch: pytest.MonkeyPatch) -> None:
         kwargs = self._capture(monkeypatch, "claude-sonnet-5")
-        assert "temperature" not in kwargs
         assert kwargs["thinking"] == {"type": "disabled"}
 
-    def test_opus_4_8_omits_temperature_and_disables_thinking(
-        self, monkeypatch: pytest.MonkeyPatch
-    ) -> None:
+    def test_opus_4_8_disables_thinking_by_default(self, monkeypatch: pytest.MonkeyPatch) -> None:
         kwargs = self._capture(monkeypatch, "claude-opus-4-8")
-        assert "temperature" not in kwargs
         assert kwargs["thinking"] == {"type": "disabled"}
 
-    def test_fable_5_omits_temperature_but_leaves_thinking_default(
-        self, monkeypatch: pytest.MonkeyPatch
-    ) -> None:
-        # Fable 5 rejects a non-default temperature AND rejects an explicit
-        # thinking:disabled (always-on) — so we omit both and let it default.
+    def test_fable_5_leaves_thinking_default(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        # Fable 5 rejects an explicit thinking:disabled (always-on) — so we
+        # omit it and let it default.
         kwargs = self._capture(monkeypatch, "claude-fable-5")
-        assert "temperature" not in kwargs
         assert "thinking" not in kwargs
 
-    def test_older_model_keeps_temperature_and_no_thinking(
-        self, monkeypatch: pytest.MonkeyPatch
-    ) -> None:
-        # Haiku 4.5 / Sonnet 4.6 accept temperature and default thinking off.
+    def test_older_model_sends_no_thinking_control(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        # Haiku 4.5 / Sonnet 4.6 default thinking off already, so the provider
+        # never sends a thinking key for them.
         kwargs = self._capture(monkeypatch, "claude-haiku-4-5")
-        assert kwargs["temperature"] == 0.0
         assert "thinking" not in kwargs
 
     def test_thinking_request_sends_explicit_adaptive(
@@ -263,7 +254,6 @@ class TestConverseRequestShape:
         # defaults differ across the family (Sonnet 5 ON, Opus 4.7/4.8 OFF),
         # so an omitted key would silently lose thinking on an Opus tier.
         kwargs = self._capture(monkeypatch, "claude-sonnet-5", thinking=True)
-        assert "temperature" not in kwargs
         assert kwargs["thinking"] == {"type": "adaptive"}
 
     def test_thinking_request_explicit_adaptive_on_opus(
@@ -606,8 +596,8 @@ class TestConverseSpans:
         assert attrs["gen_ai.request.model"] == "claude-sonnet-5"
         assert attrs["gen_ai.request.max_tokens"] == 4096
         assert attrs["gen_ai.request.stream"] is True
-        # Sonnet 5 rejects temperature -> omitted from request AND span;
-        # it supports effort -> reasoning level recorded.
+        # No sampling param is ever sent (DAT-889 — the request model carries
+        # no temperature field), so the span carries no such attribute either.
         assert "gen_ai.request.temperature" not in attrs
         assert attrs["gen_ai.request.reasoning.level"] == "low"
         assert attrs["dataraum.call_site"] == "graph_sql_generation"
@@ -620,16 +610,15 @@ class TestConverseSpans:
         # The provider discriminator is the CURRENT semconv key only.
         assert "gen_ai.system" not in attrs
 
-    def test_temperature_recorded_when_sent(self, monkeypatch: pytest.MonkeyPatch) -> None:
+    def test_no_call_site_attribute_without_a_label(self, monkeypatch: pytest.MonkeyPatch) -> None:
         exporter = self._capture(monkeypatch)
         provider = _provider()
         _patch_stream(monkeypatch, provider, lambda **_: _ok_response())
 
-        provider.converse(_request())  # default model claude-x keeps temperature
+        provider.converse(_request())
 
         (span,) = exporter.get_finished_spans()  # type: ignore[attr-defined]
         attrs = dict(span.attributes)
-        assert attrs["gen_ai.request.temperature"] == 0.0
         # No label on the request -> no call-site attribute.
         assert "dataraum.call_site" not in attrs
 

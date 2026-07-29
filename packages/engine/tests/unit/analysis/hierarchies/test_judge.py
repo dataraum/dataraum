@@ -58,7 +58,7 @@ def _config() -> MagicMock:
 
 def _renderer() -> MagicMock:
     renderer = MagicMock()
-    renderer.render_split.return_value = ("system", "user", 0.1)
+    renderer.render_split.return_value = ("system", "user")
     return renderer
 
 

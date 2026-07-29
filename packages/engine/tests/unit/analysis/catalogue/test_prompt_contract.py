@@ -46,9 +46,8 @@ class TestCataloguePrompt:
             "ontology_concepts": "c",
             "required_standard_fields": "- revenue",
         }
-        system, user, temperature = renderer.render_split("catalogue_semantics", context)
+        system, user = renderer.render_split("catalogue_semantics", context)
         assert system and user
-        assert temperature == 0.0
 
     def test_carries_the_ambiguous_contract(self, catalogue: PromptTemplate) -> None:
         """'ambiguous' is declared ignorance WITH a meaning present (DAT-769/823)."""

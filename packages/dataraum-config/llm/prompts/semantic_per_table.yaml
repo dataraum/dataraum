@@ -13,8 +13,6 @@ name: semantic_per_table
 version: "3.2.0"
 description: Per-table structural classification + relationship confirmation
 
-temperature: 0.0
-
 system_prompt: |
   You are a senior data analyst classifying database tables and confirming the
   relationships between them, to enable AI-driven data analytics.

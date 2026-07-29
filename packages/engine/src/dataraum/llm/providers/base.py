@@ -130,7 +130,6 @@ class ConversationRequest(BaseModel):
     # ``search_values`` and finish under this schema.
     output_schema: dict[str, Any] | None = None
     max_tokens: int = 4096
-    temperature: float = 0.0
     model: str | None = None  # Override default model
     # Per-feature output effort (DAT-603): "low" | "medium" | "high" | "xhigh"
     # | "max". None = the API default. The provider only sends it to models

@@ -311,6 +311,42 @@ def test_get_multi_table_schema_for_llm_single_table(session, table_with_columns
     assert amount_col["semantic"]["entity_type"] == "amount"
 
 
+def test_distinct_values_capped_at_max_sample_values(session, table_with_columns):
+    """DAT-671: ``distinct_values`` served to the validation prompt is capped.
+
+    ``SliceDefinition.distinct_values`` can carry up to the profiler's stored
+    top-K when no LLM ranking judged the axis (slicing_phase.py's fallback) —
+    this resolver's whole output feeds only the prompt, so the cap applies
+    here (unlike the cycles builder's slice value_counts, which also feeds a
+    non-prompt membership floor and must stay uncapped upstream).
+    """
+    from dataraum.analysis.slicing.db_models import SliceDefinition
+
+    table = table_with_columns
+    account_type_col = next(c for c in table.columns if c.column_name == "account_type")
+    long_values = [f"type_{i:02d}" for i in range(15)]
+    session.add(
+        SliceDefinition(
+            table_id=table.table_id,
+            column_id=account_type_col.column_id,
+            column_name="account_type",
+            run_id="run-current",
+            slice_type="categorical",
+            distinct_values=long_values,
+        )
+    )
+    session.commit()
+
+    schema = get_multi_table_schema_for_llm(
+        session, [table.table_id], base_runs=_pins(table), max_sample_values=3
+    )
+
+    account_col = next(
+        c for c in schema["tables"][0]["columns"] if c["column_name"] == "account_type"
+    )
+    assert account_col["distinct_values"] == ["type_00", "type_01", "type_02"]
+
+
 def test_table_grain_facts_scope_to_pinned_catalogue_run(session, table_with_columns):
     """Table-grain catalog facts (DAT-870) serve at the PINNED catalogue run only.
 

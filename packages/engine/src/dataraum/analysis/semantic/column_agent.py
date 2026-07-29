@@ -55,15 +55,15 @@ class ColumnAnnotationAgent(LLMFeature):
     # since DAT-807 — constrained decoding fixes the JSON's GRAMMAR (shape),
     # but not the LENGTH of one string/number literal, and thinking tokens
     # (when the model uses them) are unconstrained prose. Emission is
-    # therefore still SAMPLED: Sonnet 5 has no temperature (the
-    # `temperature: 0.0` prompt-YAML lines are dead config), so an identical
-    # request can legitimately runaway into a digit literal that never
-    # terminates on one run and finish cleanly (~15k chars, end_turn) on the
-    # next (~70k chars, stop_reason=max_tokens, tail "...9999"). ``annotate``
-    # retries a max_tokens cut-off on a REDUCED table batch (halved, then
-    # per-table once a batch can no longer be split) instead of raising
-    # max_tokens (a runaway just runs longer) or failing the whole phase on
-    # the first bad roll.
+    # therefore still SAMPLED: Sonnet 5 exposes no sampling knobs at all (the
+    # engine's request model carries no temperature field — DAT-889 ask #2),
+    # so an identical request can legitimately runaway into a digit literal
+    # that never terminates on one run and finish cleanly (~15k chars,
+    # end_turn) on the next (~70k chars, stop_reason=max_tokens, tail
+    # "...9999"). ``annotate`` retries a max_tokens cut-off on a REDUCED table
+    # batch (halved, then per-table once a batch can no longer be split)
+    # instead of raising max_tokens (a runaway just runs longer) or failing
+    # the whole phase on the first bad roll.
     #
     # The call budget SCALES with the table count (``_annotation_call_budget``)
     # rather than a flat ceiling: a full binary-split retry tree over N tables
@@ -171,7 +171,11 @@ class ColumnAnnotationAgent(LLMFeature):
         # configured prompt budget (DAT-890): this prompt is the pipeline's
         # most sample-dense, and serving the profiler's full top-k made it 88%
         # raw corpus bytes.
-        samples = prompt_samples(profiles, limit=self.config.privacy.max_sample_values)
+        samples = prompt_samples(
+            profiles,
+            limit=self.config.privacy.max_sample_values,
+            max_chars=self.config.privacy.max_sample_value_chars,
+        )
 
         # Concepts from the typed vocabulary table (DAT-728, config→DB); the
         # loader below is retained only as the prompt formatter.
@@ -234,7 +238,7 @@ class ColumnAnnotationAgent(LLMFeature):
 
             # Render prompt
             try:
-                system_prompt, user_prompt, temperature = self.renderer.render_split(
+                system_prompt, user_prompt = self.renderer.render_split(
                     "column_annotation", context
                 )
             except Exception as e:
@@ -263,7 +267,6 @@ class ColumnAnnotationAgent(LLMFeature):
                 dump_key=f"column_annotation.a{calls_made + 1:02d}",
                 effort=feature_config.effort,
                 max_tokens=self.config.limits.max_output_tokens_per_request,
-                temperature=temperature,
                 model=model,
             )
 
@@ -385,12 +388,6 @@ class ColumnAnnotationAgent(LLMFeature):
         lines.append("Use these as vocabulary context when describing columns.")
         return "\n".join(lines)
 
-    @staticmethod
-    def _truncate_sample(value: Any, max_length: int = 100) -> Any:
-        if isinstance(value, str) and len(value) > max_length:
-            return value[:max_length] + "..."
-        return value
-
     def _build_tables_json(
         self, profiles: list[ColumnProfile], samples: dict[tuple[str, str], list[Any]]
     ) -> list[dict[str, Any]]:
@@ -412,9 +409,7 @@ class ColumnAnnotationAgent(LLMFeature):
                 "column_name": column_name,
                 "distinct_count": profile.distinct_count,
                 "cardinality_ratio": round(profile.cardinality_ratio, 4),
-                "sample_values": [
-                    self._truncate_sample(v) for v in samples.get((table_name, column_name), [])
-                ],
+                "sample_values": samples.get((table_name, column_name), []),
             }
 
             # Include original column name when it differs from normalized name

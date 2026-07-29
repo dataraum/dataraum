@@ -40,15 +40,14 @@ def binder() -> PromptTemplate:
 
 
 def test_induction_renders_with_declared_inputs() -> None:
-    system, user, temperature = PromptRenderer().render_split(
+    system, user = PromptRenderer().render_split(
         "validation_induction", {"served_graph": "graph", "conventions": "None"}
     )
     assert system and user
-    assert temperature == 0.0
 
 
 def test_binder_renders_with_declared_inputs() -> None:
-    system, user, temperature = PromptRenderer().render_split(
+    system, user = PromptRenderer().render_split(
         "validation_sql",
         {
             "spec_name": "n",
@@ -59,7 +58,6 @@ def test_binder_renders_with_declared_inputs() -> None:
         },
     )
     assert system and user
-    assert temperature == 0.0
 
 
 def test_induction_existence_loophole_is_closed(induction: PromptTemplate) -> None:

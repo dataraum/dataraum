@@ -87,7 +87,7 @@ def _agent_with(provider: MagicMock, monkeypatch) -> SemanticAgent:
     agent = SemanticAgent.__new__(SemanticAgent)
     agent.provider = provider  # type: ignore[attr-defined]
     renderer = MagicMock()
-    renderer.render_split.return_value = ("system", "user", 0.0)
+    renderer.render_split.return_value = ("system", "user")
     agent.renderer = renderer  # type: ignore[attr-defined]
 
     config = MagicMock()

@@ -56,6 +56,12 @@ export const GROSS_MARGIN_METRIC = "gross_margin_finance";
 export const REVENUE_FIELD = "revenue";
 export const COGS_FIELD = "cogs";
 
+/** The grounding snippets those fields are grounded BY. An answer that reused a
+ *  curated snippet carries the id on its declared source, and it is the drill's
+ *  only identity: `snippet → concept → additivity verdict` (ADR-0024). */
+export const REVENUE_SNIPPET_ID = "snip_j_revenue";
+export const COGS_SNIPPET_ID = "snip_j_cogs";
+
 /** The revenue measure's clause parts, as they ride the `/api/drill/parts`
  *  wire and as `sql_snippets.parts` persists them. CASE-guarded because the
  *  house empty-aggregation rule wraps every scalar — the normal shape of a real
@@ -250,12 +256,12 @@ INSERT INTO sql_snippets (
   sql, description, source, parts, execution_count, failure_count,
   created_at, updated_at)
 VALUES
-  ('snip_j_revenue', '${JOURNEY_WORKSPACE_ID}', 'extract', '${REVENUE_FIELD}', '${JOURNEY_WORKSPACE_ID}',
+  ('${REVENUE_SNIPPET_ID}', '${JOURNEY_WORKSPACE_ID}', 'extract', '${REVENUE_FIELD}', '${JOURNEY_WORKSPACE_ID}',
    'SELECT ${sqlQuote(REVENUE_SELECT_EXPR)} FROM ${JOURNEY_RELATION} WHERE ${sqlQuote(REVENUE_PREDICATE)}',
    'total revenue', 'graph:${GROSS_MARGIN_METRIC}',
    '${sqlQuote(partsJson(REVENUE_SELECT_EXPR, JOURNEY_RELATION, [REVENUE_PREDICATE]))}'::json,
    0, 0, ${ts}, ${ts}),
-  ('snip_j_cogs', '${JOURNEY_WORKSPACE_ID}', 'extract', '${COGS_FIELD}', '${JOURNEY_WORKSPACE_ID}',
+  ('${COGS_SNIPPET_ID}', '${JOURNEY_WORKSPACE_ID}', 'extract', '${COGS_FIELD}', '${JOURNEY_WORKSPACE_ID}',
    'SELECT ${sqlQuote(COGS_SELECT_EXPR)} FROM ${JOURNEY_RELATION} WHERE ${sqlQuote(COGS_PREDICATE)}',
    'cost of goods sold', 'graph:${GROSS_MARGIN_METRIC}',
    '${sqlQuote(partsJson(COGS_SELECT_EXPR, JOURNEY_RELATION, [COGS_PREDICATE]))}'::json,

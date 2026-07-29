@@ -18,18 +18,23 @@
 //     wrong — there is no assertion here that can be quietly adjusted to match
 //     whatever the code happens to return.
 //
-// RED PINS. Several journeys describe behaviour the product does not have yet.
-// Each is a PAIR:
-//   · a green `it(...)` pinning TODAY's behaviour exactly — the value, the
-//     status code, the reason string;
-//   · an `it.fails(...)` asserting the TARGET, which vitest reports as passing
-//     while it throws and FAILS THE RUN the moment it starts succeeding.
-// So R2 cannot land the fix silently: the pin goes red and must be flipped by
-// deleting `.fails`. The paired green test is what stops `.fails` from hiding a
-// broken fixture — if seeding breaks, the green half fails first and loudly.
+// THE RED PINS ARE ALL FLIPPED (R1 wrote six as `it.fails` TARGET assertions
+// paired with a green pin on the behaviour of the day; R2 landed the
+// resolution and merged each pair into the single green assertion of the target
+// that stands here now). Every journey below asserts what the product SHOULD do
+// and does. There is no `.fails` left, and a new one should be rare: it means a
+// journey cannot be expressed without a product change, which IS the finding.
 //
-// This file must not need product changes. Where a journey cannot be expressed
-// without one, that IS the finding, and it is recorded as a pin.
+// Two of the six did not flip by moving code, and both are recorded where they
+// happened rather than here:
+//   · J4's request moved to the parts path — a bare `resultSql` carries no
+//     identity and tier A composes by WRAPPING, so the capability it lacks
+//     traces to missing DATA, not to a lesser path (ADR-0024 decision 2). The
+//     tier-A behaviour is retained as its own green assertion beside it.
+//   · J1/J6 now send the `snippetId` their production caller sends — the
+//     identity the whole verdict resolution keys on. J1 keeps a sibling
+//     assertion that REMOVING it withholds the grain again, so "consults the
+//     verdict" cannot decay into "offers a grain to anything with a date".
 
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
 
@@ -48,12 +53,14 @@ import {
 	COGS_FIELD,
 	COGS_PREDICATE,
 	COGS_SELECT_EXPR,
+	COGS_SNIPPET_ID,
 	COST_CENTER_COLUMN,
 	ENTRY_DATE_COLUMN,
 	GROSS_MARGIN_METRIC,
 	REVENUE_FIELD,
 	REVENUE_PREDICATE,
 	REVENUE_SELECT_EXPR,
+	REVENUE_SNIPPET_ID,
 } from "./seed-journey";
 
 const jx = attachJourneyWorkspace();
@@ -66,9 +73,16 @@ const QUALIFIED_RELATION = `lake.typed.${JOURNEY_RELATION}`;
 /** The seeded ANSWER STATE — a proven parts-at-source declaration for "total
  *  revenue". This is what `proveAnswerSource` would have left on the canvas
  *  after a chat turn; seeding it directly keeps the suite free of any LLM call
- *  while exercising exactly the same downstream wire. */
+ *  while exercising exactly the same downstream wire.
+ *
+ *  `snippetId` is the answer's IDENTITY (DAT-671 R2): this step declared REUSE
+ *  of the curated revenue grounding, `classifyComponents` resolved the id, and
+ *  the drill spends it as `snippet → concept → additivity verdict`. An answer
+ *  that wrote fresh SQL carries none — that is J8, the one journey that must
+ *  keep withholding. */
 const REVENUE_SOURCE = {
 	name: REVENUE_FIELD,
+	snippetId: REVENUE_SNIPPET_ID,
 	parts: {
 		selectExpr: REVENUE_SELECT_EXPR,
 		relation: QUALIFIED_RELATION,
@@ -78,12 +92,24 @@ const REVENUE_SOURCE = {
 
 const COGS_SOURCE = {
 	name: COGS_FIELD,
+	snippetId: COGS_SNIPPET_ID,
 	parts: {
 		selectExpr: COGS_SELECT_EXPR,
 		relation: QUALIFIED_RELATION,
 		where: [COGS_PREDICATE],
 	},
 };
+
+/** A declared source as the AXES wire carries it — where the number comes from,
+ *  plus which grounding it reuses. Exactly what `answer-result.tsx` sends. */
+const axisSource = (source: {
+	snippetId: string;
+	parts: { selectExpr: string; relation: string };
+}) => ({
+	relation: source.parts.relation,
+	selectExpr: source.parts.selectExpr,
+	snippetId: source.snippetId,
+});
 
 /** The answer's own base statement — the single-row scalar the practitioner
  *  read before drilling. */
@@ -284,7 +310,7 @@ describe.skipIf(!jx.available)(
 					routes.axes,
 					"/api/drill/axes",
 					{
-						partsSources: [{ ...REVENUE_SOURCE.parts }],
+						partsSources: [axisSource(REVENUE_SOURCE)],
 						baseSql: REVENUE_BASE_SQL,
 					},
 				);
@@ -296,52 +322,57 @@ describe.skipIf(!jx.available)(
 				expect(columnsOf(body)).toContain(ENTRY_DATE_COLUMN);
 			});
 
-			// RED PIN — CURRENT behaviour.
-			it("TODAY withholds the time grain despite an additive verdict", async () => {
+			// FLIPPED by R2. Was a red pin: the answer path withheld the time grain
+			// for EVERY answer — `resolveAnswerDrillAxes` passed
+			// `{target: null, carriers: new Map()}` unconditionally — and told the
+			// practitioner the engine had not classified the concept, which was
+			// false here (`measure|revenue|time|*` = additive is seeded, and J5
+			// reads that very row through the node path). The defect was the
+			// CONSULTATION, never the data.
+			it("offers the time axis at MONTH grain, per the engine verdict", async () => {
 				const { body } = await postJson<AxesResponse>(
 					routes.axes,
 					"/api/drill/axes",
 					{
-						partsSources: [{ ...REVENUE_SOURCE.parts }],
-						baseSql: REVENUE_BASE_SQL,
-					},
-				);
-				const date = axisFor(body, ENTRY_DATE_COLUMN);
-				expect(date).toBeDefined();
-				// The date survives as a RAW slice, but cannot be bucketed…
-				expect(date?.temporal).toBeNull();
-				expect(date?.bucketGrain).toBeUndefined();
-				// …and the stated reason is that no verdict exists — which is FALSE
-				// here: `measure|revenue|time|*` = additive IS seeded. The answer path
-				// simply never consults it (`resolveAnswerDrillAxes` passes
-				// `{target: null, carriers: new Map()}` unconditionally).
-				//
-				// That the row is genuinely READABLE is not taken on faith from this
-				// journey, which never queries it: J5 reads the very same seeded
-				// verdicts through the node path and gets a month grain out of them,
-				// and J6 shows the same declaration withheld on this path. So the
-				// three together isolate the defect to the CONSULTATION, not the data.
-				expect(body.temporalGateSource).toBe("withheld-no-verdict");
-				expect(date?.temporalWithheldReason).toContain(
-					"has not classified for additivity",
-				);
-			});
-
-			// RED PIN — TARGET behaviour. Flip by deleting `.fails` (lane R2).
-			it.fails("TARGET: offers the time axis at MONTH grain, per the engine verdict", async () => {
-				const { body } = await postJson<AxesResponse>(
-					routes.axes,
-					"/api/drill/axes",
-					{
-						partsSources: [{ ...REVENUE_SOURCE.parts }],
+						partsSources: [axisSource(REVENUE_SOURCE)],
 						baseSql: REVENUE_BASE_SQL,
 					},
 				);
 				const date = axisFor(body, ENTRY_DATE_COLUMN);
 				expect(date?.temporal).toBe("date");
+				// Floored at the cadence the engine observed for this target.
 				expect(date?.bucketGrain).toBe("month");
 				expect(date?.temporalWithheldReason).toBeUndefined();
+				// Named for what it is: a served verdict was read, not guessed at.
 				expect(body.temporalGateSource).toBe("engine-verdict");
+				// A single classified concept IS the measure, so its own verdict
+				// governs — and this one reconciles on both axis classes.
+				expect(body.reconciles).toEqual({ time: true, categorical: true });
+			});
+
+			// The identity is what licenses the grain, so removing it must take the
+			// grain with it — the same declaration, the same relation, the same
+			// seeded verdict, no `snippetId`. Without this, "consults the verdict"
+			// and "offers a grain to anything with a date column" look identical
+			// from the outside (J8 makes the same point for a genuinely
+			// unclassified concept; this one isolates the WIRE).
+			it("withholds it again when the same declaration names no grounding", async () => {
+				const { relation, selectExpr } = axisSource(REVENUE_SOURCE);
+				const { body } = await postJson<AxesResponse>(
+					routes.axes,
+					"/api/drill/axes",
+					{
+						partsSources: [{ relation, selectExpr }],
+						baseSql: REVENUE_BASE_SQL,
+					},
+				);
+				const date = axisFor(body, ENTRY_DATE_COLUMN);
+				expect(date?.temporal).toBeNull();
+				expect(date?.bucketGrain).toBeUndefined();
+				expect(body.temporalGateSource).toBe("withheld-no-verdict");
+				expect(date?.temporalWithheldReason).toContain(
+					"has not classified for additivity",
+				);
 			});
 		});
 
@@ -402,7 +433,7 @@ describe.skipIf(!jx.available)(
 					routes.axes,
 					"/api/drill/axes",
 					{
-						partsSources: [{ ...REVENUE_SOURCE.parts }],
+						partsSources: [axisSource(REVENUE_SOURCE)],
 						baseSql: groupedBase,
 					},
 				);
@@ -522,38 +553,61 @@ describe.skipIf(!jx.available)(
 				).toEqual(keyed(REVENUE_BY_ACCOUNT));
 			});
 
-			// RED PIN — CURRENT behaviour.
-			it("TODAY offers no further axis on a grouped result", async () => {
+			// RETAINED (R2, owner ruling): the SAME grouped statement as an orphan
+			// SQL string still offers no month — and that is a DATA difference, not
+			// a path difference, which is exactly the distinction ADR-0024
+			// decision 2 draws.
+			//
+			// A bare `resultSql` carries no identity: nothing says which concept
+			// this number is, so no additivity verdict can be read for it, and
+			// tier A composes by WRAPPING the result — it can only group by columns
+			// the statement projects, which this one's date is not. Both halves of
+			// the capability are genuinely missing. The pin stays green so a later
+			// "offer grains everywhere" regression cannot slip in through tier A.
+			it("still offers no month on the same result WITHOUT identity", async () => {
 				const { body } = await postJson<AxesResponse>(
 					routes.axes,
 					"/api/drill/axes",
 					{ resultSql: groupedSql },
 				);
-				// Tier A can only offer COLUMNS OF THE RESULT, and the grouped
-				// statement projects no date — so the month the practitioner wants
-				// is not on the menu. The account column is present but already
-				// broken out, which leaves nothing actionable.
 				expect(axisFor(body, ENTRY_DATE_COLUMN)).toBeUndefined();
-				const actionable = body.axes.filter((a) => a.disabledReason === null);
-				expect(actionable).toHaveLength(0);
-				// An empty menu is a CLAIM: it must say why, never render as nothing.
-				const explained =
-					body.reason !== undefined ||
-					body.axes.every((a) => a.disabledReason !== null);
-				expect(explained).toBe(true);
+				// Not the empty-catalog case: the account column IS found and IS
+				// offered — disabled, WITH its reason. An axis that silently vanished
+				// would be indistinguishable from one we never found.
+				const account = axisFor(body, ACCOUNT_NAME_COLUMN);
+				expect(account).toBeDefined();
+				expect(account?.disabledReason).toContain("already");
+				// So the menu has nothing actionable — and every item says why.
+				expect(body.axes.filter((a) => a.disabledReason === null)).toHaveLength(
+					0,
+				);
 			});
 
-			// RED PIN — TARGET behaviour.
-			it.fails("TARGET: a grouped revenue result can still be split by month", async () => {
+			// FLIPPED by R2 — re-pointed at the path a practitioner actually gets
+			// here on (owner ruling). The grouped grid in front of them came from an
+			// ANSWER: it carries the proven declaration, so the drill recomposes at
+			// SOURCE instead of wrapping the result, and the month is available even
+			// though the statement on screen never projected it. That is the whole
+			// point of parts-at-source, and it is the same request J2 drilled — one
+			// slice further along.
+			it("a grouped revenue result can still be split by month", async () => {
 				const { body } = await postJson<AxesResponse>(
 					routes.axes,
 					"/api/drill/axes",
-					{ resultSql: groupedSql },
+					{
+						partsSources: [axisSource(REVENUE_SOURCE)],
+						baseSql: groupedSql,
+					},
 				);
 				const date = axisFor(body, ENTRY_DATE_COLUMN);
 				expect(date).toBeDefined();
 				expect(date?.disabledReason).toBeNull();
 				expect(date?.bucketGrain).toBe("month");
+				// …while the account it is ALREADY broken out by is greyed with its
+				// reason, so "slice further" never offers a tautological re-group.
+				expect(axisFor(body, ACCOUNT_NAME_COLUMN)?.disabledReason).toContain(
+					"already",
+				);
 			});
 		});
 
@@ -663,28 +717,20 @@ describe.skipIf(!jx.available)(
 		describe("J6 · gross margin by month (answer path)", () => {
 			const marginExpression = `(${REVENUE_FIELD} - ${COGS_FIELD}) / ${REVENUE_FIELD} * 100`;
 			const partsSources = [
-				{ ...REVENUE_SOURCE.parts },
-				{ ...COGS_SOURCE.parts },
+				axisSource(REVENUE_SOURCE),
+				axisSource(COGS_SOURCE),
 			];
 
-			// RED PIN — CURRENT behaviour.
-			it("TODAY withholds the month grain the identical metric offers", async () => {
-				const { body } = await postJson<AxesResponse>(
-					routes.axes,
-					"/api/drill/axes",
-					{ partsSources },
-				);
-				const date = axisFor(body, ENTRY_DATE_COLUMN);
-				expect(date).toBeDefined();
-				expect(date?.temporal).toBeNull();
-				expect(body.temporalGateSource).toBe("withheld-no-verdict");
-				// No verdict was consulted at all, so nothing can be said about
-				// reconciliation — the footer machinery has nothing to key on.
-				expect(body.reconciles).toBeUndefined();
-			});
-
-			// RED PIN — TARGET behaviour: parity with J5.
-			it.fails("TARGET: the answer path matches the node path's capability", async () => {
+			// FLIPPED by R2 — the parity claim, and the proof that the fix is ONE
+			// resolution rather than three tolerable ones. Was a red pin: this
+			// declaration is the same arithmetic over the same two carriers as the
+			// metric node in J5, and the answer path withheld the month grain that
+			// J5 offers, with no `reconciles` for the footer to key on.
+			//
+			// Nothing here is answer-path-specific: the two carriers' served
+			// verdicts decide, through the same `decideTimeAxis` and the same
+			// `reconciliation` J5 goes through.
+			it("matches the node path's capability, carrier for carrier", async () => {
 				const { body } = await postJson<AxesResponse>(
 					routes.axes,
 					"/api/drill/axes",
@@ -693,6 +739,9 @@ describe.skipIf(!jx.available)(
 				const date = axisFor(body, ENTRY_DATE_COLUMN);
 				expect(date?.temporal).toBe("date");
 				expect(date?.bucketGrain).toBe("month");
+				// J5 asserts EXACTLY this for the metric node. Two classified
+				// concepts combined by the answer's own arithmetic recompute per
+				// bucket, so the buckets are honest and the total is not their sum.
 				expect(body.reconciles).toEqual({
 					time: false,
 					categorical: false,
@@ -710,6 +759,9 @@ describe.skipIf(!jx.available)(
 				composed(res.body);
 				const rows = await runSql(res.body.sql ?? "", res.body.params);
 				expect(rows).toHaveLength(GROSS_MARGIN_BY_MONTH.length);
+				// The footer prints the RECOMPUTED whole-ledger margin — the headline
+				// the practitioner started from, not the sum of the twelve buckets
+				// (J5's node-path assertion, reached through the answer path).
 				expect(valueCell(await runSql(res.body.totals?.sql ?? ""))).toBe(
 					GROSS_MARGIN_PCT,
 				);
@@ -780,7 +832,10 @@ describe.skipIf(!jx.available)(
 		describe("J8 · a genuinely unclassified concept", () => {
 			// Net movement per cost centre: a real question, but not a concept the
 			// engine has classified — no metric node, no standard field, no
-			// additivity verdict anywhere.
+			// additivity verdict anywhere. So the declaration names NO grounding
+			// (`snippetId` absent, the shape a FRESH step produces), which is
+			// precisely why it has no verdict to read: identity is what the drill
+			// spends, and this answer has none to spend.
 			const adHocSource = {
 				selectExpr:
 					"CASE WHEN COUNT(*) = 0 THEN NULL ELSE SUM(debit) - SUM(credit) END",
@@ -820,22 +875,20 @@ describe.skipIf(!jx.available)(
 				expect(columnsOf(body)).toContain(ENTRY_DATE_COLUMN);
 			});
 
-			// WHY THIS JOURNEY IS GREEN TODAY, AND WHAT THAT IS WORTH.
+			// WHAT THIS JOURNEY IS NOW WORTH — R1 wrote it for exactly this moment.
 			//
-			// Right now this assertion is indistinguishable from J1's and J6's RED
-			// pins: the answer path emits this SAME sentence for EVERY request,
-			// classified or not, because it never reads a verdict. So J8 passing
-			// today proves nothing about discrimination — it only proves the
-			// withhold is worded honestly.
+			// Before R2 this assertion proved nothing about discrimination: the
+			// answer path emitted the same withholding sentence for EVERY request,
+			// classified or not, because it never read a verdict. J8 passing only
+			// meant the sentence was worded honestly.
 			//
-			// That changes the moment R2 lands. Then J1 and J6 offer a month grain
-			// (their targets ARE classified) and J8 must STILL withhold, because
-			// its concept genuinely is not. At that point this test becomes the
-			// only thing standing between "consults the verdict" and "offers a
-			// grain for everything" — a regression that would otherwise turn every
-			// green journey above into a lie. It is deliberately kept as a
-			// standalone journey for that future, not folded into J1.
-			it("is the only journey that SHOULD still withhold after R2", async () => {
+			// Now J1 and J6 offer a month grain — their concepts ARE classified —
+			// and J8 must still withhold, because its concept genuinely is not. So
+			// this is the assertion standing between "consults the verdict" and
+			// "offers a grain for everything", a regression that would otherwise
+			// turn every green journey above into a lie. Kept standalone for that
+			// job, never folded into J1.
+			it("is the only journey that SHOULD still withhold", async () => {
 				const { body } = await postJson<AxesResponse>(
 					routes.axes,
 					"/api/drill/axes",

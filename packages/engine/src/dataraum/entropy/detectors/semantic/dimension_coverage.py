@@ -133,7 +133,7 @@ class DimensionCoverageDetector(EntropyDetector):
             return {}
 
         from dataraum.analysis.statistics.db_models import StatisticalProfile
-        from dataraum.analysis.views.served_columns import enriched_dimension_columns
+        from dataraum.analysis.served_columns import enriched_dimension_columns
 
         # Coverage measures the JOINED dimensions, not the fact's own f.* passthrough
         # columns the enriched view also registers (DAT-811).

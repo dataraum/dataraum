@@ -35,7 +35,7 @@ from dataraum.analysis.slicing.models import (
     SlicingAnalysisResult,
 )
 from dataraum.analysis.slicing.relevance import score_axis
-from dataraum.analysis.views.served_columns import enriched_dimension_columns
+from dataraum.analysis.served_columns import enriched_dimension_columns
 from dataraum.core.logging import get_logger
 from dataraum.llm import PromptRenderer, create_provider, load_llm_config
 from dataraum.pipeline.base import PhaseContext, PhaseResult

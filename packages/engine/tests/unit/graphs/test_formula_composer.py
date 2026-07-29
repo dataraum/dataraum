@@ -16,7 +16,6 @@ from dataraum.graphs.formula_composer import (
     compose_extract_sql,
     compose_formula_sql,
     extract_parts_dict,
-    same_name_keys,
 )
 
 # Every distinct formula expression in packages/dataraum-config/verticals/finance,
@@ -201,84 +200,6 @@ class TestComposeExtractSql:
         sql = compose_extract_sql("SUM(x)", "t", ["a = 'k'"])
         row = conn.execute(sql).fetchone()
         assert row is not None and row[0] == 5.0
-
-
-class TestCrossFactKeyAliasing:
-    """DAT-809: two facts spell ONE conformed dimension with their own columns.
-
-    Each side must group by its OWN column and project it under the shared axis
-    identity — that alias is what `compose_formula_sql` merges the carriers on.
-    """
-
-    def test_projects_the_local_column_under_the_axis_alias(self) -> None:
-        assert compose_extract_sql("SUM(balance)", "ap_balances", [], [("acct", "account")]) == (
-            'SELECT "acct" AS "account", SUM(balance) AS value\nFROM ap_balances\nGROUP BY "acct"'
-        )
-
-    def test_groups_on_the_source_column_not_the_alias(self) -> None:
-        """Aliasing a projection must never change which rows collapse together.
-
-        If GROUP BY followed the alias, an axis alias colliding with a DIFFERENT
-        column on this relation would silently regroup the extract — the parts
-        would stop being a partition of the rows the scalar aggregates.
-        """
-        sql = compose_extract_sql("SUM(x)", "t", [], [("acct", "account_id")])
-        assert sql.endswith('GROUP BY "acct"')
-
-    def test_same_name_keys_is_the_single_relation_degenerate_case(self) -> None:
-        assert compose_extract_sql(
-            "SUM(x)", "t", [], same_name_keys("a", "b")
-        ) == compose_extract_sql("SUM(x)", "t", [], [("a", "a"), ("b", "b")])
-
-    def test_a_blank_alias_is_dropped_like_a_blank_column(self) -> None:
-        assert compose_extract_sql("SUM(x)", "t", [], [("a", "  ")]) == (
-            "SELECT SUM(x) AS value\nFROM t"
-        )
-
-    def test_quotes_both_sides_of_the_pair(self) -> None:
-        sql = compose_extract_sql("SUM(x)", "t", [], [('we"ird', 'ax"is')])
-        assert '"we""ird" AS "ax""is"' in sql
-        assert sql.endswith('GROUP BY "we""ird"')
-
-    def test_differently_spelled_carriers_merge_on_the_shared_alias(self) -> None:
-        """The end-to-end crossing, executed: a name INTERSECTION finds nothing here.
-
-        `gl_entries.account_id` and `ap_balances.acct` are one conformed dimension.
-        The stock carrier is pinned to its reporting instant (W3's period binding
-        rides in the persisted `where` parts) rather than re-aggregated to LAST —
-        pinning is what makes the per-account balance well-defined.
-        """
-        conn = duckdb.connect(":memory:")
-        conn.execute(
-            "CREATE TABLE gl_entries AS SELECT * FROM (VALUES"
-            " ('4000', 100.0), ('4000', 50.0), ('5000', 200.0), ('5000', 25.0),"
-            " ('6000', 70.0)) t(account_id, amount)"
-        )
-        conn.execute(
-            "CREATE TABLE ap_balances AS SELECT * FROM (VALUES"
-            " ('4000', 1000.0, DATE '2024-03-31'), ('4000', 900.0, DATE '2024-02-29'),"
-            " ('5000', 400.0, DATE '2024-03-31'), ('7000', 10.0, DATE '2024-03-31'))"
-            " t(acct, balance, as_of)"
-        )
-        flow = compose_extract_sql("SUM(amount)", "gl_entries", [], [("account_id", "account")])
-        stock = compose_extract_sql(
-            "SUM(balance)", "ap_balances", ["\"as_of\" = DATE '2024-03-31'"], [("acct", "account")]
-        )
-        merged = compose_formula_sql(
-            "ap / gl", {"ap", "gl"}, group_by=["account"], grouped_steps=frozenset({"ap", "gl"})
-        )
-        rows = conn.execute(
-            f"WITH gl AS ({flow}), ap AS ({stock}) SELECT * FROM ({merged}) ORDER BY 1"
-        ).fetchall()
-
-        # 6000 is flow-only and 7000 stock-only: the FULL OUTER keeps both, and the
-        # missing operand yields NULL — "not computable for this account", never 0.
-        assert rows == [
-            ("4000", 1000.0 / 150.0),
-            ("5000", 400.0 / 225.0),
-            ("6000", None),
-            ("7000", None),
-        ]
 
 
 class TestExtractPartsDict:

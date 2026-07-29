@@ -159,6 +159,8 @@ export function graphSnippetSeedSql(
 			id: "snip_formula",
 			type: "formula",
 			field: "gross_margin",
+			// A formula step is not a grounding — no clause parts to carry.
+			expr: null,
 			sql: `SELECT (SUM(amount) - SUM(cost)) / NULLIF(SUM(amount), 0) FROM ${ENRICHED_VIEW}`,
 			failures: 0,
 		},
@@ -167,6 +169,7 @@ export function graphSnippetSeedSql(
 			id: "snip_revenue",
 			type: "extract",
 			field: "revenue",
+			expr: "SUM(amount)",
 			sql: `SELECT SUM(amount) FROM ${ENRICHED_VIEW}`,
 			failures: 0,
 		},
@@ -175,17 +178,48 @@ export function graphSnippetSeedSql(
 			id: "snip_cost",
 			type: "extract",
 			field: "cost",
+			expr: "SUM(cost)",
 			sql: `SELECT SUM(cost) FROM lake.typed.${ENRICHED_VIEW}`,
 			failures: 0,
 		},
+		{
+			// A RETAINED-FAILURE grounding (DAT-671 R2). Its own standard_field on
+			// purpose: a failed row for `revenue`/`cost` would be the NEWEST row for
+			// a field the metric path wants, and that path's "first per field
+			// decides" contract would then strip a healthy node's axes — a fixture
+			// change masquerading as a product regression. `shrinkage` belongs to no
+			// metric DAG, so only the readers that ask about it can see it.
+			id: "snip_shrinkage",
+			type: "extract",
+			field: "shrinkage",
+			expr: "SUM(shrinkage)",
+			sql: `SELECT SUM(shrinkage) FROM ${ENRICHED_VIEW}`,
+			failures: 3,
+		},
 	];
+
+	// The persisted PARTS (DAT-838 shape) ride along on every extract, because
+	// that is what a graph-authored extract carries in production — `from` BARE
+	// by contract (validate_grounding_basis), the value expression unaliased
+	// under the mandatory `value` alias. A parts-less extract is not a tidier
+	// fixture, it is a DIFFERENT row: `og_grounding.select_expr` reads straight
+	// out of this JSON, and the drill's identity check compares the value
+	// expression an answer declares against it (DAT-671 R2).
+	const partsJson = (expr: string | null): string =>
+		expr === null
+			? "NULL"
+			: `'${JSON.stringify({
+					select: [{ expr, alias: "value" }],
+					from: [ENRICHED_VIEW],
+					where: [],
+				}).replaceAll("'", "''")}'::json`;
 
 	const values = rows
 		.map(
 			(r) =>
 				`('${r.id}', '${workspaceId}', '${r.type}', '${r.field}', '${workspaceId}', ` +
 				`'${r.sql.replaceAll("'", "''")}', 'fixture snippet', 'graph:${graphId}', ` +
-				`0, ${r.failures}, ${ts}, ${ts})`,
+				`${partsJson(r.expr ?? null)}, 0, ${r.failures}, ${ts}, ${ts})`,
 		)
 		.join(",\n  ");
 
@@ -194,7 +228,8 @@ SET search_path TO engine;
 
 INSERT INTO sql_snippets (
   snippet_id, workspace_id, snippet_type, standard_field, schema_mapping_id,
-  sql, description, source, execution_count, failure_count, created_at, updated_at)
+  sql, description, source, parts, execution_count, failure_count,
+  created_at, updated_at)
 VALUES
   ${values};
 `;
@@ -279,5 +314,159 @@ VALUES (
 -- EMPTY graph without it, so its absence looks exactly like "no metrics".
 INSERT INTO metadata_snapshot_head (head_id, target, stage, run_id, promoted_at)
 VALUES ('head_om', 'catalog', 'operating_model', '${RUN_ID}', ${ts});
+`;
+}
+
+/** The `part_of` chain above `revenue`, fine-to-coarse. SIX links deep on
+ *  purpose: the served ancestry is depth 2..4 (`PART_OF_MAX_DEPTH`), so
+ *  `PART_OF_CHAIN[0]` is the 1-hop parent, `[1..3]` are the transitive tail,
+ *  and `[4]` sits one hop BEYOND the cap — the boundary
+ *  `concept-graph-load.integration.test.ts` pins so the cockpit's CTE depth and
+ *  the engine's `_PART_OF_MAX_DEPTH` can never silently drift apart. */
+export const PART_OF_CHAIN = [
+	"operating_income",
+	"pretax_income",
+	"net_income",
+	"retained_earnings",
+	"equity",
+] as const;
+
+/** The metric whose `derives_from` edges reach the two grounded concepts. */
+export const DERIVED_METRIC = "gross_margin";
+
+/**
+ * The ONTOLOGY the fixture's graph reads resolve against (DAT-671 R2/R3).
+ *
+ * Seeded HERE, in global setup, rather than ad hoc in the one suite that first
+ * needed them: `og_grounded_by` and `og_has_additivity` both INNER JOIN
+ * `concepts` on `(name, superseded_at IS NULL)`, so whether a concept row
+ * exists decides whether an EDGE exists — and a test-local insert makes every
+ * other suite's view of the graph depend on execution order.
+ *
+ * `_adhoc` is the vertical because the fixture workspace is unbound (no
+ * `workspace_settings` row): the vertical-scoped `concepts` read view falls
+ * back to that placeholder (read_views.py's `_vertical_scoped_view_sql`), so
+ * rows under any other vertical would be invisible to every reader.
+ *
+ * Beyond the three grounded concepts this carries the SHAPES a concept-block
+ * read has to get right, each present exactly once so an assertion on it is
+ * unambiguous: the `part_of` chain (above), a symmetric `disjoint_with` pair, a
+ * `reconciles_with` self-loop with per-pair evaluations to fold, a SUPERSEDED
+ * concept plus an edge into it (both must drop), an edge naming no concept at
+ * all (drops), the measure additivity verdicts, and a metric with
+ * `derives_from` edges. Rows the graph must EXCLUDE are as load-bearing as the
+ * rows it must serve — without them a read that forgets a filter still passes.
+ */
+export function conceptSeedSql(): string {
+	// The chain as (child, parent) pairs: revenue → [0] → [1] → … → [4].
+	const chainEdges = ["revenue", ...PART_OF_CHAIN]
+		.slice(0, -1)
+		.map((from, i) => {
+			const to = PART_OF_CHAIN[i];
+			return `('edge_po_${i}', '_adhoc', 'part_of', '${from}', '${to}', NULL, 'seed', ${ts}, NULL)`;
+		});
+	const chainConcepts = PART_OF_CHAIN.map(
+		(name, i) =>
+			`('cpt_chain_${i}', '_adhoc', '${name}', 'measure', NULL, NULL, NULL, 'seed', ${ts}, NULL)`,
+	);
+
+	return `
+SET search_path TO engine;
+
+-- \`revenue\` carries the DEFINITION payload (description/indicators/excludes).
+-- That payload is NOT a property of the \`concept_node\` vertex — og_concepts
+-- projects (concept_id, vertical, name, kind, ordering) only — so it is exactly
+-- what pins the loader's identity-keyed join back to the \`concepts\` row.
+INSERT INTO concepts (concept_id, vertical, name, kind, description,
+                      indicators, exclude_patterns, source, created_at,
+                      superseded_at)
+VALUES
+  ('cpt_revenue',   '_adhoc', 'revenue',   'measure',
+   'Income from primary operations',
+   '["sales", "turnover"]'::json, '["deferred"]'::json, 'seed', ${ts}, NULL),
+  ('cpt_cost',      '_adhoc', 'cost',      'measure', NULL, NULL, NULL, 'seed', ${ts}, NULL),
+  ('cpt_shrinkage', '_adhoc', 'shrinkage', 'measure', NULL, NULL, NULL, 'seed', ${ts}, NULL),
+  ${chainConcepts.join(",\n  ")},
+  -- Superseded: must appear as neither a node NOR an edge endpoint. The
+  -- partial unique index is on active rows only, so this coexists by design.
+  ('cpt_retired',   '_adhoc', 'legacy_margin', 'measure', NULL, NULL, NULL,
+   'seed', ${ts}, ${ts})
+ON CONFLICT DO NOTHING;
+
+INSERT INTO concept_edges (edge_id, vertical, predicate, from_concept,
+                           to_concept, tolerance, source, created_at,
+                           superseded_at)
+VALUES
+  ${chainEdges.join(",\n  ")},
+  -- Symmetric, stored in BOTH directions exactly as the engine writes it — a
+  -- reader that symmetrizes client-side would double this.
+  ('edge_dj_1', '_adhoc', 'disjoint_with', 'revenue', 'cost', NULL, 'seed', ${ts}, NULL),
+  ('edge_dj_2', '_adhoc', 'disjoint_with', 'cost', 'revenue', NULL, 'seed', ${ts}, NULL),
+  -- Self-loop: "this concept's own computations must tie out" (DAT-727).
+  ('edge_rc_1', '_adhoc', 'reconciles_with', 'revenue', 'revenue', 0.01, 'derived', ${ts}, NULL),
+  -- Endpoint is SUPERSEDED → og_concept_edges' INNER JOIN drops the edge.
+  ('edge_drop_superseded', '_adhoc', 'part_of', 'cost', 'legacy_margin', NULL, 'seed', ${ts}, NULL),
+  -- Endpoint names NO concept row at all → same drop, different cause.
+  ('edge_drop_ghost', '_adhoc', 'part_of', 'cost', 'ghost_concept', NULL, 'seed', ${ts}, NULL),
+  -- Superseded EDGE between two live concepts → dropped by the view's own filter.
+  ('edge_drop_retired', '_adhoc', 'disjoint_with', 'revenue', 'shrinkage', NULL, 'seed', ${ts}, ${ts})
+ON CONFLICT DO NOTHING;
+
+-- The last promoted run's per-pair tie-out (DAT-739). TWO pairs, one of them
+-- not comparable, so the fold has something to report: the served entry must
+-- say how many pairs were evaluated, not present a partial check as a whole one.
+-- Head-gated on stage='operating_model' (already promoted by metricArtifactSeedSql).
+INSERT INTO concept_reconciliation (
+  reconciliation_id, run_id, vertical, from_concept, to_concept, pair_key,
+  left_snippet_id, right_snippet_id, left_value, right_value,
+  delta, relative_delta, tolerance, status, verdict, abstain_reason, created_at)
+VALUES
+  ('rec_1', '${RUN_ID}', '_adhoc', 'revenue', 'revenue', 'snip_revenue|snip_cost',
+   'snip_revenue', 'snip_cost', 1000, 996,
+   4, 0.004, 0.01, 'evaluated', 'within_tolerance', NULL, ${ts}),
+  ('rec_2', '${RUN_ID}', '_adhoc', 'revenue', 'revenue', 'snip_revenue|snip_shrinkage',
+   'snip_revenue', 'snip_shrinkage', NULL, NULL,
+   NULL, NULL, 0.01, 'abstained', NULL, 'execution_failed', ${ts})
+ON CONFLICT DO NOTHING;
+
+-- The measure additivity verdicts the drill layer gates on (DAT-857/868), which
+-- R3 puts in front of the answer agent BEFORE it composes SQL. Both class rows
+-- ('*' = every axis of this kind) and both statuses, so the render is pinned on
+-- a classified verdict AND on a typed abstention — "not judged" must never read
+-- as "no". og_has_additivity is target_kind='measure' only; the metric-target
+-- rows below prove the concept block does not pick them up.
+-- \`vertical\` must equal the seeded concepts' vertical ('_adhoc'): the R6
+-- vertical guard makes og_has_additivity join on the full (vertical, name)
+-- pair, so a mismatched vertical silently unbinds every verdict below.
+INSERT INTO metric_axis_additivity (
+  additivity_id, run_id, vertical, target_kind, target_key, axis_kind, axis_key,
+  status, verdict, reason, abstain_reason, bucket_grain, created_at)
+VALUES
+  ('adv_f_rev_time', '${RUN_ID}', '_adhoc', 'measure', 'revenue', 'time', '*',
+   'classified', 'additive', NULL, NULL, 'month', ${ts}),
+  ('adv_f_rev_cat',  '${RUN_ID}', '_adhoc', 'measure', 'revenue', 'categorical', '*',
+   'abstained', NULL, NULL, 'unknown_aggregate', NULL, ${ts}),
+  ('adv_f_cost_time','${RUN_ID}', '_adhoc', 'measure', 'cost', 'time', '*',
+   'classified', 'semi_additive', 'stock', NULL, 'month', ${ts}),
+  ('adv_f_gm_time',  '${RUN_ID}', '_adhoc', 'metric', '${DERIVED_METRIC}', 'time', '*',
+   'classified', 'non_additive_recompute', 'ratio', NULL, 'month', ${ts})
+ON CONFLICT DO NOTHING;
+
+-- The metric DAG's concept leaves (DAT-732). \`og_derives_from\` had no cockpit
+-- reader at all before R3; these rows are what its first one reads.
+INSERT INTO metrics (metric_id, vertical, graph_id, name, category, unit,
+                     output_type, source, created_at, superseded_at)
+VALUES ('mtr_gm', '_adhoc', '${DERIVED_METRIC}', 'Gross Margin', 'profitability',
+        'percent', 'ratio', 'seed', ${ts}, NULL)
+ON CONFLICT DO NOTHING;
+
+INSERT INTO metric_derives_from (edge_id, vertical, graph_id, concept_name,
+                                 created_at, superseded_at)
+VALUES
+  ('mdf_gm_rev',  '_adhoc', '${DERIVED_METRIC}', 'revenue', ${ts}, NULL),
+  ('mdf_gm_cost', '_adhoc', '${DERIVED_METRIC}', 'cost', ${ts}, NULL),
+  -- Names no active concept → og_derives_from's INNER JOIN drops it.
+  ('mdf_gm_ghost','_adhoc', '${DERIVED_METRIC}', 'ghost_concept', ${ts}, NULL)
+ON CONFLICT DO NOTHING;
 `;
 }

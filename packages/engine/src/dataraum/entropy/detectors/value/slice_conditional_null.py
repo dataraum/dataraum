@@ -127,6 +127,19 @@ class SliceConditionalNullDetector(EntropyDetector):
         The authoritative cardinality gate is the actual distinct count on the scanned,
         slice-labelled rows (in ``detect``) — so a column with no profile is still kept,
         not silently excluded.
+
+        DAT-671 R6 (ADR-0024: names are display, not keys). The ``_id``-suffix test
+        is a NAME heuristic standing in for a fact the catalogue already holds
+        typed: FK-ness lives in ``relationships`` (from_column_id / to_column_id on
+        a confirmed row), which is both wider (it catches an FK named ``acct``) and
+        narrower (it does not condemn a real dimension named ``region_id`` that no
+        relationship references). DECISION: replace the suffix test with that
+        typed signal, not delete it outright — the intent (identifiers carry no
+        slice semantics) is right, only its evidence is a string match.
+        BLOCKED ON: this changes which columns the detector scores, i.e. its
+        precision/recall, and correctness here is settled by calibration in
+        ``dataraum-eval`` — locked for this slice. Do not land the swap on unit
+        tests alone.
         """
         columns = list(
             session.execute(select(Column).where(Column.table_id == context.table_id))

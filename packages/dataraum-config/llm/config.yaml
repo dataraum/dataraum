@@ -118,16 +118,9 @@ limits:
   # headroom under 24000.
   max_output_tokens_per_request: 24000
 
-# Privacy settings for data sent to LLM
+# How much raw corpus data a prompt may carry
 privacy:
+  # The PROMPT budget for per-column value samples — distinct from the
+  # profiler's storage budget (phases/statistics.yaml: top_k_values: 200).
+  # Every prompt builder applies it (DAT-890).
   max_sample_values: 10
-  sensitive_patterns:
-    - ".*email.*"
-    - ".*phone.*"
-    - ".*ssn.*"
-    - ".*social_security.*"
-    - ".*credit_card.*"
-    - ".*password.*"
-    - ".*secret.*"
-    - ".*token.*"
-    - ".*api_key.*"

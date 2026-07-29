@@ -94,7 +94,7 @@ def persist_column_concepts(
     *,
     annotated_by: str,
     run_id: str,
-) -> ConceptPersistCounts:
+) -> Result[ConceptPersistCounts]:
     """Persist the catalogue agent's per-column semantics (DAT-637/823).
 
     Writes ``ColumnConcept`` rows under the begin_session (catalogue head) run —
@@ -112,11 +112,41 @@ def persist_column_concepts(
     bind this run has no row (absent = no concept), and run-scoped reads never
     see a prior run's.
 
+    The unresolvable-entry pathology is handled HERE, aligned with
+    ``analysis/semantic/processor.py: persist_column_annotations`` (DAT-890/671
+    — the same risk class, since this phase was healthy at R-890 time and is
+    caught up now): an entry naming a column this table does not have (a
+    phantom, or a real name misspelt) is DROPPED and DISCLOSED — a per-entry
+    WARNING log (``column_concepts_unresolved_column``) plus a summary line
+    riding the returned ``Result.warnings`` — never the silent DEBUG-only
+    line this used to be.
+
+    A DUPLICATE ``(table_name, column_name)`` resolving to the same column
+    stays a last-mention-wins FOLD (unlike ``persist_column_annotations``,
+    which fails the response loud on a duplicate) — deliberately NOT
+    unified with that stricter rule: ``_retry_missing_coverage`` (DAT-725)
+    relies on this fold as its merge mechanism. A bounded retry re-authors
+    ONLY the still-missing columns and APPENDS its entries onto the first
+    pass's output rather than replacing them in place, so a column the first
+    pass left blank legitimately carries TWO entries by the time this
+    persists — the first pass's blank one and the retry's filled one — and
+    the fold is what makes the retry's (later) entry win
+    (``test_blank_meaning_counts_as_missing_and_is_refilled``;
+    ``test_retry_style_duplicate_reaching_persist_keeps_the_later_entry``
+    pins the dependency directly, without depending on retry-orchestration
+    behavior). Failing loud on that duplicate would break the retry's OWN
+    merge contract every time it actually recovers a gap — the R-890
+    alignment does not port over without first reworking
+    ``_retry_missing_coverage`` to replace rather than append (DAT-671
+    census follow-up, not done here).
+
     Returns:
-        A :class:`ConceptPersistCounts` breakdown. The counts are logged so a
-        name-resolution wipeout (every emitted concept dropped as unresolved,
-        DAT-768 path #2) is diagnosable rather than indistinguishable from an
-        empty emission; the caller gates begin_session on ``with_meaning``.
+        A :class:`ConceptPersistCounts` breakdown, with a combined warning
+        naming every unresolvable entry riding ``Result.warnings`` — the
+        counts are also logged so a name-resolution wipeout (every emitted
+        concept dropped as unresolved, DAT-768 path #2) is diagnosable
+        rather than indistinguishable from an empty emission; the caller
+        gates begin_session on ``with_meaning``.
     """
     column_map = load_column_mappings(session, table_ids)
 
@@ -125,7 +155,16 @@ def persist_column_concepts(
     for cc in column_concepts:
         column_id = column_map.get((cc.table_name, cc.column_name))
         if not column_id:
+            # Recorded, not silent: the agent named a column this table does
+            # not have — either a phantom entry or a real column whose name
+            # it got slightly wrong (the second case silently LOSES a
+            # concept, so both must surface).
             dropped.append((cc.table_name, cc.column_name))
+            logger.warning(
+                "column_concepts_unresolved_column",
+                table=cc.table_name,
+                column=cc.column_name,
+            )
             continue
         # Normalized like the formula hypothesis: an all-whitespace meaning is
         # absence, so the gate below and the feed's IS NOT NULL read agree.
@@ -155,7 +194,9 @@ def persist_column_concepts(
 
     # Dedup on the upsert key (column_id, run_id): the agent can emit the same
     # column twice, and Postgres ON CONFLICT cannot touch a row twice in one
-    # batch (CardinalityViolation). Last mention wins.
+    # batch (CardinalityViolation). Last mention wins — see the docstring for
+    # why this stays a fold rather than the stricter persist_column_annotations
+    # typed-failure rule.
     deduped: dict[tuple[str, str], dict[str, Any]] = {}
     for row in rows:
         deduped[(row["column_id"], row["run_id"])] = row
@@ -178,12 +219,15 @@ def persist_column_concepts(
         with_meaning=counts.with_meaning,
         ambiguous=counts.ambiguous,
     )
-    if dropped:
-        # The exact names the agent echoed that resolved to no column — the signal
-        # that distinguishes a naming drift (case, enriched prefix, display name)
-        # from a genuinely empty emission.
-        logger.debug("column_concepts_dropped_unresolved", dropped=dropped)
-    return counts
+    warnings = (
+        [
+            f"column_concepts named {len(dropped)} column(s) that do not exist "
+            f"and were dropped: {', '.join(f'{t}.{c}' for t, c in dropped)}"
+        ]
+        if dropped
+        else []
+    )
+    return Result.ok(counts, warnings=warnings)
 
 
 def apply_table_readings(
@@ -372,13 +416,16 @@ def author_and_store_catalogue(
     annotated_by = agent.provider.get_model_for_tier(
         agent.config.features.semantic_analysis.model_tier
     )
-    counts = persist_column_concepts(
+    persist_result = persist_column_concepts(
         session,
         output.column_concepts,
         table_ids,
         annotated_by=annotated_by,
         run_id=run_id,
     )
+    if not persist_result.success:
+        return Result.fail(persist_result.error or "Persisting column concepts failed")
+    counts = persist_result.unwrap()
     applied_tables, dropped_readings = apply_table_readings(
         session, output.table_readings, table_ids, run_id=run_id
     )
@@ -424,7 +471,12 @@ def author_and_store_catalogue(
             ambiguous=counts.ambiguous,
             missing=len(missing),
             dropped_unresolved=counts.dropped_unresolved + len(dropped_readings),
-        )
+        ),
+        # DAT-671: the unresolvable-column disclosure (was DEBUG-only and
+        # invisible; per-entry at the structured-log level, one combined
+        # summary here) now rides the phase's warnings channel, same as the
+        # semantic_per_column phase's persist-side disclosures (DAT-890).
+        warnings=persist_result.warnings,
     )
 
 

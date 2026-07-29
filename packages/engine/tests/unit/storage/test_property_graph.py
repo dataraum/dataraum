@@ -41,14 +41,16 @@ def test_graph_statement_binds_each_element_view_with_keys() -> None:
     # Views have no primary key, so vertex KEY + edge SOURCE/DESTINATION KEY are mandatory.
     assert "KEY (table_id) LABEL table_node" in graph_sql
     assert "KEY (column_id) LABEL column_node" in graph_sql
-    # Sixteen edges: refs, has_dimension, derived_from, concept_edge (DAT-729),
+    # Fifteen edges: refs, derived_from, concept_edge (DAT-729),
     # conformed_dimension (DAT-756), grounded_by + uses (DAT-727), the three
     # DAT-730 additions — temporal_coverage, rolls_up_to, period_rolls_up_to — the
     # two DAT-731 additions (has_additivity, measured_in), the two DAT-732
     # metric-DAG edges (derives_from, has_parameter), the DAT-733 scoped_by, and the
-    # DAT-787 filtered_by (grounding → dim_member).
-    assert graph_sql.count("SOURCE KEY") == 16
-    assert graph_sql.count("DESTINATION KEY") == 16
+    # DAT-787 filtered_by (grounding → dim_member). has_dimension was DELETED in
+    # DAT-671 R6: zero readers in engine, cockpit or eval — every consumer of a
+    # fact's slice columns reads ``current_slice_definitions`` directly (ADR-0024 d3).
+    assert graph_sql.count("SOURCE KEY") == 15
+    assert graph_sql.count("DESTINATION KEY") == 15
     # The measure→materialization MATCH reads these vertex properties.
     assert "semantic_role, materialization" in graph_sql
     # The concept_edge edge binds concept → concept, carrying the predicate property.

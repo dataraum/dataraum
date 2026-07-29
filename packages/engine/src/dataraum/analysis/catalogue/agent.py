@@ -20,7 +20,6 @@ from dataraum.analysis.semantic.ontology import OntologyLoader
 from dataraum.core.logging import get_logger
 from dataraum.core.models.base import Result
 from dataraum.llm.features._base import LLMFeature
-from dataraum.llm.privacy import DataSampler
 from dataraum.llm.providers.base import ConversationRequest, Message
 from dataraum.llm.structured_output import parse_structured_output
 
@@ -101,14 +100,14 @@ class CatalogueSemanticsAgent(LLMFeature):
         if not ontology_def.concepts:
             return Result.fail(f"Vertical '{ontology}' has no concepts.")
 
-        sampler = DataSampler(self.config.privacy)
         inputs = build_catalogue_inputs(
             session,
             duckdb_conn,
             table_ids=table_ids,
             session_table_ids=session_table_ids,
             run_id=run_id,
-            sampler=sampler,
+            sample_limit=self.config.privacy.max_sample_values,
+            sample_char_limit=self.config.privacy.max_sample_value_chars,
         )
         required_fields = _required_standard_fields(ontology)
         context = {
@@ -123,9 +122,7 @@ class CatalogueSemanticsAgent(LLMFeature):
         }
 
         try:
-            system_prompt, user_prompt, temperature = self.renderer.render_split(
-                "catalogue_semantics", context
-            )
+            system_prompt, user_prompt = self.renderer.render_split("catalogue_semantics", context)
         except Exception as e:
             return Result.fail(f"Failed to render catalogue_semantics prompt: {e}")
 
@@ -137,7 +134,6 @@ class CatalogueSemanticsAgent(LLMFeature):
             label="catalogue_semantics",
             effort=feature_config.effort,
             max_tokens=self.config.limits.max_output_tokens_per_request,
-            temperature=temperature,
             model=model,
         )
 

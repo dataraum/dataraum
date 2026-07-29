@@ -101,7 +101,7 @@ class ConceptEdgePredicate(StrEnum):
     """The typed relation a concept edge asserts (DAT-729).
 
     The operating-model graph's *vocabulary* edges — concept → concept, distinct
-    from the physical ``references`` / ``has_dimension`` edges over tables/columns.
+    from the physical ``refs`` / ``temporal_coverage`` edges over tables/columns.
 
     - ``PART_OF`` — mereological composition, DIRECTED: the source concept is a
       component that rolls up into the target (``accounts_payable`` part_of
@@ -590,6 +590,17 @@ class WorkspaceCalendar(Base):
     column, as :class:`WorkspaceSettings`). Singleton: ``pin`` is a boolean PK
     checked ``= TRUE``, so at most one row exists — the ladder's correlated read is a
     well-defined scalar.
+
+    **Zero writers is the DESIGNED state, not dead surface (DAT-671 R6).** Nothing
+    in this repo constructs a row: the authoring path is a later cockpit lane, and
+    DAT-783 deleted fiscal-year *inference* outright. The table is nonetheless
+    load-bearing precisely while EMPTY — ``og_period_grain`` ``LEFT JOIN``s it
+    ``ON TRUE`` and emits ``COALESCE(fiscal_year_start_month, 1)`` beside
+    ``calendar_source = 'default' | 'declared'``. The empty join is what makes the
+    stamped-default branch fire, and that value is read on to the served document
+    (``boundary_resolver.read_reporting_calendar`` →
+    ``context_reads._reporting_calendar`` → ``ReportingCalendarContext``). Drop the
+    table or its read view and the property graph stops building.
     """
 
     __tablename__ = "workspace_calendar"

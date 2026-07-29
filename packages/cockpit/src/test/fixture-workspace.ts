@@ -26,10 +26,19 @@
 //             unqualified names in the mirror resolve here.
 // Writes in tests therefore target `engine.<table>`; reads go through the
 // views, exactly as in production (ADR-0008).
+//
+// The operating-model PROPERTY GRAPH (ADR-0021, schema_graph.sql) is applied
+// on top of the read views, same token substitution, same reasoning: it is a
+// distinct SQL/PGQ object bound over those views (`CREATE PROPERTY GRAPH`),
+// so it must exist before any GRAPH_TABLE MATCH can run against the fixture.
+// Mirrors the engine's own boot order (`core/connections.py`): read views
+// first, graph second — the graph's element views select from `current_*`.
 
 import { spawnSync } from "node:child_process";
 import { readFileSync } from "node:fs";
 import { fileURLToPath } from "node:url";
+
+import { JOURNEY_DB, JOURNEY_LAKE_CATALOG_DB } from "./seed-journey";
 
 // Keep in lockstep with packages/infra/docker-compose.yml + pull-metadata.sh.
 const PG_IMAGE = "postgres:19beta1";
@@ -45,6 +54,20 @@ export interface FixtureWorkspace {
 	metadataUrl: string;
 	/** DSN for cockpit_db (hand-written Drizzle schema, real migrations). */
 	cockpitUrl: string;
+	/**
+	 * DSN for the JOURNEY workspace's engine metadata surface — the same schema
+	 * layout in its own database, so the journey catalog cannot collide with the
+	 * shared one (see seed-journey.ts for why that matters to tier A).
+	 */
+	journeyUrl: string;
+	/**
+	 * libpq connection string for the journey lake's DuckLake catalog database.
+	 * The ENGINE side (the writer stand-in) ATTACHes with this directly; the
+	 * cockpit reaches the same catalog through `DUCKLAKE_CATALOG_URL`.
+	 */
+	journeyLakeCatalogLibpq: string;
+	/** DSN form of the same catalog database, for `DUCKLAKE_CATALOG_URL`. */
+	journeyLakeCatalogUrl: string;
 	/** Docker container id, for teardown. */
 	containerId: string;
 	/** Run arbitrary SQL against a database in the fixture. */
@@ -157,6 +180,10 @@ export function startFixtureWorkspace(): FixtureWorkspace {
 		const readDdl = readFileSync(enginePath("schema_read.sql"), "utf8")
 			.replaceAll("__READ__", "public")
 			.replaceAll("__WS__", RAW_SCHEMA);
+		// --- the operating-model property graph, over those SAME read views ---
+		const graphDdl = readFileSync(enginePath("schema_graph.sql"), "utf8")
+			.replaceAll("__READ__", "public")
+			.replaceAll("__WS__", RAW_SCHEMA);
 		applySql(
 			containerId,
 			SCRATCH_DB,
@@ -165,16 +192,52 @@ export function startFixtureWorkspace(): FixtureWorkspace {
 				`SET search_path TO ${RAW_SCHEMA};`,
 				rawDdl,
 				readDdl,
+				graphDdl,
 			].join("\n"),
 		);
 
 		// --- cockpit_db: its own database, same instance ---
 		applySql(containerId, SCRATCH_DB, `CREATE DATABASE ${COCKPIT_DB};`);
 
+		// --- journey workspace: the SAME engine schema layout, own database ---
+		// One container, several databases: isolation without paying a second
+		// ~6s container boot. The journey catalog must not share a database with
+		// the shared fixture's, because tier A matches the catalog to a result by
+		// column NAME with no fact scoping — two `account_id__name` rows would
+		// change what the existing tier-A suite sees.
+		applySql(containerId, SCRATCH_DB, `CREATE DATABASE ${JOURNEY_DB};`);
+		// The journey database carries the graph too (DAT-671 R2): the answer
+		// path's IDENTITY read — snippet -> concept, a GRAPH_TABLE MATCH over
+		// `og_grounded_by` — is what licenses its additivity verdict, so the
+		// journeys cannot exercise it against a database with no property graph.
+		applySql(
+			containerId,
+			JOURNEY_DB,
+			[
+				`CREATE SCHEMA ${RAW_SCHEMA};`,
+				`SET search_path TO ${RAW_SCHEMA};`,
+				rawDdl,
+				readDdl,
+				graphDdl,
+			].join("\n"),
+		);
+
+		// --- the journey lake's DuckLake catalog: its own database again ---
+		applySql(
+			containerId,
+			SCRATCH_DB,
+			`CREATE DATABASE ${JOURNEY_LAKE_CATALOG_DB};`,
+		);
+
 		const base = `postgresql://postgres:scratch@127.0.0.1:${port}`;
 		return {
 			metadataUrl: `${base}/${SCRATCH_DB}`,
 			cockpitUrl: `${base}/${COCKPIT_DB}`,
+			journeyUrl: `${base}/${JOURNEY_DB}`,
+			journeyLakeCatalogUrl: `${base}/${JOURNEY_LAKE_CATALOG_DB}`,
+			journeyLakeCatalogLibpq:
+				`host=127.0.0.1 port=${port} user=postgres password=scratch ` +
+				`dbname=${JOURNEY_LAKE_CATALOG_DB}`,
 			containerId,
 			psql: (sql: string, database = SCRATCH_DB) =>
 				applySql(containerId, database, sql),

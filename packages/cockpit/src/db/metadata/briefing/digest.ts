@@ -42,11 +42,21 @@ export function formatBriefingDigest(
 	const blockers = a.readinessBlockers
 		.slice(0, DIGEST_BLOCKER_CAP)
 		.map((b) => (b.source ? `${b.source}/${b.label}` : b.label));
+	// The cut, stated (DAT-671 R5). A named list the model cannot tell is partial
+	// reads as the whole set — and `columnsBlocked` above does NOT stand in for
+	// the count, because readinessBlockers also carries relationship/table
+	// targets. Same rule as the engine's CuratedSlices.note: name the number, so
+	// "these five" can't be mistaken for "these are the ones".
+	const blockerNote =
+		a.readinessBlockers.length > blockers.length
+			? ` (showing ${blockers.length} of ${a.readinessBlockers.length})`
+			: "";
 
 	const parts: string[] = [
 		`WORKSPACE STATE — ${facts.length > 0 ? `${facts.join(", ")}.` : "nothing blocking."}`,
 	];
-	if (blockers.length > 0) parts.push(`Blocked: ${blockers.join(", ")}.`);
+	if (blockers.length > 0)
+		parts.push(`Blocked: ${blockers.join(", ")}${blockerNote}.`);
 	if (foreground.length > 0)
 		parts.push(
 			`Suggested next here: ${foreground.map((f) => f.label).join("; ")}.`,

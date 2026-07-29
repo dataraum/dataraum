@@ -34,6 +34,22 @@ class ColumnEligibilityRecord(Base):
     - The status (ELIGIBLE, WARN, INELIGIBLE)
     - Which rule triggered the status
     - A snapshot of the metrics at decision time
+
+    **Wire-or-delete (DAT-671 R6, ADR-0024 d3): KEPT, and the reason is not "a
+    reader might turn up".** The census found no reader in the engine, the
+    cockpit or the eval — but this is not a dead mirror: the phase that writes it
+    DROPS the ineligible columns from the typed table
+    (``eligibility/evaluator.quarantine_and_drop_columns``). These rows are the
+    only record of WHICH rule removed a column and on what measurements. The
+    quarantine table preserves the data; nothing else preserves the decision, so
+    deleting this is a disclosure regression on an irreversible act, not a
+    cleanup.
+
+    Its first consumer is named and one query away: the cockpit's ``why-column``
+    panel, whose Drizzle mirror (``currentColumnEligibility``) already exists and
+    already carries ``status`` / ``triggered_rule`` / ``reason`` /
+    ``metrics_snapshot``. That wiring is a cockpit change and belongs to whoever
+    owns that surface — it was fenced out of this lane, not deferred by it.
     """
 
     __tablename__ = "column_eligibility"

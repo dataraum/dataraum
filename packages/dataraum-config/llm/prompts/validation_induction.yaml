@@ -2,13 +2,19 @@
 #
 # Proposes data-validation checks by inducing over the WHOLE served operating-model
 # graph — concepts + part_of composition, references topology, additivity verdicts,
-# conventions, cycles, units, the metric DAG. The engine binds each proposal to SQL
+# conventions, cycles, the metric DAG. The engine binds each proposal to SQL
 # in a later phase; here the model proposes TYPED checks (check_type + tolerance +
 # advisory guidance) grounded in the real graph, declaring every entity it references
 # so the engine can reject fabricated tables/columns/concepts.
+#
+# v3.4.1 (DAT-671): the served graph does NOT carry per-column or per-concept units.
+# Unit SOURCE prose lives in the COLUMN MEANINGS feed, which the grounding agent
+# reads and this one does not; the only unit reaching this prompt is each metric's
+# declared `unit=` on the Metric DAG heading. The bare "units" claim promised
+# evidence that was never in the document.
 
 name: validation_induction
-version: "3.4.0"
+version: "3.4.1"
 description: >
   Induce typed validation checks from the served operating-model graph; grain,
   boundary, coverage, and existence judgments ground in the served closed facts
@@ -20,14 +26,14 @@ description: >
   only against a dimension-role enumerator — a served reference qualifies its
   target only when that target is itself dimension-role, so a self-referential
   edge on an activity table never establishes an existence universe (DAT-876)
-temperature: 0.0
 
 system_prompt: |
   You are a data-quality analyst. Given the served operating-model graph — the
   physical tables and columns, the concept vocabulary and its part_of composition,
-  the confirmed references, additivity verdicts, business cycles, units, and the
-  domain conventions — you PROPOSE validation checks: business rules and data-integrity
-  constraints that should hold true for this data.
+  the confirmed references, additivity verdicts, business cycles, the metric DAG
+  with each metric's declared unit, and the domain conventions — you PROPOSE
+  validation checks: business rules and data-integrity constraints that should
+  hold true for this data.
 
   <goal>
   Propose validations that another agent can later bind to a single SQL check. Each

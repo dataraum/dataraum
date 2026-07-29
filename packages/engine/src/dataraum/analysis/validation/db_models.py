@@ -26,7 +26,6 @@ from sqlalchemy import (
     DateTime,
     Float,
     Index,
-    Integer,
     String,
     Text,
     UniqueConstraint,
@@ -189,6 +188,12 @@ class InductionRun(Base):
     also carries the ``vertical``, which is what a zero-proposal materialization
     needs to know WHICH generation to supersede — the staged rows can't say.
 
+    Those two facts — the row EXISTS, and its ``vertical`` — are the whole seal.
+    A ``proposed`` count sat here too and was never read by anything (DAT-671 R6
+    wire-or-delete): it restated ``count(induced_validations WHERE run_id = …)``,
+    written in the same transaction, so it was a duplicate encoding rather than
+    a disclosure. Removed.
+
     Run-versioned under the ADR-0010 default writer form: ``run_id`` UNIQUE + an ON
     CONFLICT upsert, so an induction activity retry re-seals in place.
     """
@@ -199,8 +204,6 @@ class InductionRun(Base):
     row_id: Mapped[str] = mapped_column(String, primary_key=True, default=lambda: str(uuid4()))
     run_id: Mapped[str] = mapped_column(String, nullable=False)
     vertical: Mapped[str] = mapped_column(String, nullable=False)
-    # How many specs the induction turn proposed. 0 is a real, authoritative answer.
-    proposed: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
     created_at: Mapped[datetime] = mapped_column(
         DateTime, nullable=False, default=lambda: datetime.now(UTC)
     )

@@ -317,10 +317,9 @@ export const currentEnrichedViews = pgView("current_enriched_views", {
 	dimensionTableIds: json("dimension_table_ids"),
 	dimensionColumns: json("dimension_columns"),
 	isGrainVerified: boolean("is_grain_verified"),
-	evidence: json(),
 	createdAt: timestamp("created_at"),
 }).as(
-	sql`SELECT view_id, fact_table_id, view_table_id, view_name, run_id, relationship_ids, considered_relationship_pairs, exposed_dimension_joins, dimension_table_ids, dimension_columns, is_grain_verified, evidence, created_at FROM engine.enriched_views r WHERE (EXISTS ( SELECT 1 FROM engine.metadata_snapshot_head h WHERE h.target::text = 'catalog'::text AND h.stage::text = 'catalog'::text AND h.run_id::text = r.run_id::text))`,
+	sql`SELECT view_id, fact_table_id, view_table_id, view_name, run_id, relationship_ids, considered_relationship_pairs, exposed_dimension_joins, dimension_table_ids, dimension_columns, is_grain_verified, created_at FROM engine.enriched_views r WHERE (EXISTS ( SELECT 1 FROM engine.metadata_snapshot_head h WHERE h.target::text = 'catalog'::text AND h.stage::text = 'catalog'::text AND h.run_id::text = r.run_id::text))`,
 );
 
 export const currentEntropyObjects = pgView("current_entropy_objects", {
@@ -416,10 +415,9 @@ export const currentInductionRuns = pgView("current_induction_runs", {
 	rowId: varchar("row_id"),
 	runId: varchar("run_id"),
 	vertical: varchar(),
-	proposed: integer(),
 	createdAt: timestamp("created_at"),
 }).as(
-	sql`SELECT row_id, run_id, vertical, proposed, created_at FROM engine.induction_runs r WHERE (EXISTS ( SELECT 1 FROM engine.metadata_snapshot_head h WHERE h.target::text = 'catalog'::text AND h.stage::text = 'operating_model'::text AND h.run_id::text = r.run_id::text))`,
+	sql`SELECT row_id, run_id, vertical, created_at FROM engine.induction_runs r WHERE (EXISTS ( SELECT 1 FROM engine.metadata_snapshot_head h WHERE h.target::text = 'catalog'::text AND h.stage::text = 'operating_model'::text AND h.run_id::text = r.run_id::text))`,
 );
 
 export const currentLifecycleArtifacts = pgView("current_lifecycle_artifacts", {
@@ -493,6 +491,7 @@ export const currentMetricAxisAdditivity = pgView(
 	{
 		additivityId: varchar("additivity_id"),
 		runId: varchar("run_id"),
+		vertical: varchar(),
 		targetKind: varchar("target_kind"),
 		targetKey: varchar("target_key"),
 		axisKind: varchar("axis_kind"),
@@ -505,22 +504,7 @@ export const currentMetricAxisAdditivity = pgView(
 		createdAt: timestamp("created_at", { withTimezone: true }),
 	},
 ).as(
-	sql`SELECT additivity_id, run_id, target_kind, target_key, axis_kind, axis_key, status, verdict, reason, abstain_reason, bucket_grain, created_at FROM engine.metric_axis_additivity r WHERE (EXISTS ( SELECT 1 FROM engine.metadata_snapshot_head h WHERE h.target::text = 'catalog'::text AND h.stage::text = 'operating_model'::text AND h.run_id::text = r.run_id::text))`,
-);
-
-export const currentMetricUnitGrain = pgView("current_metric_unit_grain", {
-	unitGrainId: varchar("unit_grain_id"),
-	runId: varchar("run_id"),
-	targetKind: varchar("target_kind"),
-	targetKey: varchar("target_key"),
-	axis: varchar(),
-	entityValue: varchar("entity_value"),
-	value: numeric(),
-	reconciles: boolean(),
-	recompute: boolean(),
-	createdAt: timestamp("created_at", { withTimezone: true }),
-}).as(
-	sql`SELECT unit_grain_id, run_id, target_kind, target_key, axis, entity_value, value, reconciles, recompute, created_at FROM engine.metric_unit_grain r WHERE (EXISTS ( SELECT 1 FROM engine.metadata_snapshot_head h WHERE h.target::text = 'catalog'::text AND h.stage::text = 'operating_model'::text AND h.run_id::text = r.run_id::text))`,
+	sql`SELECT additivity_id, run_id, vertical, target_kind, target_key, axis_kind, axis_key, status, verdict, reason, abstain_reason, bucket_grain, created_at FROM engine.metric_axis_additivity r WHERE (EXISTS ( SELECT 1 FROM engine.metadata_snapshot_head h WHERE h.target::text = 'catalog'::text AND h.stage::text = 'operating_model'::text AND h.run_id::text = r.run_id::text))`,
 );
 
 export const currentRelationships = pgView("current_relationships", {
@@ -846,10 +830,9 @@ export const sources = pgView("sources", {
 	updatedAt: timestamp("updated_at"),
 	stage: varchar(),
 	backend: varchar(),
-	discoveredSchema: json("discovered_schema"),
 	archivedAt: timestamp("archived_at"),
 }).as(
-	sql`SELECT source_id, name, source_type, connection_config, created_at, updated_at, stage, backend, discovered_schema, archived_at FROM engine.sources`,
+	sql`SELECT source_id, name, source_type, connection_config, created_at, updated_at, stage, backend, archived_at FROM engine.sources`,
 );
 
 export const sqlSnippets = pgView("sql_snippets", {

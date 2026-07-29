@@ -130,3 +130,54 @@ def test_build_context_data_never_offers_a_surrogate(session, duckdb_conn) -> No
 
     served = [c["column_name"] for c in data["tables"][0]["columns"]]
     assert served == ["amount"]
+
+
+def test_served_tables_carry_names_only(session, duckdb_conn) -> None:
+    """The enrichment agent is addressed by NAME, so it is served names (DAT-671).
+
+    ``EnrichmentAnalysisOutput`` names tables and columns — it can neither use nor
+    return a ``table_id``, a ``duckdb_path`` or a ``row_count``. Those went into the
+    prompt anyway, once per table and once per column. The two the CALLER needs to
+    turn a returned name back into a join now live in ``table_identity``, resolved
+    after the answer instead of shipped inside the question.
+    """
+    src = Source(source_id=str(uuid4()), name="csv", source_type="csv")
+    session.add(src)
+    session.flush()
+    fact = Table(
+        table_id=str(uuid4()),
+        source_id=src.source_id,
+        table_name="ledger",
+        layer="typed",
+        duckdb_path="csv__ledger",
+        row_count=10,
+    )
+    session.add(fact)
+    session.flush()
+    col = Column(
+        column_id=str(uuid4()),
+        table_id=fact.table_id,
+        column_name="amount",
+        column_position=0,
+        resolved_type="DOUBLE",
+    )
+    session.add(col)
+    session.flush()
+
+    data = EnrichedViewsPhase()._build_context_data(
+        PhaseContext(session=session, duckdb_conn=duckdb_conn, table_ids=[fact.table_id]),
+        [fact],
+        [],
+        [],
+        {fact.table_id: [col]},
+        {fact.table_id: fact},
+    )
+
+    (served_table,) = data["tables"]
+    assert set(served_table) == {"table_name", "is_fact_table", "columns"}
+    assert set(served_table["columns"][0]) == {"column_name", "resolved_type"}
+    # Resolution stays available to the caller, keyed by the name the model returns.
+    assert data["table_identity"]["ledger"] == {
+        "table_id": fact.table_id,
+        "duckdb_path": "csv__ledger",
+    }

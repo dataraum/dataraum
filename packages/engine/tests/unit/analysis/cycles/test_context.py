@@ -29,7 +29,6 @@ from dataraum.analysis.semantic.db_models import SemanticAnnotation, TableEntity
 from dataraum.analysis.slicing.db_models import SliceDefinition
 from dataraum.analysis.statistics.db_models import StatisticalProfile
 from dataraum.lifecycle import BaseRunMap
-from dataraum.llm.config import LLMPrivacy
 from dataraum.storage import Column, Source, Table
 
 
@@ -120,6 +119,8 @@ def two_tables_two_runs(session):
 
 def _build(session, table_ids, *, base_runs: BaseRunMap, **kwargs):
     """Build the cycle context against an ephemeral DuckDB (row counts → None)."""
+    kwargs.setdefault("max_sample_values", 10)
+    kwargs.setdefault("max_sample_value_chars", 100)
     return build_cycle_detection_context(
         session,
         duckdb.connect(),
@@ -623,7 +624,7 @@ def identity_column_with_samples(session):
     ``zq_p4x`` (an unreadably named identity column) carries a low-confidence
     annotation + typed top_values under the generation run; ``amount`` is a
     plain measure whose profile must NOT be served as samples; ``contact_email``
-    is an identity column with a privacy-sensitive name. Returns
+    is a second identity column. Returns
     ``(table_id, catalogue_run, gen_run)``.
     """
     source = Source(name="flow_source", source_type="csv")
@@ -748,22 +749,6 @@ def test_identity_samples_fail_closed_without_generation_pin(
     cols = {c["name"]: c for c in ctx["tables"][0]["columns"]}
     assert "sample_values" not in cols["zq_p4x"]
     assert "annotation_confidence" not in cols["zq_p4x"]
-
-
-def test_sensitive_identity_column_serves_no_samples(session, identity_column_with_samples) -> None:
-    """A privacy-sensitive name serves NO samples (absence, not a placeholder) —
-    the same pattern gate the semantic agents' DataSampler enforces."""
-    table_id, cat, gen = identity_column_with_samples
-    ctx = _build(
-        session,
-        [table_id],
-        base_runs=BaseRunMap(relationship_run_id=cat, semantic_runs={table_id: gen}),
-        privacy=LLMPrivacy(sensitive_patterns=[".*email.*"]),
-    )
-    cols = {c["name"]: c for c in ctx["tables"][0]["columns"]}
-    assert "sample_values" not in cols["contact_email"]
-    # The non-sensitive identity column still serves its samples.
-    assert cols["zq_p4x"]["sample_values"] == ["E-0002", "E-0003"]
 
 
 def test_relationship_endpoint_columns_serve_samples(session, two_tables_two_runs) -> None:
@@ -961,6 +946,8 @@ def test_conditioned_labels_serve_the_discriminating_distribution(
         table_ids,
         vertical="finance",
         base_runs=BaseRunMap(relationship_run_id="run-current"),
+        max_sample_values=10,
+        max_sample_value_chars=100,
     )
 
     (rel,) = ctx["relationships"]
@@ -977,25 +964,6 @@ def test_conditioned_labels_serve_the_discriminating_distribution(
     assert "Orphan Corp" not in rendered
     # The fk column itself is a join key — never a conditioned label.
     assert "bank_txns.payment_id (payment_id-joined rows only)" not in rendered
-
-
-def test_conditioned_labels_sensitive_name_serves_nothing(
-    session, payment_chain_with_labels
-) -> None:
-    """This builder's privacy convention: a sensitive label is ABSENT from the
-    conditioned serve (no placeholder), while non-sensitive labels still serve."""
-    duck, table_ids = payment_chain_with_labels
-    ctx = build_cycle_detection_context(
-        session,
-        duck,
-        table_ids,
-        vertical="finance",
-        base_runs=BaseRunMap(relationship_run_id="run-current"),
-        privacy=LLMPrivacy(sensitive_patterns=[".*counterparty.*"]),
-    )
-    (rel,) = ctx["relationships"]
-    assert "conditioned_label_samples" not in rel
-    assert "Vendor A" not in format_context_for_prompt(ctx)
 
 
 def test_conditioned_labels_fail_soft_on_missing_typed_table(session) -> None:
@@ -1058,6 +1026,8 @@ def test_conditioned_labels_fail_soft_on_missing_typed_table(session) -> None:
         [a.table_id, b.table_id],
         vertical="finance",
         base_runs=BaseRunMap(relationship_run_id="run-current"),
+        max_sample_values=10,
+        max_sample_value_chars=100,
     )
     (rel,) = ctx["relationships"]
     assert "conditioned_label_samples" not in rel
@@ -1167,6 +1137,8 @@ def test_conditioned_measure_ranges_serve_the_conditioned_sign(
         base_runs=BaseRunMap(
             relationship_run_id="run-current", semantic_runs={bank_table_id: "gen-run"}
         ),
+        max_sample_values=10,
+        max_sample_value_chars=100,
     )
 
     (rel,) = ctx["relationships"]
@@ -1183,29 +1155,6 @@ def test_conditioned_measure_ranges_serve_the_conditioned_sign(
     assert (
         "bank_txns.fee (payment_id-joined rows only): min=-5.0 max=10.0 — mixed signs" in rendered
     )
-
-
-def test_conditioned_measure_ranges_sensitive_name_serves_nothing(
-    session, payment_chain_with_measures
-) -> None:
-    """This builder's privacy convention: a sensitive measure is ABSENT from
-    the conditioned serve (no placeholder); non-sensitive measures still serve."""
-    duck, table_ids, bank_table_id = payment_chain_with_measures
-    ctx = build_cycle_detection_context(
-        session,
-        duck,
-        table_ids,
-        vertical="finance",
-        base_runs=BaseRunMap(
-            relationship_run_id="run-current", semantic_runs={bank_table_id: "gen-run"}
-        ),
-        privacy=LLMPrivacy(sensitive_patterns=[".*amount.*"]),
-    )
-    (rel,) = ctx["relationships"]
-    assert rel["conditioned_measure_ranges"] == [
-        {"column": "fee", "min": -5.0, "max": 10.0, "summary": "mixed signs"}
-    ]
-    assert "-135000.0" not in format_context_for_prompt(ctx)
 
 
 def test_conditioned_measure_ranges_nan_serves_nothing(session) -> None:
@@ -1276,6 +1225,8 @@ def test_conditioned_measure_ranges_nan_serves_nothing(session) -> None:
         base_runs=BaseRunMap(
             relationship_run_id="run-current", semantic_runs={bank.table_id: "gen-run"}
         ),
+        max_sample_values=10,
+        max_sample_value_chars=100,
     )
     (rel,) = ctx["relationships"]
     assert "conditioned_measure_ranges" not in rel
@@ -1396,3 +1347,349 @@ def test_format_context_renders_structural_slice_without_confidence() -> None:
     assert "### facts.region" in rendered
     assert "### facts.region (confidence:" not in rendered
     assert "### facts.status (confidence: 90%)" in rendered
+
+
+def test_format_context_serves_slice_value_counts_whole_never_count_capped(
+    session,
+) -> None:
+    """DAT-671 review, second pass: value_counts is MEMBERSHIP the model must
+    cite verbatim (the business_cycles prompt: "map cycle stages from the
+    distinct values" / "compute completion rates from status value counts"),
+    and ``verify.py``'s DAT-630 membership floor rejects any citation outside
+    the served set. A frequency-ordered count cap would amputate the citable
+    space — a rare terminal state (e.g. a 3.6% ``cancelled``) can fall outside
+    a top-N by frequency and become unciteable. Served WHOLE (up to the
+    profiler's stored top-K); only each value's LENGTH is bounded.
+    """
+    long_value = "x" * 500
+    full_value_counts = [{"value": long_value, "count": 1, "percentage": 0.1}] + [
+        {"value": f"v{i:02d}", "count": 50 - i, "percentage": 2.0} for i in range(49)
+    ]
+    context = {
+        "tables": [{"table_name": "facts", "row_count": 100, "columns": []}],
+        "slice_definitions": [
+            {
+                "table_name": "facts",
+                "column_name": "status",
+                "slice_type": "categorical",
+                "values": [],
+                "value_counts": full_value_counts,
+                "value_count": 60,  # distinct exceeds even the stored top-K
+                "confidence": None,
+                "business_context": None,
+            }
+        ],
+    }
+
+    rendered = format_context_for_prompt(context, max_sample_value_chars=100)
+
+    # Every one of the 50 stored values reaches the rendered text — no count cap.
+    assert "v00" in rendered and "v48" in rendered
+    assert "50 most frequent of 60 distinct" in rendered
+    # LENGTH cap still applies: the 500-char value is truncated, not served whole.
+    assert "x" * 100 + "..." in rendered
+    assert "x" * 500 not in rendered
+    # The dict handed in is untouched (defensive: this renderer never mutates).
+    assert len(context["slice_definitions"][0]["value_counts"]) == 50
+
+
+def test_format_context_serves_the_unranked_values_fallback_whole_with_disclosure(
+    session,
+) -> None:
+    """DAT-671 review, second pass: the ``elif sd.get("values")`` fallback gets
+    the SAME membership treatment as value_counts above it — served WHOLE,
+    length-capped only — plus the "N of M distinct" disclosure it lacked
+    before, so a profiler-storage-truncated list (fewer stored than truly
+    distinct) reads the same shown-vs-distinct split as the value_counts
+    branch instead of looking like the complete set.
+    """
+    long_value = "x" * 500
+    many_values = [long_value] + [f"v{i:02d}" for i in range(49)]
+    context = {
+        "tables": [{"table_name": "facts", "row_count": 100, "columns": []}],
+        "slice_definitions": [
+            {
+                "table_name": "facts",
+                "column_name": "status",
+                "slice_type": "categorical",
+                "values": many_values,
+                "value_counts": [],  # the unranked path: no judged value_counts
+                "value_count": 200,  # profiler's stored 50 is fewer than the true distinct count
+                "confidence": None,
+                "business_context": None,
+            }
+        ],
+    }
+
+    rendered = format_context_for_prompt(context, max_sample_value_chars=100)
+
+    values_line = next(line for line in rendered.splitlines() if line.startswith("  Values"))
+    # Every one of the 50 stored values reaches the rendered text — no count cap.
+    assert "v48" in values_line
+    # The new disclosure: this fallback used to say nothing about the gap.
+    assert "(50 of 200 distinct)" in values_line
+    # LENGTH cap still applies.
+    assert "x" * 100 + "..." in values_line
+    assert "x" * 500 not in values_line
+    # The dict handed in is untouched.
+    assert len(context["slice_definitions"][0]["values"]) == 50
+
+
+@pytest.fixture
+def enriched_status_axis(session):
+    """A fact whose slice axis is a JOINED dimension attribute.
+
+    The catalogue row is keyed the way the slicing phase writes it (DAT-756):
+    ``column_id`` is the fact's FK column, ``column_name`` is the enriched view's
+    ``{fk}__{attr}`` column — two different columns, with two different
+    value-sets profiled under two different layers.
+    """
+    from dataraum.analysis.views.db_models import EnrichedView
+
+    source = Source(name="enriched_source", source_type="csv")
+    session.add(source)
+    session.flush()
+
+    fact = Table(
+        source_id=source.source_id,
+        table_name="receipts",
+        layer="typed",
+        row_count=100,
+        duckdb_path="typed_receipts",
+    )
+    view = Table(
+        source_id=source.source_id,
+        table_name="enriched_receipts",
+        layer="enriched",
+        row_count=100,
+        duckdb_path="enriched_receipts",
+    )
+    session.add_all([fact, view])
+    session.flush()
+
+    fk_col = Column(
+        table_id=fact.table_id,
+        column_name="ar_invoice_id",
+        column_position=0,
+        raw_type="VARCHAR",
+    )
+    dim_col = Column(
+        table_id=view.table_id,
+        column_name="ar_invoice_id__status",
+        column_position=1,
+        raw_type="VARCHAR",
+        origin="dimension",
+    )
+    session.add_all([fk_col, dim_col])
+    session.flush()
+
+    session.add_all(
+        [
+            EnrichedView(
+                fact_table_id=fact.table_id,
+                view_table_id=view.table_id,
+                view_name="enriched_receipts",
+                dimension_columns=["ar_invoice_id__status"],
+            ),
+            SliceDefinition(
+                run_id="cat",
+                table_id=fact.table_id,
+                column_id=fk_col.column_id,
+                column_name="ar_invoice_id__status",
+                slice_interest="primary",
+                slice_relevance=0.9,
+                distinct_values=["open", "paid"],
+                value_count=2,
+            ),
+            # The FK column's own typed profile — invoice IDS, under the
+            # generation run. This is what the builder used to serve for the
+            # axis above, because it resolved values through ``column_id``.
+            StatisticalProfile(
+                column_id=fk_col.column_id,
+                run_id="gen",
+                layer="typed",
+                total_count=100,
+                null_count=0,
+                distinct_count=2,
+                profile_data={
+                    "top_values": [
+                        {"value": "INV-1", "count": 60, "percentage": 60.0},
+                        {"value": "INV-2", "count": 40, "percentage": 40.0},
+                    ]
+                },
+            ),
+            # The enriched column's own profile: written once when the column
+            # was registered, under whatever run created it — deliberately NOT
+            # this run, which is why the read for it must not be run-scoped.
+            StatisticalProfile(
+                column_id=dim_col.column_id,
+                run_id="some-older-run",
+                layer="enriched",
+                total_count=100,
+                null_count=0,
+                distinct_count=2,
+                profile_data={
+                    "top_values": [
+                        {"value": "paid", "count": 70, "percentage": 70.0},
+                        {"value": "open", "count": 30, "percentage": 30.0},
+                    ]
+                },
+            ),
+        ]
+    )
+    session.commit()
+    return fact.table_id
+
+
+def test_enriched_axis_serves_its_own_values_not_the_fk_column_s(
+    session, enriched_status_axis
+) -> None:
+    """DAT-671: an axis is labelled and valued by the column it actually names.
+
+    An enriched slice's ``column_id`` points at the fact's FK column, so
+    resolving both the heading and the value counts through it served invoice
+    IDs under the heading ``receipts.ar_invoice_id`` for what is really the
+    joined status axis. The membership floor then accepted any invoice id as a
+    completion value on a status column.
+    """
+    table_id = enriched_status_axis
+    ctx = _build(
+        session,
+        [table_id],
+        base_runs=BaseRunMap(relationship_run_id="cat", semantic_runs={table_id: "gen"}),
+    )
+
+    (sd,) = ctx["slice_definitions"]
+    assert sd["column_name"] == "ar_invoice_id__status"
+    assert {vc["value"] for vc in sd["value_counts"]} == {"paid", "open"}
+    assert sd["values"] == ["open", "paid"]
+    # The FK's values are nowhere near this axis.
+    assert "INV-1" not in {vc["value"] for vc in sd["value_counts"]}
+
+
+def test_enriched_value_counts_survive_a_run_they_were_not_written_under(
+    session, enriched_status_axis
+) -> None:
+    """The enriched profile is written ONCE per column and kept across re-runs.
+
+    ``enriched_views_phase`` profiles only newly-registered dimension columns
+    and its reconcile-by-name preserves a surviving column's ``column_id`` and
+    profile — so there is no per-run row to pin to, and run-scoping this read
+    would fail closed and silently unmeasure every long-lived enriched axis.
+    """
+    table_id = enriched_status_axis
+    ctx = _build(
+        session,
+        [table_id],
+        # A generation pin that matches NO profile row on either column.
+        base_runs=BaseRunMap(relationship_run_id="cat", semantic_runs={table_id: "gen-2"}),
+    )
+
+    (sd,) = ctx["slice_definitions"]
+    assert {vc["value"] for vc in sd["value_counts"]} == {"paid", "open"}
+
+
+def test_an_enriched_axis_the_context_advertises_is_actually_citeable(
+    session, enriched_status_axis
+) -> None:
+    """End-to-end: what the prompt offers, the membership floor must accept.
+
+    Driven through the REAL builder rather than a hand-written context dict —
+    the two tests above pin the values, but only the builder's own output proves
+    the floor and the prompt agree on the shape. They did not: naming the axis
+    honestly (``receipts.ar_invoice_id__status``) put a column into the served
+    slice section that ``cols_by_table`` — built from the typed fact's columns —
+    had never heard of, so every cycle grounded on a joined attribute was
+    rejected on the COLUMN check before its values were ever consulted. That
+    read as working only while the axis wore the FK column's name.
+    """
+    from dataraum.analysis.cycles.models import DetectedCycle
+    from dataraum.analysis.cycles.verify import verify_cycles
+
+    table_id = enriched_status_axis
+    ctx = _build(
+        session,
+        [table_id],
+        base_runs=BaseRunMap(relationship_run_id="cat", semantic_runs={table_id: "gen"}),
+    )
+    # The axis is advertised to the model under the fact's name.
+    assert "receipts.ar_invoice_id__status" in format_context_for_prompt(ctx)
+
+    def _cycle(completion_value: str) -> DetectedCycle:
+        return DetectedCycle(
+            cycle_id="c1",
+            cycle_name="Receipt settlement",
+            cycle_type="journal_entry_cycle",
+            description="",
+            status_table="receipts",
+            status_column="ar_invoice_id__status",
+            completion_value=completion_value,
+        )
+
+    kept, rejections = verify_cycles([_cycle("paid")], ctx)
+    assert len(kept) == 1, rejections
+
+    # The floor still bites: a value the profile never measured is improvised.
+    kept, rejections = verify_cycles([_cycle("settled")], ctx)
+    assert kept == []
+    assert "settled" in rejections[0]
+
+    # And the FK's own values are not members of the status axis.
+    kept, rejections = verify_cycles([_cycle("INV-1")], ctx)
+    assert kept == []
+    assert "INV-1" in rejections[0]
+
+
+def test_format_context_renders_numeric_data_values_in_every_text_join() -> None:
+    """The shared sample serving preserves NATIVE typing (numbers stay numbers
+    for the semantic agents' JSON), so every text join in this renderer owns
+    its own str conversion. Numeric sample values, slice values, and
+    conditioned label samples crashed the business_cycles smoke (2026-07-29)
+    — this pins all three join sites at once."""
+    context = {
+        "tables": [
+            {
+                "table_name": "journal_lines",
+                "row_count": 3,
+                "columns": [
+                    {
+                        "name": "entry_no",
+                        "semantic_role": "identifier",
+                        "sample_values": [1001, 1002, 1003],
+                    }
+                ],
+            }
+        ],
+        "slice_definitions": [
+            {
+                "table_name": "journal_lines",
+                "column_name": "period",
+                "slice_type": "categorical",
+                "values": [2024, 2025],
+                "value_count": 2,
+                "value_counts": [],
+                "confidence": None,
+                "business_context": None,
+                "priority": 1000,
+            }
+        ],
+        "relationships": [
+            {
+                "from_table": "journal_lines",
+                "from_column": "account_id",
+                "to_table": "chart_of_accounts",
+                "to_column": "account_id",
+                "cardinality": "N:1",
+                "relationship_type": "foreign_key",
+                "confidence": 1.0,
+                "conditioned_label_samples": [{"column": "account_code", "samples": [4000, 4100]}],
+                "conditioned_measure_ranges": [],
+            }
+        ],
+    }
+
+    rendered = format_context_for_prompt(context)
+
+    assert "samples: 1001, 1002, 1003" in rendered
+    assert "Values: 2024, 2025" in rendered
+    assert "4000, 4100" in rendered

@@ -130,7 +130,6 @@ class ConversationRequest(BaseModel):
     # ``search_values`` and finish under this schema.
     output_schema: dict[str, Any] | None = None
     max_tokens: int = 4096
-    temperature: float = 0.0
     model: str | None = None  # Override default model
     # Per-feature output effort (DAT-603): "low" | "medium" | "high" | "xhigh"
     # | "max". None = the API default. The provider only sends it to models
@@ -147,6 +146,14 @@ class ConversationRequest(BaseModel):
     # has no phase context of its own, so each call site stamps the prompt
     # template / feature name it is invoking (e.g. "graph_sql_generation").
     label: str | None = None
+    # Names the offline prompt-dump FILE; defaults to ``label`` (DAT-890).
+    # The dump path is (label, dump_key, prompt_hash), and a retry on the SAME
+    # input renders the same prompt — identical hash, same path, and the dump
+    # is truncate-written. So an in-process retry loop (column_annotation's
+    # runaway guard) overwrote the very payload the retry existed to capture:
+    # the DAT-889 runaway responses are unrecoverable for exactly this reason.
+    # A caller that retries the same input sets a per-attempt key.
+    dump_key: str | None = None
 
 
 class ConversationResponse(BaseModel):

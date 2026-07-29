@@ -26,7 +26,12 @@ from dataraum.analysis.views.builder import DimensionJoin
 
 
 class EnrichmentColumnOutput(BaseModel):
-    """A column to include from a related table."""
+    """A column to include from a related table.
+
+    Per-column ``reasoning`` was deleted in DAT-671: the caller keeps only
+    ``column_name``/``enrichment_value``, so the prose was generated once per
+    candidate column and dropped unread.
+    """
 
     column_name: str = Field(description="Column name from the related table")
     enrichment_value: Literal["high", "medium", "low"] = Field(
@@ -37,7 +42,6 @@ class EnrichmentColumnOutput(BaseModel):
             "'low' = supplementary"
         )
     )
-    reasoning: str = Field(description="Why this column adds value to the main dataset")
 
 
 class RelatedTableJoinOutput(BaseModel):
@@ -72,18 +76,18 @@ class RelatedTableJoinOutput(BaseModel):
 
 
 class MainDatasetOutput(BaseModel):
-    """A main dataset (fact table) with its recommended extensions."""
+    """A main dataset (fact table) with its recommended extensions.
+
+    ``is_primary_fact`` and ``skip_reason`` were deleted in DAT-671 — both had
+    ZERO readers. ``skip_reason`` was the sharper case: the prompt ordered it
+    ("include it with skip_reason explaining why") and the caller never looked,
+    so a declined table's reason was elicited and discarded every run. An empty
+    ``recommended_enrichments`` already says "nothing to extend here".
+    """
 
     table_name: str = Field(description="Name of the main/fact table")
-    is_primary_fact: bool = Field(description="True if this is the primary transactional dataset")
     recommended_enrichments: list[RelatedTableJoinOutput] = Field(
         description="Recommended related-table joins that extend this table; [] when none"
-    )
-    skip_reason: str = Field(
-        description=(
-            'Why no extensions are recommended; "" when recommended_enrichments is '
-            "non-empty. Exactly one of the two is populated."
-        )
     )
 
 
@@ -92,6 +96,11 @@ class EnrichmentAnalysisOutput(BaseModel):
 
     Every field is REQUIRED (DAT-807): not-applicable is a documented empty
     value ("" / []), never an omitted key.
+
+    ``summary`` was deleted in DAT-671: it reached ``EnrichmentAnalysisResult``
+    and stopped there — never persisted (no column on ``EnrichedView``), never
+    logged, so unreachable from the cockpit, which reads engine metadata only
+    through the ``ws_<id>`` schema.
     """
 
     main_datasets: list[MainDatasetOutput] = Field(
@@ -100,7 +109,6 @@ class EnrichmentAnalysisOutput(BaseModel):
             "Include ALL fact tables, even those with no recommended extensions."
         )
     )
-    summary: str = Field(description="Brief summary of the overall enrichment strategy")
 
 
 # =============================================================================
@@ -109,23 +117,27 @@ class EnrichmentAnalysisOutput(BaseModel):
 
 
 class EnrichmentRecommendation(BaseModel):
-    """A processed enrichment recommendation ready for view creation."""
+    """A processed enrichment recommendation ready for view creation.
+
+    The join SHAPE only. The judge's ``relationship_role`` / ``reasoning`` /
+    per-column enrichment ratings and the model name rode here too, purely to be
+    copied into ``enriched_views.evidence`` — a column nothing ever read, deleted
+    in DAT-671 R6. They are dropped with it rather than left as a second dead
+    surface (ADR-0024 d3). The LLM is still ASKED for them: they are load-bearing
+    inside :mod:`~dataraum.analysis.views.enrichment_agent` (the per-column
+    high/medium rating is exactly what selects ``include_columns``), so the
+    output schema and the prompt are unchanged — only this post-LLM carrier is.
+    """
 
     fact_table_id: str
     fact_table_name: str
     dimension_joins: list[DimensionJoin]
-    relationship_role: str
-    confidence: float
-    reasoning: str
-    enrichment_columns: list[str]  # Column names with enrichment values
 
 
 class EnrichmentAnalysisResult(BaseModel):
     """Result of enrichment analysis operation."""
 
     recommendations: list[EnrichmentRecommendation] = Field(default_factory=list)
-    summary: str = ""
-    model_name: str = ""
 
 
 __all__ = [

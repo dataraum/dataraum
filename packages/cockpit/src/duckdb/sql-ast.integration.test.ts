@@ -9,6 +9,7 @@ import {
 	aggregatedColumns,
 	declaredValueExprRefusal,
 	existingIdentifierColumns,
+	projectedSourceColumns,
 } from "./sql-ast";
 
 describe("aggregatedColumns", () => {
@@ -236,12 +237,156 @@ describe("existingIdentifierColumns", () => {
 		expect(names).toEqual(new Set());
 	});
 
-	it("resolves the outer GROUP BY through a CTE — the CTE body is never walked", async () => {
+	it("reads the outer GROUP BY over a pass-through CTE", async () => {
 		const names = await existingIdentifierColumns(
 			"WITH base AS (SELECT account_id__name, total_amount FROM lake.typed.current_orders_enriched) " +
 				"SELECT account_id__name, SUM(total_amount) AS revenue FROM base GROUP BY account_id__name",
 		);
 		expect(names).toEqual(new Set(["account_id__name"]));
+	});
+
+	// DAT-671 R6. Every entry here is a SPELLING of the same already-broken-out
+	// column: tier A names an axis by the result's (`account`), the parts and
+	// node paths by the catalog's (`account_id__name`), and one set greys the
+	// column on both paths rather than only where the two happen to coincide.
+	it("returns BOTH spellings when the grouping column was aliased", async () => {
+		const names = await existingIdentifierColumns(
+			"SELECT account_id__name AS account, SUM(total_amount) AS revenue " +
+				"FROM lake.typed.current_orders_enriched GROUP BY 1",
+		);
+		expect(names).toEqual(new Set(["account", "account_id__name"]));
+	});
+
+	// Senior review, DAT-671 R6. The other spellings must come from the item that
+	// ESTABLISHED the grain, never from an item whose own source name collides
+	// with it: here item0 groups the column `a` under the name `b`, while item1
+	// projects the DIFFERENT column `b` under the name `c` and is not grouped at
+	// all. Greying `c` would disable a real axis with the words "already breaks
+	// out the result".
+	it("does not grey a second column whose NAME collides with the grouped one's alias", async () => {
+		expect(
+			await existingIdentifierColumns(
+				"SELECT a AS b, b AS c FROM lake.typed.current_orders_enriched GROUP BY 1",
+			),
+		).toEqual(new Set(["b", "a"]));
+	});
+
+	it("greys both when both are grouped, in both spellings", async () => {
+		expect(
+			await existingIdentifierColumns(
+				"SELECT a AS b, b AS c FROM lake.typed.current_orders_enriched GROUP BY 1, 2",
+			),
+		).toEqual(new Set(["b", "a", "c"]));
+	});
+
+	it("resolves an aliased grouping column named by its SOURCE in the GROUP BY", async () => {
+		// `GROUP BY account_id__name` over `… AS account`: the grouping names the
+		// base column, the result column carries the alias. Both are the same
+		// column, and greying must not depend on which one the query wrote.
+		const names = await existingIdentifierColumns(
+			"SELECT account_id__name AS account, SUM(total_amount) AS revenue " +
+				"FROM lake.typed.current_orders_enriched GROUP BY account_id__name",
+		);
+		expect(names).toEqual(new Set(["account", "account_id__name"]));
+	});
+
+	// The common agent-authored shape: the aggregate lives INSIDE the CTE and the
+	// outer statement only re-projects it. Read on the outer node alone this is
+	// an ungrouped detail result, and `account` would be offered as a fresh slice
+	// of a result that is already one row per account.
+	describe("the CTE the statement itself declares (DAT-671 R6)", () => {
+		const groupedCte =
+			"WITH revenue AS (SELECT account_id__name AS account, SUM(total_amount) AS total " +
+			"FROM lake.typed.current_orders_enriched GROUP BY 1) ";
+
+		it("inherits a grouped CTE's grain through a pass-through projection", async () => {
+			const names = await existingIdentifierColumns(
+				`${groupedCte}SELECT account, total FROM revenue ORDER BY total DESC`,
+			);
+			expect(names).toEqual(new Set(["account", "account_id__name"]));
+		});
+
+		it("inherits it through a bare star as well", async () => {
+			const names = await existingIdentifierColumns(
+				`${groupedCte}SELECT * FROM revenue`,
+			);
+			expect(names).toEqual(new Set(["account", "account_id__name"]));
+		});
+
+		// Strict review, DAT-671 R6: dropping a grain column COLLAPSES the rows,
+		// so the CTE's grain is no longer the result's. Both spellings of that
+		// mistake — the explicit de-duplication and the implicit one — must
+		// refuse the hop rather than grey an axis that genuinely still splits
+		// the result.
+		it("does NOT inherit a grain the projection collapsed", async () => {
+			const twoKeyCte =
+				"WITH revenue AS (SELECT account_id__name AS account, region_id__name AS region, " +
+				"SUM(total_amount) AS total FROM lake.typed.current_orders_enriched GROUP BY 1, 2) ";
+			expect(
+				await existingIdentifierColumns(
+					`${twoKeyCte}SELECT DISTINCT region FROM revenue`,
+				),
+			).toEqual(new Set());
+			expect(
+				await existingIdentifierColumns(
+					`${twoKeyCte}SELECT region, total FROM revenue`,
+				),
+			).toEqual(new Set());
+			// …and inherits it when the projection carries BOTH grain columns.
+			expect(
+				await existingIdentifierColumns(
+					`${twoKeyCte}SELECT account, region, total FROM revenue`,
+				),
+			).toEqual(
+				new Set(["account", "account_id__name", "region", "region_id__name"]),
+			);
+		});
+
+		it("does NOT inherit it through a computed projection — that may be a rollup", async () => {
+			// `SELECT SUM(total) FROM revenue` is one scalar row, broken out by
+			// nothing. A parse tree cannot tell an aggregate from a scalar function
+			// without bind-time classification, so any computed item stops the hop.
+			expect(
+				await existingIdentifierColumns(
+					`${groupedCte}SELECT SUM(total) AS total FROM revenue`,
+				),
+			).toEqual(new Set());
+			expect(
+				await existingIdentifierColumns(
+					`${groupedCte}SELECT account, total * 2 AS doubled FROM revenue`,
+				),
+			).toEqual(new Set());
+		});
+
+		it("does NOT inherit across a join — which relation the grain came from is unproven", async () => {
+			expect(
+				await existingIdentifierColumns(
+					`${groupedCte}, budget AS (SELECT account_id__name AS account, 1 AS plan ` +
+						"FROM lake.typed.current_orders_enriched GROUP BY 1) " +
+						"SELECT r.account, r.total, b.plan FROM revenue r JOIN budget b USING (account)",
+				),
+			).toEqual(new Set());
+		});
+
+		it("keeps the outer GROUP BY when the outer statement has one of its own", async () => {
+			// Aggregate outside, rename inside: the outer grouping decides, and the
+			// alias still resolves down to the catalogued column.
+			const names = await existingIdentifierColumns(
+				"WITH base AS (SELECT account_id__name AS account, total_amount " +
+					"FROM lake.typed.current_orders_enriched) " +
+					"SELECT account, SUM(total_amount) AS value FROM base GROUP BY 1",
+			);
+			expect(names).toEqual(new Set(["account", "account_id__name"]));
+		});
+
+		it("follows a chain of CTEs, each renaming again", async () => {
+			const names = await existingIdentifierColumns(
+				"WITH a AS (SELECT account_id__name AS acct FROM lake.typed.current_orders_enriched), " +
+					"b AS (SELECT acct AS account FROM a) " +
+					"SELECT account, COUNT(*) AS n FROM b GROUP BY 1",
+			);
+			expect(names).toEqual(new Set(["account", "acct", "account_id__name"]));
+		});
 	});
 
 	it("returns null for a set operation — not a single plain SELECT", async () => {
@@ -314,5 +459,107 @@ describe("existingIdentifierColumns", () => {
 			);
 			expect(names).toEqual(new Set());
 		});
+	});
+});
+
+// DAT-671 R2: what each projected column is a projection OF. The tier-A drill
+// matches result columns against the slice catalog, so an alias between the two
+// silently cost an aliased result its entire drill menu.
+describe("projectedSourceColumns", () => {
+	it("maps an aliased dimension back to its catalogued column", async () => {
+		const map = await projectedSourceColumns(
+			`SELECT account_id__name AS account, SUM(total_amount) AS value ` +
+				"FROM lake.typed.current_orders_enriched GROUP BY 1",
+		);
+		expect(map.get("account")).toBe("account_id__name");
+		// The computed projection has no single source column, so it is absent
+		// rather than mapped to something invented.
+		expect(map.has("value")).toBe(false);
+	});
+
+	it("maps an UNALIASED column to itself, so callers have one lookup", async () => {
+		const map = await projectedSourceColumns(
+			`SELECT ${REGION_NAME_COLUMN}, account_id__name AS account ` +
+				"FROM lake.typed.current_orders_enriched",
+		);
+		expect(Object.fromEntries(map)).toEqual({
+			[REGION_NAME_COLUMN]: REGION_NAME_COLUMN,
+			account: "account_id__name",
+		});
+	});
+
+	it("drops the table qualifier from a qualified reference", async () => {
+		const map = await projectedSourceColumns(
+			"SELECT o.account_id__name AS account FROM lake.typed.current_orders_enriched AS o",
+		);
+		expect(map.get("account")).toBe("account_id__name");
+	});
+
+	// DAT-671 R6 — the live "no axes" shape: the rename happens INSIDE the CTE,
+	// so one hop over the outer projection resolves `account` to the CTE's own
+	// output and never to the catalogued column the whole lookup keys on.
+	it("resolves an alias made inside a CTE body", async () => {
+		const map = await projectedSourceColumns(
+			"WITH revenue AS (SELECT account_id__name AS account, SUM(total_amount) AS total " +
+				"FROM lake.typed.current_orders_enriched GROUP BY 1) " +
+				"SELECT account, total FROM revenue ORDER BY total DESC",
+		);
+		expect(map.get("account")).toBe("account_id__name");
+		// `total` IS a plain column of the outer projection, but the CTE item it
+		// names is an aggregate — a projection of no single column — so the chain
+		// stops there and the name speaks for itself, never for `total_amount`.
+		expect(map.get("total")).toBe("total");
+	});
+
+	it("follows a chain of CTEs down to the base column", async () => {
+		const map = await projectedSourceColumns(
+			"WITH a AS (SELECT account_id__name AS acct FROM lake.typed.current_orders_enriched), " +
+				"b AS (SELECT acct AS account FROM a) SELECT account FROM b",
+		);
+		expect(map.get("account")).toBe("account_id__name");
+	});
+
+	it("re-aliases on top of a CTE alias", async () => {
+		const map = await projectedSourceColumns(
+			"WITH revenue AS (SELECT account_id__name AS account FROM lake.typed.current_orders_enriched) " +
+				"SELECT account AS customer FROM revenue",
+		);
+		expect(map.get("customer")).toBe("account_id__name");
+	});
+
+	it("stops at a join — a bare name is not attributable to one CTE there", async () => {
+		const map = await projectedSourceColumns(
+			"WITH a AS (SELECT account_id__name AS account, id FROM lake.typed.current_orders_enriched), " +
+				"b AS (SELECT region_id__name AS region, id FROM lake.typed.current_orders_enriched) " +
+				"SELECT a.account, b.region FROM a JOIN b USING (id)",
+		);
+		// Each column speaks for itself, exactly as before the CTE resolution.
+		expect(Object.fromEntries(map)).toEqual({
+			account: "account",
+			region: "region",
+		});
+	});
+
+	it("reads nothing from a shape it cannot attribute", async () => {
+		// A star projection names no columns; our own RENAME wrap renames what it
+		// re-projects, so reading the inner list would attribute inner names to
+		// outer columns that no longer carry them. Empty = the caller matches on
+		// the result's own spelling, exactly as before.
+		expect(
+			(
+				await projectedSourceColumns(
+					"SELECT * FROM lake.typed.current_orders_enriched",
+				)
+			).size,
+		).toBe(0);
+		expect(
+			(
+				await projectedSourceColumns(
+					"SELECT * RENAME (a AS b) FROM (SELECT account_id__name AS a " +
+						"FROM lake.typed.current_orders_enriched) AS _clean",
+				)
+			).size,
+		).toBe(0);
+		expect((await projectedSourceColumns("NOT SQL AT ALL")).size).toBe(0);
 	});
 });

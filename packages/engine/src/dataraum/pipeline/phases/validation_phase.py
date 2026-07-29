@@ -190,7 +190,10 @@ class ValidationPhase(BasePhase):
 
         # The workspace schema, every run-versioned read pinned to base_runs.
         schema = get_multi_table_schema_for_llm(
-            ctx.session, table_ids, duckdb_conn=ctx.duckdb_conn, base_runs=base_runs
+            ctx.session,
+            table_ids,
+            duckdb_conn=ctx.duckdb_conn,
+            base_runs=base_runs,
         )
         if "error" in schema:
             return PhaseResult.failed(str(schema["error"]))

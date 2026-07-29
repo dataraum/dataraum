@@ -122,12 +122,53 @@ describe.skipIf(!fx.available)(
 
 		it("never buckets time on tier A", async () => {
 			// Tier A wraps the result in a GROUP BY on its own columns; a temporal
-			// bucket would need a grain the result does not carry.
+			// bucket would need a raw date the result does not carry, and there is
+			// no identity to read an additivity verdict for either.
+			//
+			// Against THIS catalog the assertion is a floor, not the whole story:
+			// the fixture catalogues no temporal dimension, so what it pins is that
+			// nothing invents one. The interesting half — a projected date column
+			// coming back grain-stripped WITH its stated reason — is unit-covered
+			// in drill-axes-adhoc.test.ts ("tier-A time"), because seeding a date
+			// dimension here would move axis lists under six other integration
+			// files including the journey seed.
 			const result = await resolveAdHocDrillAxes([
 				REGION_NAME_COLUMN,
 				"total_amount",
 			]);
-			for (const axis of result.axes) expect(axis.temporal).toBeNull();
+			for (const axis of result.axes) {
+				expect(axis.temporal).toBeNull();
+				expect(axis.bucketGrain).toBeUndefined();
+			}
+			// No temporal axis was offered at all, so the gate never ran — and must
+			// not claim it did.
+			expect(result.temporalGateSource).toBeUndefined();
+		});
+
+		// DAT-671 R5: the applied drill stack greys through the SAME shared
+		// `alreadyInResult` the answer path uses. Tier A was never told before, so
+		// the grid disabled the item locally with no reason text at all.
+		it("greys an axis the ASKING GRID has already sliced by, with its reason", async () => {
+			const result = await resolveAdHocDrillAxes(
+				[REGION_NAME_COLUMN, ACCOUNT_NAME_COLUMN, "total_amount"],
+				undefined,
+				[{ kind: "slice", column: REGION_NAME_COLUMN }],
+			);
+			const region = result.axes.find((a) => a.column === REGION_NAME_COLUMN);
+			const account = result.axes.find((a) => a.column === ACCOUNT_NAME_COLUMN);
+			expect(region?.disabledReason).toMatch(/already at this grain/i);
+			// A PIN is not a slice — it filters to one value without grouping, so
+			// its dimension stays worth offering.
+			expect(account?.disabledReason).toBeNull();
+		});
+
+		it("a pin in the stack greys nothing — it filters, it does not group", async () => {
+			const result = await resolveAdHocDrillAxes(
+				[REGION_NAME_COLUMN, ACCOUNT_NAME_COLUMN, "total_amount"],
+				undefined,
+				[{ kind: "pin", column: REGION_NAME_COLUMN }],
+			);
+			for (const axis of result.axes) expect(axis.disabledReason).toBeNull();
 		});
 
 		// DAT-671, "we should not slice on already existing slices": a result

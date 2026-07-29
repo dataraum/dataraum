@@ -254,7 +254,7 @@ def _seed(engine: Engine) -> None:
             f"VALUES ('{rid}', '{RUN}', '{ft}', '{fc}', '{tt}', '{tc}', "
             f"'foreign_key', 'many-to-one', 0.9, 'judge', 'llm', '{TS}')"
         )
-    # has_dimension: three facts each sliced by their own account_id FK, all resolving
+    # slice_definitions: three facts each sliced by their own account_id FK, all resolving
     # the referenced identity dimension_table_id='t2' (the accounts dim). journal (t1)
     # and statement (t4) slice the SAME attribute (account_type) → a CONFORMED pair
     # (an alignable drill-across axis). account_group (t3) slices a DIFFERENT attribute
@@ -798,11 +798,28 @@ def _units_and_additivity_stmts() -> list[str]:
     ]:
         stmts.append(
             "INSERT INTO metric_axis_additivity "
-            "(additivity_id, run_id, target_kind, target_key, axis_kind, axis_key, "
+            "(additivity_id, run_id, vertical, target_kind, target_key, axis_kind, axis_key, "
             " status, verdict, reason, abstain_reason, bucket_grain, created_at) "
-            f"VALUES ('{aid}', '{RUN}', '{kind}', '{key}', '{axis_kind}', '{axis_key}', "
-            f"'{status}', {verdict}, {reason}, {abstain}, {grain}, '{TS}')"
+            f"VALUES ('{aid}', '{RUN}', 'finance', '{kind}', '{key}', '{axis_kind}', "
+            f"'{axis_key}', '{status}', {verdict}, {reason}, {abstain}, {grain}, '{TS}')"
         )
+    # A verdict naming an ACTIVE finance concept ('accounts_payable') but computed
+    # under a DIFFERENT vertical — the post-vertical-change pre-promote window, where
+    # the promoted operating_model head (the verdict axis) and
+    # workspace_settings.active_vertical (the vocabulary axis) disagree. On the name
+    # alone this bound finance's accounts_payable concept and served a foreign
+    # vocabulary's verdict; the (vertical, name) join must give it no edge at all.
+    # NB the row necessarily sits under a target_key finance has no verdict for: one
+    # run has one vertical, and uq_metric_axis_additivity_target
+    # ((kind, key, axis_kind, axis_key, run_id)) makes two verticals per run
+    # impossible — which is exactly why `vertical` is provenance, not identity.
+    stmts.append(
+        "INSERT INTO metric_axis_additivity "
+        "(additivity_id, run_id, vertical, target_kind, target_key, axis_kind, axis_key, "
+        " status, verdict, reason, abstain_reason, bucket_grain, created_at) "
+        f"VALUES ('ma_ap_stale', '{RUN}', 'retail', 'measure', 'accounts_payable', "
+        f"'time', '*', 'classified', 'additive', NULL, NULL, NULL, '{TS}')"
+    )
     return stmts
 
 
@@ -1311,35 +1328,6 @@ def test_derived_from_unmaterialized_view_has_no_edge(graph_engine: Engine) -> N
         sources = {r.vname for r in conn.execute(text(sql))}
     assert sources == {"enriched_journal", "enriched_ledger"}
     assert "enriched_paylog" not in sources
-
-
-def test_has_dimension_edge(graph_engine: Engine) -> None:
-    """has_dimension: each fact points at its slice column, CARRYING the referenced
-    identity (DAT-756) — dimension_table_id resolves to the shared accounts dim."""
-    sql = (
-        f"SELECT tname, cname, dim FROM GRAPH_TABLE ({_graph_ref()} "
-        "MATCH (t IS table_node)-[e IS has_dimension]->(c IS column_node) "
-        "COLUMNS (t.table_name AS tname, c.column_name AS cname, "
-        "e.dimension_table_id AS dim))"
-    )
-    with graph_engine.connect() as conn:
-        rows = {(r.tname, r.cname, r.dim) for r in conn.execute(text(sql))}
-    # All three facts slice their own account_id, each bound to the accounts dim (t2);
-    # journal + statement additionally carry role-playing bill-to/ship-to and
-    # seg1/seg2 FKs (DAT-788). journal also carries a FOLDED own-column slice
-    # (region_flat, NULL dim identity — DAT-867): a has_dimension edge with NULL
-    # dimension_table_id, the OBT axis the folded dim-member leg reads.
-    assert rows == {
-        ("journal", "account_id", "t2"),
-        ("statement", "account_id", "t2"),
-        ("account_group", "account_id", "t2"),
-        ("journal", "billto_acct", "t2"),
-        ("statement", "shipto_acct", "t2"),
-        ("journal", "seg1_acct", "t2"),
-        ("statement", "seg2_acct", "t2"),
-        ("journal", "region_flat", None),
-        ("statement", "region_flat", None),
-    }
 
 
 def test_scoped_by_enumerates_the_default_validity_scope(graph_engine: Engine) -> None:
@@ -2285,6 +2273,21 @@ def test_additivity_verdict_vertices_carry_the_per_axis_verdict(graph_engine: En
         ),
         # mk_unknown: an abstention is a row that SAYS SO, not an absence.
         ("metric", "mk_unknown", "time", "*", "abstained", None, None, "unknown_temporal", None),
+        # The other-vertical 'accounts_payable' verdict IS a vertex — og_additivity
+        # is deliberately not vertical-scoped (a metric target has no vertex to scope
+        # against, and scoping here would dangle the edges og_has_additivity keeps).
+        # Its scoping happens where it is RESOLVED — see the has_additivity test.
+        (
+            "measure",
+            "accounts_payable",
+            "time",
+            "*",
+            "classified",
+            "additive",
+            None,
+            None,
+            None,
+        ),
     }
 
 
@@ -2293,7 +2296,13 @@ def test_has_additivity_links_a_measure_concept_to_its_verdict(graph_engine: Eng
     over time?" resolves concept → verdict for a MEASURE. Only the measure verdict links
     (its target_key 'revenue' names an active concept); the metric verdict (mk_margin, a
     formula graph_id) names no concept and is reachable only by property on the vertex —
-    the graph never dangles (the og_grounded_by INNER-join discipline)."""
+    the graph never dangles (the og_grounded_by INNER-join discipline).
+
+    DAT-671 R6: the join resolves the FULL concept identity ``(vertical, name)``. The
+    seed carries a verdict for 'accounts_payable' — an ACTIVE finance concept — under
+    vertical='retail', the post-vertical-change pre-promote window where the promoted
+    verdicts and the active vocabulary disagree. It must produce NO edge; on the name
+    alone it hung a foreign vocabulary's verdict off finance's concept."""
     sql = (
         f"SELECT cname, axk, vd, rsn FROM GRAPH_TABLE ({_graph_ref()} "
         "MATCH (c IS concept_node)-[e IS has_additivity]->(a IS additivity_verdict) "
@@ -2304,6 +2313,8 @@ def test_has_additivity_links_a_measure_concept_to_its_verdict(graph_engine: Eng
         rows = {(r.cname, r.axk, r.vd, r.rsn) for r in conn.execute(text(sql))}
     # revenue is the only measure verdict; mk_margin (metric) never surfaces here.
     # Both its class row and its refining `period` axis row hang off the concept.
+    # accounts_payable is absent: its only verdict is the 'retail' one, and a
+    # foreign vocabulary's judgement must reach no concept here.
     assert rows == {
         ("revenue", "*", "semi_additive", "stock"),
         ("revenue", "period", "semi_additive", "stock"),

@@ -7,8 +7,64 @@ from sqlalchemy.orm import Session
 
 from dataraum.analysis.relationships.surrogate import is_surrogate_column
 from dataraum.analysis.semantic.db_models import ColumnConcept, SemanticAnnotation
+from dataraum.analysis.statistics.models import ColumnProfile
 from dataraum.analysis.typing.db_models import TypeCandidate
 from dataraum.storage import Column, Table
+
+
+def truncate_sample_value(value: Any, *, max_chars: int) -> Any:
+    """Bound one served corpus value's rendered length.
+
+    DAT-671 prompt-content bounds policy: cap DATA VALUES, never authored
+    metadata prose. Only a ``str`` value longer than ``max_chars`` is
+    shortened; anything else (a number, a bool, an already-short string)
+    passes through UNCHANGED — a JSON ``sample_values`` array must keep a
+    numeric column's samples typed as numbers, not stringify them. A
+    prose-line caller (the catalogue/cycles context builders) interpolates
+    the result with an f-string, which stringifies either way, so the same
+    function serves both.
+
+    This is the ONE home for what used to be four independently drifting
+    100-char constants (``catalogue/context.py: _SAMPLE_MAX_CHARS``,
+    ``cycles/context.py: _SAMPLE_VALUE_MAX_CHARS``, and the semantic agents'
+    own ``_truncate_sample``, duplicated in both ``column_agent.py`` and
+    ``agent.py``) — every caller now reads
+    ``llm/config.yaml: privacy.max_sample_value_chars`` instead of a local
+    number.
+    """
+    if isinstance(value, str) and len(value) > max_chars:
+        return value[:max_chars] + "..."
+    return value
+
+
+def prompt_samples(
+    profiles: list[ColumnProfile], *, limit: int, max_chars: int
+) -> dict[tuple[str, str], list[Any]]:
+    """Per-column value samples for a prompt, count- AND length-capped (DAT-890/DAT-671).
+
+    The profiler stores ``top_k_values`` (200) per column for downstream
+    analysis; ``limit`` is what may reach a PROMPT
+    (``llm/config.yaml: privacy.max_sample_values``, 10). The two are different
+    budgets and the gap is not decoration: serving the profiler's full 200 put
+    8,722 raw values into one ``column_annotation`` prompt — 88% of its bytes
+    and 45% digits — against the ~700 the cap allows. Every other prompt
+    builder applies this cap (``analysis/catalogue/context.py`` renders
+    ``top_values[:limit]``); the deleted ``llm/privacy.py`` sampler skipped it,
+    which is how the two semantic agents alone shipped 20x their budget.
+    ``max_chars`` (``privacy.max_sample_value_chars``) bounds each individual
+    value's length via :func:`truncate_sample_value` — the count cap alone
+    does not stop one pathologically long value from dominating the budget.
+
+    Returns ``{(table_name, column_name): values}``. A column with no stored
+    top values yields an empty list — absence stays visible as absence.
+    """
+    return {
+        (p.column_ref.table_name, p.column_ref.column_name): [
+            truncate_sample_value(vc.value, max_chars=max_chars)
+            for vc in (p.top_values or [])[:limit]
+        ]
+        for p in profiles
+    }
 
 
 def load_column_concepts(

@@ -311,6 +311,129 @@ def test_get_multi_table_schema_for_llm_single_table(session, table_with_columns
     assert amount_col["semantic"]["entity_type"] == "amount"
 
 
+def _slice(table, column_id, column_name, values, *, value_count=None):
+    from dataraum.analysis.slicing.db_models import SliceDefinition
+
+    return SliceDefinition(
+        table_id=table.table_id,
+        column_id=column_id,
+        column_name=column_name,
+        run_id="run-current",
+        slice_type="categorical",
+        slice_interest="primary",
+        distinct_values=values,
+        value_count=value_count if value_count is not None else len(values),
+    )
+
+
+def test_membership_is_served_whole(session, table_with_columns):
+    """DAT-671: the prompt's value-set is the WHOLE measured list, never a top-N.
+
+    The prompt tells the model these are the actual values and to cite them
+    verbatim in WHERE/CASE clauses. A count cap therefore amputates the output
+    space rather than trimming a sample: a 15-value axis cut to 10 makes every
+    predicate on the remaining five silently unwritable.
+    """
+    table = table_with_columns
+    account_type_col = next(c for c in table.columns if c.column_name == "account_type")
+    values = [f"type_{i:02d}" for i in range(15)]
+    session.add(_slice(table, account_type_col.column_id, "account_type", values))
+    session.commit()
+
+    schema = get_multi_table_schema_for_llm(session, [table.table_id], base_runs=_pins(table))
+
+    account_col = next(
+        c for c in schema["tables"][0]["columns"] if c["column_name"] == "account_type"
+    )
+    assert account_col["distinct_values"] == values
+    # Complete set ⇒ no truncation marker. The silence is load-bearing: it is
+    # what licenses the model to enumerate the domain exhaustively.
+    rendered = format_multi_table_schema_for_prompt(schema)
+    assert 'distinct_values="type_00, type_01' in rendered
+    assert "distinct_values_note" not in rendered
+
+
+def test_a_store_truncated_axis_discloses_the_split(session, table_with_columns):
+    """A list shorter than the measured COUNT(DISTINCT) says so, in the same line.
+
+    The profiler's stored top-K is the bound (200 typed / 10 enriched), so a
+    partial list is routine — and an undisclosed one reads as the complete
+    domain, which is exactly how a validation query comes to assert coverage it
+    does not have.
+    """
+    table = table_with_columns
+    account_type_col = next(c for c in table.columns if c.column_name == "account_type")
+    session.add(
+        _slice(
+            table,
+            account_type_col.column_id,
+            "account_type",
+            ["asset", "liability"],
+            value_count=41,
+        )
+    )
+    session.commit()
+
+    schema = get_multi_table_schema_for_llm(session, [table.table_id], base_runs=_pins(table))
+    rendered = format_multi_table_schema_for_prompt(schema)
+
+    assert 'distinct_values="asset, liability"' in rendered
+    assert 'distinct_values_note="showing 2 of 41 distinct' in rendered
+    assert "NOT the complete set" in rendered
+
+
+def test_an_enriched_axis_never_lands_on_the_fk_column(session, table_with_columns):
+    """DAT-671 regression pin: one column's values must not wear another's name.
+
+    An enriched slice's ``column_id`` is the FACT's FK column (the DAT-756
+    referenced-dimension identity) while its ``column_name`` is the joined
+    ``{fk}__{attr}`` view column the values were measured on. Keying the attach
+    by id served ``customer_id`` its customers.segment values — "Enterprise,
+    SMB, Mid-Market" in place of C-0001…C-0016 — under a prompt line swearing
+    they were the actual values of that column. Worse, several enriched axes
+    share one FK column_id, so last-one-wins also erased the fact column's own
+    value-set.
+    """
+    from dataraum.analysis.views.db_models import EnrichedView
+
+    table = table_with_columns
+    fk_col = next(c for c in table.columns if c.column_name == "account_type")
+    session.add_all(
+        [
+            # The fact's OWN axis on that column, and two enriched axes joined
+            # through it — all three carrying the same column_id.
+            _slice(table, fk_col.column_id, "account_type", ["asset", "liability"]),
+            _slice(table, fk_col.column_id, "account_type__segment", ["Enterprise", "SMB"]),
+            _slice(table, fk_col.column_id, "account_type__region", ["EMEA", "APAC"]),
+            EnrichedView(
+                fact_table_id=table.table_id,
+                view_name="enriched_transactions",
+                dimension_columns=["account_type__segment", "account_type__region"],
+            ),
+        ]
+    )
+    session.commit()
+
+    schema = get_multi_table_schema_for_llm(session, [table.table_id], base_runs=_pins(table))
+    account_col = next(
+        c for c in schema["tables"][0]["columns"] if c["column_name"] == "account_type"
+    )
+    # The physical column keeps its OWN values — not a dimension attribute's.
+    assert account_col["distinct_values"] == ["asset", "liability"]
+
+    # The enriched axes are served where the columns actually exist.
+    view = schema["enriched_views"][0]
+    assert {c["column_name"]: c["distinct_values"] for c in view["columns"]} == {
+        "account_type__segment": ["Enterprise", "SMB"],
+        "account_type__region": ["EMEA", "APAC"],
+    }
+
+    rendered = format_multi_table_schema_for_prompt(schema)
+    assert 'name="account_type" type="VARCHAR"' in rendered
+    assert "Enterprise" not in rendered.split("<enriched_views>")[0]
+    assert '<column name="account_type__segment" distinct_values="Enterprise, SMB" />' in rendered
+
+
 def test_table_grain_facts_scope_to_pinned_catalogue_run(session, table_with_columns):
     """Table-grain catalog facts (DAT-870) serve at the PINNED catalogue run only.
 

@@ -105,8 +105,16 @@ function readDrillSource(
 	const out: AnswerDrillSource["sources"] = [];
 	for (const entry of sources) {
 		if (entry === null || typeof entry !== "object") return null;
-		const { name, parts } = entry as Record<string, unknown>;
+		const { name, snippetId, parts } = entry as Record<string, unknown>;
 		if (typeof name !== "string" || name === "") return null;
+		// The identity handle (DAT-671 R2) is the ONE field narrowed leniently,
+		// and the module's strictness rule says why: everything else here becomes
+		// executable SQL, while this is a lookup key. Anything that is not a
+		// non-empty string reads as "no identity" — which costs the time grain (the
+		// drill withholds and states the reason) instead of costing the whole
+		// source drill. Absent is the normal case on every FRESH step.
+		const identity =
+			typeof snippetId === "string" && snippetId !== "" ? snippetId : null;
 		if (parts === null || typeof parts !== "object") return null;
 		const { selectExpr, relation, where } = parts as Record<string, unknown>;
 		if (typeof selectExpr !== "string" || selectExpr === "") return null;
@@ -116,6 +124,7 @@ function readDrillSource(
 		}
 		out.push({
 			name,
+			snippetId: identity,
 			parts: { selectExpr, relation, where: where as string[] },
 		});
 	}

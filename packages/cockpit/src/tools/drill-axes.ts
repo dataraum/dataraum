@@ -37,12 +37,13 @@ import {
 	currentStatisticalProfiles,
 	sqlSnippets,
 } from "#/db/metadata/schema";
-import { bareRelationName } from "#/duckdb/answer-source";
 import type { DrillAxis, DrillNodeRef } from "#/duckdb/drill";
 import { type TemporalKind, temporalKindOfType } from "#/duckdb/grain";
-import { narrowSnippetParts } from "#/duckdb/parts";
+import { bareRelationName, narrowSnippetParts } from "#/duckdb/parts";
 import { aggregatedColumns, existingIdentifierColumns } from "#/duckdb/sql-ast";
+import { sqlEquivalent } from "#/lib/sql-canonical";
 
+import { resolveGroundedConcepts } from "./concept-target";
 import { parseMetricDag } from "./operating-model-graph";
 
 /** The extract-step standard fields of a metric's persisted DAG (pure). */
@@ -359,6 +360,88 @@ export function applyHierarchyDescent(
 	});
 }
 
+/**
+ * The ONE axis-composition pipeline (ADR-0024 decision 2), shared by every
+ * compose path: the catalog rows fold to axes, the grain-verified substrate
+ * joins below them, measured drivers reorder, and the catalog's column types +
+ * confirmed hierarchies stamp what the menu can disclose.
+ *
+ * What differs per path is the INPUT, never the composition. A path that cannot
+ * answer one of these questions passes an EMPTY map, and empty is a genuine
+ * no-op here rather than a special case: `orderAxesByDrivers` leaves the
+ * incoming order and stamps `driverGain: null`, `applyHierarchyDescent` stamps
+ * `hierarchyNext: null`. So tier A's fact-scoped blanks — it wraps an arbitrary
+ * result and cannot know which fact backs a given column — fall out of the SAME
+ * code the node path runs. That is the ADR's rule made structural: a capability
+ * difference between paths can only ever trace to the data each one has, never
+ * to a second implementation that looks less hard.
+ */
+export function composeAxes(input: {
+	sliceRows: SliceRowInput[];
+	substrateColumns: readonly string[];
+	temporalKinds: ReadonlyMap<string, TemporalKind>;
+	driverGains: ReadonlyMap<string, number>;
+	hierarchyNext: ReadonlyMap<string, string>;
+}): DrillAxis[] {
+	return applyHierarchyDescent(
+		applyTemporalKinds(
+			orderAxesByDrivers(
+				unionSubstrateAxes(
+					axesFromSliceRows(input.sliceRows),
+					input.substrateColumns,
+				),
+				input.driverGains,
+			),
+			input.temporalKinds,
+		),
+		input.hierarchyNext,
+	);
+}
+
+/** The drill stack an asking grid has ALREADY applied, as the resolvers read it.
+ *  Structurally typed rather than `DrillStep[]`: only the kind and the column
+ *  decide greying, and no resolver reads further into a step it does not
+ *  compose from. */
+export interface AppliedStep {
+	kind: string;
+	column: string;
+}
+
+/**
+ * The columns a result is ALREADY broken out by — one home for the greying
+ * question on every compose path (ADR-0024 decision 2). The union of two
+ * structural signals, either of which may be absent:
+ *
+ * * `baseSql` — the statement's own outer projection / GROUP BY, read
+ *   structurally (`existingIdentifierColumns`: schema and names only, never
+ *   executed).
+ * * `steps` — the drill stack the asking grid already applied. Only `slice`
+ *   steps count: a pin FILTERS to one value rather than grouping, so its
+ *   dimension is still worth offering.
+ *
+ * Both absent → the empty set, i.e. nothing greyed; never a guess.
+ *
+ * Every path calls this, which is what let the CLIENT-side grey-out die
+ * (DAT-671 R5). The grid used to disable an already-sliced menu item locally,
+ * out of its own `steps`, without setting `disabledReason` — so the item went
+ * grey with no inline reason and no tooltip, a dead entry explaining nothing.
+ * The same determination made server-side arrives WITH its words.
+ */
+export async function alreadyInResult(
+	baseSql?: string,
+	steps?: readonly AppliedStep[],
+): Promise<Set<string>> {
+	const existing = new Set<string>(
+		(steps ?? []).filter((s) => s.kind === "slice").map((s) => s.column),
+	);
+	if (baseSql !== undefined) {
+		for (const column of (await existingIdentifierColumns(baseSql)) ?? []) {
+			existing.add(column);
+		}
+	}
+	return existing;
+}
+
 /** DAT-671 grey-out reason: shown on a menu item whose column already breaks
  *  out the result — see `DrillAxis.disabledReason` and `markAlreadyInResult`. */
 export const ALREADY_AT_GRAIN_REASON =
@@ -368,22 +451,25 @@ export const ALREADY_AT_GRAIN_REASON =
  * Stamp the DAT-671 "already sliced" disabled-reason onto any axis whose
  * column name matches one of the result's existing non-measure identifier
  * columns (pure). Case-insensitive, matching the same spelling convention
- * tier-A's ambiguity fold already uses (`adHocAxesFromCatalog`) — SQL
- * identifiers are case-insensitive but case-PRESERVING, so comparing raw bytes
- * would miss an axis for a difference the database itself doesn't recognise.
+ * tier-A's projection already uses (`projectCatalogToResult`) — SQL identifiers
+ * are case-insensitive but case-PRESERVING, so comparing raw bytes would miss
+ * an axis for a difference the database itself doesn't recognise.
  *
- * `existing` is `null` when the structural read (`sql-ast.ts`'s
- * `existingIdentifierColumns`) couldn't decide, or wasn't run at all (no
- * current-SQL signal on this path) — every axis passes through unchanged
- * rather than guessing; the post-execution fold probe remains the tier-A net
- * for what this misses, and a miss on the parts-at-source path is an accepted
- * gap (see `DrillAxis.disabledReason`'s doc comment).
+ * `existing` is EMPTY when neither signal could decide — an unreadable base
+ * statement, no applied stack, or both — and every axis then passes through
+ * unchanged rather than guessing. It is a plain set, never nullable: the
+ * "couldn't decide" case used to arrive here as `null` from
+ * `existingIdentifierColumns`, but `alreadyInResult` now absorbs that into the
+ * union it returns, so the two cases were the same thing spelled twice. The
+ * post-execution fold probe remains the tier-A net for what this misses, and a
+ * miss on the parts-at-source path is an accepted gap (see
+ * `DrillAxis.disabledReason`'s doc comment).
  */
 export function markAlreadyInResult(
 	axes: DrillAxis[],
-	existing: ReadonlySet<string> | null,
+	existing: ReadonlySet<string>,
 ): DrillAxis[] {
-	if (existing === null || existing.size === 0) return axes;
+	if (existing.size === 0) return axes;
 	const lower = new Set([...existing].map((c) => c.toLowerCase()));
 	return axes.map((a) =>
 		a.disabledReason === null && lower.has(a.column.toLowerCase())
@@ -556,6 +642,117 @@ function additivityTarget(req: DrillNodeRef): {
 		: { kind: "metric", key: req.metricKey };
 }
 
+/**
+ * WHAT the drill is asking the engine about (DAT-671 R2, ADR-0024 decision 1) —
+ * the one shape every compose path resolves its verdicts through, so that a
+ * capability difference between paths can only ever come from a DATA difference.
+ *
+ * * `metric` / `measure` — a target the engine PERSISTED a verdict for, keyed
+ *   exactly as `metric_axis_additivity` keys it. A canvas node knows this by
+ *   construction; an ANSWER reaches it through the identity spine
+ *   (`snippet → concept`, `tools/concept-target.ts`).
+ * * `composed` — an answer that combines SEVERAL classified concepts with its
+ *   own arithmetic. No such target exists in the engine and none should: the
+ *   combination was authored in a chat turn, not promoted into the operating
+ *   model. What the engine served is each CARRIER's verdict, and composing them
+ *   is this side's job — see `composedVerdict`.
+ */
+export type DrillTarget =
+	| { kind: "metric"; key: string; carriers: readonly string[] }
+	| { kind: "measure"; key: string }
+	| { kind: "composed"; carriers: readonly string[] };
+
+/** The bucket-grain ladder, coarsening left to right — mirrors the engine's
+ *  `additivity_db_models.BUCKET_GRAINS`. Mirrored rather than served because it
+ *  is a closed vocabulary of four tokens (the cross-package
+ *  mirrored-with-test discipline, ADR-0024); `coarsestGrain` is its test. */
+const BUCKET_GRAINS = ["day", "month", "quarter", "year"] as const;
+
+/**
+ * The coarsest bucket grain among the carriers (pure) — the floor a composed
+ * target can honestly offer.
+ *
+ * Coarsest, not finest, and the engine's own resolver agrees (`additivity_
+ * resolver.py`'s per-column fold): a formula re-evaluated per bucket is only as
+ * fine as its LEAST frequent input — bucketing monthly data by day would show
+ * a value in the one bucket that has data and a dash in the other thirty.
+ *
+ * `null` from any carrier means that carrier makes no cadence claim, which
+ * cannot be out-voted by one that does: the result is `null`, i.e. no claim,
+ * and the grain menu offers its full preset list.
+ */
+export function coarsestGrain(
+	grains: readonly (string | null)[],
+): string | null {
+	if (grains.length === 0) return null;
+	let best = -1;
+	for (const grain of grains) {
+		const rung = grain === null ? -1 : BUCKET_GRAINS.indexOf(grain as never);
+		// An unknown token is treated exactly like no claim: this is a mirrored
+		// vocabulary, and inventing a rung for a token the engine added later
+		// would silently claim a cadence nobody served.
+		if (rung < 0) return null;
+		if (rung > best) best = rung;
+	}
+	return BUCKET_GRAINS[best];
+}
+
+/**
+ * The verdict a COMPOSED answer target carries (pure).
+ *
+ * An answer that combines several classified concepts is, structurally, exactly
+ * what the engine calls `non_additive_recompute`: its value is a formula over
+ * carriers, so a bucket is honest when each carrier can be summed inside it and
+ * re-evaluated there — which is precisely the rule `decideTimeAxis` already
+ * applies to a ratio metric. So this synthesizes that verdict rather than
+ * introducing a second decision procedure, and the payoff is the parity J6
+ * asserts: the answer path and the node path reach their answer through the
+ * SAME function, so they cannot drift.
+ *
+ * It is a claim about COMPOSITION, never about data: it says "treat this like a
+ * recompute", and every fact it then rests on (does each carrier sum? at what
+ * cadence?) is read from the engine's own served rows. Note what it does NOT
+ * do — it never claims additivity. `reconciliation()` reads
+ * `verdict === 'additive'`, so a composed target's total is always marked
+ * recomputed rather than being asserted to reconcile. Conservative in the one
+ * direction that matters: the arithmetic could be a plain difference, whose
+ * parts DO sum, and calling that "recomputed" understates it — while the
+ * reverse (a ratio whose parts are presented as summing) would be a lie.
+ */
+export function composedVerdict(
+	carriers: ReadonlyMap<string, TargetAdditivity | null>,
+): TargetAdditivity {
+	const timeGrain = coarsestGrain(
+		[...carriers.values()].map(
+			(c) => resolveAxisVerdict(c, "time", AXIS_KEY_ALL)?.bucketGrain ?? null,
+		),
+	);
+	return {
+		byAxis: new Map([
+			[
+				axisLookupKey("time", AXIS_KEY_ALL),
+				{
+					status: "classified",
+					verdict: "non_additive_recompute",
+					reason: null,
+					abstainReason: null,
+					bucketGrain: timeGrain,
+				},
+			],
+			[
+				axisLookupKey("categorical", AXIS_KEY_ALL),
+				{
+					status: "classified",
+					verdict: "non_additive_recompute",
+					reason: null,
+					abstainReason: null,
+					bucketGrain: null,
+				},
+			],
+		]),
+	};
+}
+
 /** Read every persisted axis verdict for one target, or `null` when the engine
  *  has none at all. A `null` is the WITHHOLD signal (DAT-725): the caller strips
  *  the grain and surfaces a visible reason rather than falling back to a weaker
@@ -608,9 +805,15 @@ async function readTargetAdditivity(
 	);
 }
 
+/** The verdict set a gate decides from: the target's own, plus one per carrier. */
+export interface DrillVerdicts {
+	target: TargetAdditivity | null;
+	carriers: Map<string, TargetAdditivity | null>;
+}
+
 /**
- * The verdicts the TIME gate needs: the target's own, plus one per CARRIER
- * measure of its DAG (DAT-857).
+ * THE verdict resolution — one home for every compose path (DAT-857, one-homed
+ * in DAT-671 R2): the target's own verdict, plus one per CARRIER measure.
  *
  * The engine serves per-(target × axis) FACTS; deciding what can be composed
  * from them is this side's job, because it is a fact about the composer, not
@@ -618,23 +821,27 @@ async function readTargetAdditivity(
  * carrier it recomputes FROM sums per bucket — the composer groups each carrier
  * and re-evaluates the formula over the grouped values, so an input that does
  * not sum would silently poison the recomputed number.
+ *
+ * A `composed` target has no persisted row of its own by construction, so its
+ * verdict is synthesized from the carriers (`composedVerdict`); everything else
+ * reads the row the engine wrote.
  */
-async function resolveVerdicts(
-	req: DrillNodeRef,
-	carrierFields: readonly string[],
-): Promise<{
-	target: TargetAdditivity | null;
-	carriers: Map<string, TargetAdditivity | null>;
-}> {
-	const { kind, key } = additivityTarget(req);
-	const target = await readTargetAdditivity(kind, key);
+export async function resolveVerdicts(
+	target: DrillTarget,
+): Promise<DrillVerdicts> {
 	const carriers = new Map<string, TargetAdditivity | null>();
 	// A measure target IS its own carrier — its extract is the thing recomputed.
-	const fields = kind === "measure" ? [] : carrierFields;
+	const fields = target.kind === "measure" ? [] : target.carriers;
 	for (const field of fields) {
 		carriers.set(field, await readTargetAdditivity("measure", field));
 	}
-	return { target, carriers };
+	if (target.kind === "composed") {
+		return { target: composedVerdict(carriers), carriers };
+	}
+	return {
+		target: await readTargetAdditivity(target.kind, target.key),
+		carriers,
+	};
 }
 
 /** One measure whose aggregation crosses units (DAT-731): the measure column and
@@ -795,11 +1002,13 @@ export interface AxisSource {
 	selectExpr: string;
 }
 
-/** The ungated result of relation-grounded axis resolution, plus what the two
- *  gates need. Gating is left to the caller because the TIME gate's authority
- *  differs per path: a metric/measure has a persisted additivity verdict to
- *  read, an ad-hoc answer concept has none at all. */
-interface SourceAxes {
+/** Composed axes before the gates, plus what the two gates need. Gating is a
+ *  separate step because the TIME gate's authority differs per path: a
+ *  metric/measure has a persisted additivity verdict to read, an answer reaches
+ *  one through identity, and tier A has none at all. The unit gate's inputs are
+ *  EMPTY on any path that cannot name the fact behind a measure (tier A), which
+ *  makes `unitGate` a no-op there by data rather than by a skipped call. */
+export interface UngatedAxes {
 	axes: DrillAxis[];
 	reason?: string;
 	aggMeasures: AggMeasure[];
@@ -814,8 +1023,8 @@ interface SourceAxes {
  */
 async function resolveAxesForSources(
 	sources: AxisSource[],
-): Promise<SourceAxes> {
-	const empty = (reason: string): SourceAxes => ({
+): Promise<UngatedAxes> {
+	const empty = (reason: string): UngatedAxes => ({
 		axes: [],
 		reason,
 		aggMeasures: [],
@@ -980,22 +1189,19 @@ async function resolveAxesForSources(
 	// above): a row from any OTHER table must not pose as a fact column in the
 	// temporal fallback pass.
 	const typeTableIdSet = new Set(typeTableIds);
-	const axes = applyHierarchyDescent(
-		applyTemporalKinds(
-			orderAxesByDrivers(
-				unionSubstrateAxes(axesFromSliceRows(sliceRows), substrateColumns),
-				driverGains(rankingRows),
+	const axes = composeAxes({
+		sliceRows,
+		substrateColumns,
+		temporalKinds: temporalKindsFromColumns(
+			columnRows.filter(
+				(r): r is typeof r & { tableId: string } =>
+					r.tableId !== null && typeTableIdSet.has(r.tableId),
 			),
-			temporalKindsFromColumns(
-				columnRows.filter(
-					(r): r is typeof r & { tableId: string } =>
-						r.tableId !== null && typeTableIdSet.has(r.tableId),
-				),
-				viewTableIds,
-			),
+			viewTableIds,
 		),
-		hierarchyDescentMap(hierarchyRows),
-	);
+		driverGains: driverGains(rankingRows),
+		hierarchyNext: hierarchyDescentMap(hierarchyRows),
+	});
 	if (axes.length === 0) {
 		return empty(
 			"No dimensions available for this computation's facts — neither the slicing catalog nor a grain-verified enriched view exposes anything to slice by.",
@@ -1086,17 +1292,35 @@ export function decideTimeAxis(
 }
 
 /**
- * The target's reconciliation on both axis classes, for the COMPOSER and the
- * totals row (DAT-857). `/api/drill/node` calls this: `time && categorical` is
- * the engine's answer to "may this be composed by summing signed carrier
- * contributions?", and each flag alone decides whether a drilled total on that
- * axis class is a number or an honest dash.
+ * A resolved target's reconciliation on both axis classes, for the COMPOSER and
+ * the totals row (DAT-857; one-homed for both compose paths in DAT-671 R2).
+ * `time && categorical` is the engine's answer to "may this be composed by
+ * summing signed carrier contributions?", and each flag alone decides whether a
+ * drilled total on that axis class is a number or an honest dash.
+ *
+ * A `null` target — nothing classified — answers `{false, false}`. That is not
+ * a claim that the parts fail to reconcile (the axes result carries no
+ * `reconciles` at all in that case, precisely so nothing claims it); it is the
+ * composer's conservative input, which only ever withholds the summing
+ * shortcut in favour of the carrier spine, correct for any shape.
  */
+export async function resolveReconciliation(
+	target: DrillTarget | null,
+): Promise<{ time: boolean; categorical: boolean }> {
+	if (target === null) return { time: false, categorical: false };
+	return reconciliation((await resolveVerdicts(target)).target);
+}
+
+/** The node path's entry to the same question. Carriers are deliberately empty:
+ *  reconciliation reads the TARGET's own class rows, so resolving carrier
+ *  verdicts here would be reads whose result nothing consults. */
 export async function resolveTargetReconciliation(
 	req: DrillNodeRef,
 ): Promise<{ time: boolean; categorical: boolean }> {
 	const { kind, key } = additivityTarget(req);
-	return reconciliation(await readTargetAdditivity(kind, key));
+	return resolveReconciliation(
+		kind === "measure" ? { kind, key } : { kind, key, carriers: [] },
+	);
 }
 
 /** Which axis classes a drilled breakdown RECONCILES on — i.e. where the parts
@@ -1140,15 +1364,23 @@ export function demoteWithheldDateAxes(axes: DrillAxis[]): DrillAxis[] {
 }
 
 /**
- * Apply the two gates to resolved axes. `verdict` is the TIME gate's authority:
- * a persisted engine verdict, or `null` for "none exists" — which is a WITHHOLD,
+ * Apply the two gates to composed axes — the ONE gate for every compose path
+ * (ADR-0024 decision 2). `verdicts.target` is the TIME gate's authority: a
+ * persisted engine verdict, or `null` for "none exists" — which is a WITHHOLD,
  * never a licence to guess (DAT-725). The result accrues both outcomes: a target
  * can fail the time gate and be cross-unit INDEPENDENTLY, so neither gate
  * early-returns — each stamps the same result and the (possibly grain-stripped)
  * axes fall through once.
+ *
+ * Tier A reaches this with `target: null` by construction — an orphan result has
+ * no identity to key a verdict on — so every temporal axis it composes leaves
+ * here grain-stripped and CARRYING ITS REASON. That is the whole reason the
+ * client's `grainable = source !== undefined` path gate could be deleted
+ * (DAT-671 R5): "can this axis be bucketed?" is now answered by the data on the
+ * axis (`temporal !== null`) on all three paths, not by which surface is asking.
  */
-function gateAxes(
-	resolved: SourceAxes,
+export function gateAxes(
+	resolved: UngatedAxes,
 	verdicts: {
 		target: TargetAdditivity | null;
 		carriers: Map<string, TargetAdditivity | null>;
@@ -1230,9 +1462,18 @@ function gateAxes(
  * The METRIC/MEASURE path: the node's promoted `graph:` extracts ground the
  * axes, and the engine's persisted additivity verdict for that exact target
  * decides the time grain.
+ *
+ * `steps` (optional) is the drill stack the asking grid has already applied, so
+ * an axis it is ALREADY broken out by comes back greyed WITH its reason
+ * (DAT-671 R5). This path has no base statement to read — a node recomposes
+ * from clause parts rather than wrapping a statement — so the applied stack is
+ * its only "already in the result" signal, and absent/empty means nothing is
+ * greyed. Before R5 the node path sent nothing here and the GRID disabled the
+ * item locally with no explanation at all.
  */
 export async function resolveDrillAxes(
 	req: DrillNodeRef,
+	steps?: readonly AppliedStep[],
 ): Promise<DrillAxesResult> {
 	const fields = await targetFields(req);
 	if (fields.length === 0) {
@@ -1281,51 +1522,134 @@ export async function resolveDrillAxes(
 	}
 
 	const resolved = await resolveAxesForSources(sources);
-	return gateAxes(
+	const { kind, key } = additivityTarget(req);
+	const result = gateAxes(
 		resolved,
 		resolved.axes.length > 0
-			? await resolveVerdicts(req, fields)
+			? await resolveVerdicts(
+					kind === "measure" ? { kind, key } : { kind, key, carriers: fields },
+				)
 			: { target: null, carriers: new Map() },
 		"Time grain withheld: the engine has not classified this target's additivity, so bucketing it by period would be a guess.",
 	);
+	if (result.axes.length === 0) return result;
+	return {
+		...result,
+		axes: markAlreadyInResult(
+			result.axes,
+			await alreadyInResult(undefined, steps),
+		),
+	};
+}
+
+/** One source of an answer's proven declaration, as the axes resolver reads it:
+ *  where the number comes from, plus WHICH grounding it reuses. */
+export interface AnswerAxisSource extends AxisSource {
+	/** The grounding snippet this source reuses (`AnswerSource.snippetId`), or
+	 *  null for a fresh step. THE identity — see `resolveAnswerTarget`. */
+	snippetId?: string | null;
+}
+
+/** The withhold when the answer names no classified concept — the honest one,
+ *  and after DAT-671 R2 the only path that reaches it. */
+const UNCLASSIFIED_ANSWER_WITHHOLD =
+	"This answer computes an ad-hoc concept the engine has not classified for additivity — time-grain drill withheld; the date is still available as a raw slice.";
+
+/**
+ * The answer's verdict TARGET, resolved from identity (DAT-671 R2).
+ *
+ * `null` — no target, so the grain is withheld — unless EVERY source resolves.
+ * That is deliberately all-or-nothing: a declaration mixing one reused concept
+ * with one fresh ad-hoc step has an unjudged input, and a bucketed value
+ * composed over it would be exactly the silent corruption `decideTimeAxis`
+ * refuses for an unjudged carrier. Saying it once, in the answer's own words,
+ * beats naming a carrier the practitioner never saw.
+ *
+ * A source resolves when its snippet grounds a live concept AND the value
+ * expression it declares is still the one the engine CLASSIFIED. The second
+ * half is what makes the identity a verifiable claim rather than a trusted one:
+ * the model may cite a snippet and ADAPT it (`classifyComponents` keeps the id
+ * for exactly that case), and adaptation is sanctioned — a tighter filter, a
+ * narrower period — but all of that lives in `where`, which narrows the
+ * population without touching what is being measured. Changing the ARITHMETIC
+ * (a `SUM` adapted into an `AVG`, say) makes the answer a different measure
+ * than the one whose additivity was judged, and the verdict would then license
+ * a bucketing nobody ruled on. Compared through the same AST canonicalization
+ * the reuse classifier uses, so spelling/quoting differences don't cost a
+ * legitimate reuse.
+ *
+ * ONE source is the measure ITSELF — its persisted verdict governs directly.
+ * SEVERAL are carriers of a `composed` target, whatever they resolve to: the
+ * branch is on how many operands the ANSWER combined, never on how many
+ * distinct concepts they turned out to be. A period-over-period change of one
+ * measure (`(revenue_this - revenue_prior) / revenue_prior`) resolves to a
+ * single concept and is emphatically NOT that concept — treating it as one
+ * would hand the composition revenue's own `additive` verdict and print a
+ * percentage as though the monthly rows summed to it.
+ */
+export async function resolveAnswerTarget(
+	// Identity + the value expression it must still match. Typed structurally so
+	// both drill routes can ask with their own source shape.
+	sources: readonly { snippetId?: string | null; selectExpr: string }[],
+): Promise<DrillTarget | null> {
+	if (sources.length === 0) return null;
+	const ids = sources.map((s) => s.snippetId ?? "");
+	if (ids.some((id) => id === "")) return null;
+	const byId = await resolveGroundedConcepts(ids);
+	const concepts: string[] = [];
+	for (const source of sources) {
+		// An unresolvable grounding — hallucinated, retired, retained-failed — is
+		// an input nothing can vouch for, exactly like a fresh step.
+		const grounded = byId.get(source.snippetId as string);
+		if (grounded === undefined) return null;
+		if (
+			!(await sqlEquivalent(
+				`SELECT ${source.selectExpr}`,
+				`SELECT ${grounded.selectExpr}`,
+			))
+		) {
+			return null;
+		}
+		concepts.push(grounded.concept);
+	}
+	// Carriers dedupe by concept — one concept's verdict is read once and would
+	// otherwise be gated twice against itself — but the TARGET KIND does not:
+	// see the branch rule above.
+	const carriers = [...new Set(concepts)];
+	return sources.length === 1
+		? { kind: "measure", key: carriers[0] }
+		: { kind: "composed", carriers };
 }
 
 /**
- * The ANSWER path (DAT-678): the axes of a proven parts-at-source declaration.
- * Same relation→fact→catalog resolution as a metric — an answer's dimensions are
- * found the same way, not by a weaker rule — but the time grain is ALWAYS
- * withheld: an ad-hoc answer concept is not a target the engine has classified,
- * so no `metric_axis_additivity` row exists to read and there is nothing to bucket
- * time by honestly. The date axis stays available as a raw slice.
+ * The ANSWER path (DAT-678, resolution one-homed in DAT-671 R2): the axes of a
+ * proven parts-at-source declaration. Same relation→fact→catalog resolution as a
+ * metric — an answer's dimensions are found the same way, not by a weaker rule —
+ * and since R2 the same VERDICT resolution too.
  *
- * The relation is reduced to its bare name FIRST (DAT-671). This is the third
- * door onto that reduction and the one that was missing: the METRIC path above
- * gets bare relations for free (they come out of `sqlRelations`, DuckDB's own
- * parser, which yields the bare last segment), but an answer's relations are
- * MODEL-declared and arrive as `lake.<layer>.<name>` — the spelling the prompt
- * tells the model to use. `resolveAxesForSources` keys a plain string Map on
- * `current_enriched_views.view_name`, which is bare, so a qualified spelling
- * missed and the miss was reported as "reads relations outside the current
- * analysis — likely a stale snippet from an earlier run": a false accusation
- * about data lineage for what is only a format mismatch. Reducing here means
- * the stale-snippet reason is only ever given when the relation really is
- * unknown.
+ * That last part is the fix. This path used to pass `{target: null}`
+ * unconditionally, one call away from the resolver the node path uses, so it
+ * withheld the time grain for EVERY answer while telling the practitioner the
+ * engine had not classified the concept — which was false whenever the answer
+ * reused a classified one. The withhold now happens for the stated reason and
+ * only then: no identity, no classified concept, no grain (J8's journey).
  *
- * `baseSql` (DAT-671, optional): the answer's own BASE statement — the
- * `DrillAxesRequest.partsSources` variant's `baseSql` field, `state.sql` in
- * answer-result.tsx (the ORIGINAL undrilled query, not `shownSql`, which
- * tracks whatever's currently displayed) — used ONLY to grey a candidate axis
- * that already breaks out THIS exact result, via `existingIdentifierColumns`'s
- * structural read. In practice this wire is near-dead on the live answer
- * canvas today: `proveAnswerSource` proves a SCALAR subquery, so an unproven
- * answer's `state.sql` is single-row and essentially never carries a naming
- * GROUP BY of its own — but the wire costs nothing to keep, and a wider proof
- * shape (a proven row-set answer) would make it fire for real. Absent →
- * nothing greyed by this rule (never a guess).
+ * The relation is reduced to its bare name FIRST (DAT-671) — see
+ * `bareRelationName`, whose home is the composer's parts module and which every
+ * ingest boundary now goes through.
+ *
+ * `baseSql` (optional): the answer's own BASE statement — `state.sql` in
+ * answer-result.tsx (the ORIGINAL undrilled query, not `shownSql`, which tracks
+ * whatever's currently displayed) — used ONLY to grey a candidate axis that
+ * already breaks out THIS exact result, via `existingIdentifierColumns`'s
+ * structural read. `steps` (optional) greys the same way for the drill the grid
+ * has ALREADY applied. Both absent → nothing greyed by this rule (never a
+ * guess).
  */
 export async function resolveAnswerDrillAxes(
-	sources: AxisSource[],
+	sources: AnswerAxisSource[],
 	baseSql?: string,
+	steps?: readonly AppliedStep[],
 ): Promise<DrillAxesResult> {
 	const reduced = sources.map((s) => ({
 		...s,
@@ -1334,16 +1658,28 @@ export async function resolveAnswerDrillAxes(
 		// and the "outside the current analysis" reason is then the true one.
 		relation: bareRelationName(s.relation) ?? s.relation,
 	}));
+	const resolved = await resolveAxesForSources(reduced);
+	// The identity read costs a query, so it only runs when there are axes for a
+	// verdict to gate.
+	const target =
+		resolved.axes.length > 0 ? await resolveAnswerTarget(sources) : null;
 	const result = gateAxes(
-		await resolveAxesForSources(reduced),
-		{ target: null, carriers: new Map() },
-		"This answer computes an ad-hoc concept the engine has not classified for additivity — time-grain drill withheld; the date is still available as a raw slice.",
+		resolved,
+		target === null
+			? { target: null, carriers: new Map() }
+			: await resolveVerdicts(target),
+		UNCLASSIFIED_ANSWER_WITHHOLD,
 	);
-	// DAT-671: grey any axis that already breaks out the answer's own BASE
-	// statement — a structural, schema/name-only read (see
-	// markAlreadyInResult); no base-SQL signal or an empty axis list means
-	// nothing to determine.
-	if (result.axes.length === 0 || baseSql === undefined) return result;
-	const existing = await existingIdentifierColumns(baseSql);
-	return { ...result, axes: markAlreadyInResult(result.axes, existing) };
+	// Grey any axis that already breaks out this result — the answer's own base
+	// statement (a structural, schema/name-only read) and the drill stack the
+	// grid is already showing, both through the shared `alreadyInResult`. No
+	// signal means nothing to determine.
+	if (result.axes.length === 0) return result;
+	return {
+		...result,
+		axes: markAlreadyInResult(
+			result.axes,
+			await alreadyInResult(baseSql, steps),
+		),
+	};
 }

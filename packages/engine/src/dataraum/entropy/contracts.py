@@ -475,6 +475,7 @@ def evaluate_contract(
 
             label = get_dimension_label(dimension)
             col_list = ", ".join(affected[:5])
+            extra = f" (+{len(affected) - 5} more)" if len(affected) > 5 else ""
             violation = Violation(
                 violation_type="dimension",
                 severity=severity,
@@ -484,7 +485,7 @@ def evaluate_contract(
                 details=(
                     f"{label} ({actual_score:.2f}/{max_score:.2f}) — "
                     f"too uncertain for {contract.display_name}. "
-                    f"Affected: {col_list}"
+                    f"Affected: {col_list}{extra}"
                 ),
                 affected_columns=affected,
             )
@@ -505,6 +506,7 @@ def evaluate_contract(
             )
             label = get_dimension_label(dimension)
             col_list = ", ".join(affected[:5])
+            extra = f" (+{len(affected) - 5} more)" if len(affected) > 5 else ""
             warnings.append(
                 Violation(
                     violation_type="dimension",
@@ -514,7 +516,7 @@ def evaluate_contract(
                     actual=actual_score,
                     details=(
                         f"{label} approaching limit ({actual_score:.2f}/{max_score:.2f}) "
-                        f"for {contract.display_name}. Affected: {col_list}"
+                        f"for {contract.display_name}. Affected: {col_list}{extra}"
                     ),
                     affected_columns=affected,
                 )

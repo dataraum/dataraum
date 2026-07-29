@@ -54,7 +54,7 @@ import {
 	TextInput,
 	Tooltip,
 } from "@mantine/core";
-import { useMutation, useQuery } from "@tanstack/react-query";
+import { keepPreviousData, useMutation, useQuery } from "@tanstack/react-query";
 import {
 	Check,
 	ChevronDown,
@@ -65,6 +65,7 @@ import {
 } from "lucide-react";
 import { type ReactNode, useEffect, useMemo, useRef, useState } from "react";
 import type { ChartConfig } from "#/charts/chart-config";
+import { useChartData } from "#/charts/use-chart-data";
 import {
 	DRILL_GUIDANCE_TIMEOUT_MS,
 	type DrillAxesRequest,
@@ -92,7 +93,18 @@ import { WindowedGrid } from "#/ui/cockpit/widgets/result-grid";
 type SqlParams = (string | number | boolean | null)[];
 
 type ComposeResponse =
-	| { ok: true; sql: string; params: SqlParams }
+	| {
+			ok: true;
+			sql: string;
+			params: SqlParams;
+			/** The UNDRILLED scalar, projected with its operand components — the
+			 *  footer row's statement. Served by the parts path on every
+			 *  composition (an answer grid has no open call) and by the node path
+			 *  on its open one, which the analyse overlay reads for itself and
+			 *  hands back as `footerCells`. Absent when the composition has no
+			 *  honest total to show. */
+			totals?: { sql: string };
+	  }
 	| { ok: false; reason: string };
 
 async function postJson<T>(
@@ -378,6 +390,13 @@ export function DrillableGrid({
 		sql: string;
 		params: SqlParams;
 	} | null>(null);
+	// The footer statement the LAST accepted composition served (DAT-671 R2).
+	// Kept beside `composed` because it belongs to the same response: a drill
+	// that was accepted is a drill whose undrilled total is still the honest
+	// anchor for what is now on screen.
+	const [composedTotalsSql, setComposedTotalsSql] = useState<string | null>(
+		null,
+	);
 	const [refusal, setRefusal] = useState<string | null>(null);
 	// A REHYDRATE-specific notice (DAT-676), distinct from `refusal`: a live
 	// apply's refusal is the user's OWN action failing right now (dismissable,
@@ -386,10 +405,34 @@ export function DrillableGrid({
 	// this says why, once, on mount.
 	const [rehydrateNotice, setRehydrateNotice] = useState<string | null>(null);
 
+	// The axes request CARRIES THE DRILL STACK, on EVERY compose path (DAT-671
+	// R2, widened to all three in R5). Without it the server cannot know what
+	// this grid has already sliced by, so an axis the practitioner just used
+	// comes back offered — and used to be greyed here, client-side, with no
+	// reason text and no tooltip: a dead menu item explaining nothing. Sending
+	// the steps makes "still worth offering?" ONE server-side answer WITH its
+	// reason, which is what let the local grey-out go. It also re-keys the query
+	// per drill, which is the point: the menu is drill-dependent.
+	// Derived during render, not memoized: `queryKey` is hashed BY VALUE, so
+	// object identity buys nothing here (React idiom rule 1 + rule 6 — a
+	// `useMemo` has to earn its line).
+	const resolvedAxesRequest =
+		steps.length > 0 ? { ...axesRequest, steps } : axesRequest;
 	const axesQuery = useQuery({
-		queryKey: ["drill-axes", axesRequest],
-		queryFn: () => postJson<DrillAxesResult>("/api/drill/axes", axesRequest),
+		queryKey: ["drill-axes", resolvedAxesRequest],
+		queryFn: () =>
+			postJson<DrillAxesResult>("/api/drill/axes", resolvedAxesRequest),
 		staleTime: 60_000,
+		// The key now changes on every committed drill (the request carries the
+		// steps), so without this the menu and the ACTIVE STEP CHIPS would blank
+		// on each apply: a fresh key resolves to `data: undefined`, `axes` falls
+		// to `[]`, and a temporal slice's grain chip — which reads its axis out of
+		// this same answer — would flip to a plain pill and back on every slice.
+		// Keeping the previous answer in place makes the refetch invisible; the
+		// greying it will carry lands a metadata round-trip later, and a stale
+		// item clicked inside that window composes a redundant slice that the
+		// compose endpoints refuse out loud rather than anything silent.
+		placeholderData: keepPreviousData,
 	});
 	const axes = axesQuery.data?.axes ?? [];
 	const axisByColumn = useMemo(
@@ -454,6 +497,12 @@ export function DrillableGrid({
 						column: a.column,
 						sliceType: a.sliceType,
 					})),
+					// What the menu actually offered (DAT-671 R5). The cap above is
+					// invisible from the server side — the route schema rejects an
+					// over-cap payload, so it can never count what it did not get — and
+					// this is the only layer that knows. Sent so the model is TOLD it is
+					// seeing a subset rather than left to assume it is not.
+					totalAxes: enabledAxes.length,
 				},
 				controller.signal,
 			).finally(() => clearTimeout(timer));
@@ -526,6 +575,7 @@ export function DrillableGrid({
 				const nextPinCount = candidate.filter((s) => s.kind === "pin").length;
 				setSteps(candidate);
 				setComposed({ sql: result.sql, params: result.params });
+				setComposedTotalsSql(result.totals?.sql ?? null);
 				setRefusal(null);
 				onStepsChange?.(candidate, {
 					sql: result.sql,
@@ -590,6 +640,7 @@ export function DrillableGrid({
 			if (result.ok) {
 				setSteps(initialSteps);
 				setComposed({ sql: result.sql, params: result.params });
+				setComposedTotalsSql(result.totals?.sql ?? null);
 				onStepsChange?.(initialSteps, {
 					sql: result.sql,
 					params: result.params,
@@ -615,6 +666,7 @@ export function DrillableGrid({
 			// still-in-flight compose so it can't resurrect the cleared drill.
 			setSteps([]);
 			setComposed(null);
+			setComposedTotalsSql(null);
 			setRefusal(null);
 			onStepsChange?.([], { sql, params: baseParams });
 			onRowHover?.(null);
@@ -632,7 +684,6 @@ export function DrillableGrid({
 	);
 
 	const activeSlices = steps.filter((s) => s.kind === "slice");
-	const slicedColumns = new Set(activeSlices.map((s) => s.column));
 
 	// Pin the clicked grouped row: one pin per active slice dimension, from the
 	// row's cell values — each pin FREEZES its slice's current grain (pin ≡ the
@@ -663,19 +714,43 @@ export function DrillableGrid({
 				}
 			: undefined;
 
-	// Grain is a NODE-path capability. composeNodeQuery can bucket for the answer
-	// path too, but nothing may: time bucketing is only honest under an
-	// additivity verdict, and an answer's ad-hoc concept has none — so the answer
-	// axes resolver withholds the grain and `/api/drill/parts` refuses a grained
-	// step, exactly like tier A. On both of those paths a temporal axis slices
-	// raw and no grain control renders.
-	const grainable = source?.kind === "node";
+	// Whether an axis may be BUCKETED is entirely the axis's own business:
+	// `axis.temporal !== null` and nothing else (DAT-671 R5). There is no path
+	// gate left here. The resolver withholds `temporal` — with a reason on the
+	// axis — unless the data licenses the grain, and it does that on all three
+	// paths through one shared gate: a node or an answer needs the engine's
+	// verdict for its target, and tier A has no identity to key a verdict on at
+	// all, so its every temporal axis arrives already stripped. `/api/drill/
+	// compose`'s strict step schema is the structural backstop underneath.
+	//
+	// What used to stand here was `grainable = source !== undefined` — a PATH
+	// gate, and the last one. ADR-0024 decision 2: a capability difference
+	// between compose paths must trace to the data, never to which surface is
+	// asking.
 
-	/** Slice a fresh axis — temporal axes start at the default grain. */
+	/**
+	 * Slice a fresh axis — temporal axes start at the default grain.
+	 *
+	 * IDEMPOTENT PER COLUMN, and that is a local-state invariant, not a
+	 * capability decision (senior review, DAT-671 R5). Whether an axis is worth
+	 * OFFERING is the server's answer and arrives with its reason; but the step
+	 * stack is this component's own data structure, and the step chips key on
+	 * `slice:${column}` precisely because a column can appear at most once. The
+	 * greying now lands one metadata round-trip after a drill commits (the
+	 * request carries the steps, and `keepPreviousData` holds the previous menu
+	 * meanwhile), so within that window the just-sliced item is still clickable
+	 * — and appending blindly would put two identical keys in the chip list and
+	 * leave a remove-by-index click silently deleting only one of them. The
+	 * server-side composers already dedupe by column, so the SQL was never
+	 * wrong; the UI was. A second click on an applied slice is a no-op.
+	 */
 	const slice = (axis: DrillAxis) => {
+		if (steps.some((s) => s.kind === "slice" && s.column === axis.column)) {
+			return;
+		}
 		apply([
 			...steps,
-			grainable && axis.temporal !== null
+			axis.temporal !== null
 				? {
 						kind: "slice",
 						column: axis.column,
@@ -709,11 +784,12 @@ export function DrillableGrid({
 		? axisByColumn.get(lastPin.column)?.hierarchyNext
 		: undefined;
 	// DAT-671: never promote a "Suggested: Descend to X" for an axis that's
-	// simultaneously shown greyed (already-in-result) in the list below —
-	// same filter shape as the existing already-sliced check just beside it.
+	// simultaneously shown greyed in the list below. One condition, because
+	// there is one source of truth: a column this grid has already sliced by
+	// arrives with `disabledReason` set (the request carries the steps), so the
+	// local "is it in my stack?" check that used to sit beside this is gone.
 	const hierarchySuggestion =
 		hierarchyNextColumn &&
-		!slicedColumns.has(hierarchyNextColumn) &&
 		axisByColumn.get(hierarchyNextColumn)?.disabledReason === null
 			? axisByColumn.get(hierarchyNextColumn)
 			: undefined;
@@ -727,7 +803,7 @@ export function DrillableGrid({
 	 *  the same axis must never look like two different things depending on
 	 *  which entry renders it). */
 	const axisRightSection = (axis: DrillAxis): ReactNode =>
-		grainable && axis.temporal !== null ? (
+		axis.temporal !== null ? (
 			<Text size="xs" c="dimmed">
 				{grainName(DEFAULT_TEMPORAL_GRAIN)}
 			</Text>
@@ -785,12 +861,30 @@ export function DrillableGrid({
 		</>
 	);
 
+	// The footer's own row, when the composition served its statement (DAT-671
+	// R2 — the answer path). One bounded query on the shared chart-data cache,
+	// exactly how the analyse overlay fetches the node path's.
+	const totalsQuery = useChartData(
+		composedTotalsSql ?? "",
+		[],
+		composedTotalsSql !== null,
+	);
+
 	// The total row anchors a DRILLED view; the undrilled grid IS the scalar, so
 	// a footer there would duplicate the single row. A recomputed value (ratio,
 	// average) PRINTS its real total — it is the formula over the carrier totals
 	// beside it, the same number the header shows — and the label below says so
 	// (DAT-857; lead ruling 2026-07-29 retired the dash mask).
-	const footerRow = steps.length > 0 ? footerCells : undefined;
+	//
+	// A caller-supplied row WINS: the analyse overlay reads the node path's open
+	// call for its own equation header and hands the same row down, so honouring
+	// its copy keeps the header and the footer showing one number rather than two
+	// fetches of it.
+	const footerRow =
+		steps.length > 0
+			? (footerCells ??
+				(totalsQuery.data?.rows[0] as Record<string, Json | null> | undefined))
+			: undefined;
 	const recomputedTotal =
 		steps.length > 0 &&
 		totalIsRecomputed(steps, axes, axesQuery.data?.reconciles);
@@ -835,9 +929,7 @@ export function DrillableGrid({
 						const item = (
 							<Menu.Item
 								key={axis.column}
-								disabled={
-									slicedColumns.has(axis.column) || axis.disabledReason !== null
-								}
+								disabled={axis.disabledReason !== null}
 								onClick={() => slice(axis)}
 								rightSection={axisRightSection(axis)}
 								data-testid={`drill-axis-${axis.column}`}
@@ -945,12 +1037,7 @@ export function DrillableGrid({
 			{steps.map((step, i) => {
 				const axis =
 					step.kind === "slice" ? axisByColumn.get(step.column) : undefined;
-				if (
-					grainable &&
-					step.kind === "slice" &&
-					axis &&
-					axis.temporal !== null
-				) {
+				if (step.kind === "slice" && axis && axis.temporal !== null) {
 					// A temporal slice's chip IS the grain control.
 					return (
 						<GrainMenu

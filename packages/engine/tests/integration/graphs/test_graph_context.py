@@ -124,6 +124,70 @@ class TestTraversalCore:
         assert "sn_nul" not in served_snippets
 
 
+class TestConceptAdditivity:
+    """has_additivity read live (DAT-671 R4): the drill's gate, in the author's context.
+
+    The seed carries the shape that matters: ``revenue`` (an active measure
+    concept) with a categorical class row, a time class row, and a concrete
+    ``period`` refinement carrying an observed cadence — plus ``mk_margin`` and
+    ``mk_unknown``, which are METRIC targets keyed by ``graph_id`` and therefore
+    have no concept to hang an edge from.
+    """
+
+    def test_measure_verdicts_reach_the_concept_through_the_edge(
+        self, ctx: GraphExecutionContext
+    ) -> None:
+        rev = _concept(ctx, "revenue")
+
+        # Class row before its refinement — a concrete axis REFINES the class
+        # verdict, so reading the refinement first inverts the relationship.
+        assert [(a.axis_kind, a.axis_key) for a in rev.additivity] == [
+            ("categorical", "*"),
+            ("time", "*"),
+            ("time", "period"),
+        ]
+        categorical, time_class, time_period = rev.additivity
+        assert (categorical.status, categorical.verdict) == ("classified", "additive")
+        assert categorical.reason is None
+        assert (time_class.verdict, time_class.reason) == ("semi_additive", "stock")
+        assert time_period.bucket_grain == "month"
+
+    def test_metric_targets_never_reach_a_concept(self, ctx: GraphExecutionContext) -> None:
+        """A ``metric`` target keys on a formula ``graph_id`` with no concept
+        vertex, so ``og_has_additivity`` cannot speak for it — and this document
+        has no metric block to render one into. The absence is by construction,
+        and pinned so a later widening of the edge is a deliberate act."""
+        served = {(c.name, a.axis_key) for c in ctx.concepts for a in c.additivity}
+        assert all(name not in ("mk_margin", "mk_unknown") for name, _ in served)
+        assert all(c.additivity == [] for c in ctx.concepts if c.name != "revenue")
+
+    def test_the_verdicts_are_rendered_into_the_served_document(
+        self, ctx: GraphExecutionContext
+    ) -> None:
+        """Reaching the dataclass is not reaching the AGENT — the grounding
+        author reads the rendered document, which is the whole point of R4."""
+        from dataraum.graphs.context_format import format_served_context
+
+        out = format_served_context(ctx)
+
+        assert "aggregation (last promoted run):" in out
+        assert "by category — additive" in out
+        assert (
+            "over time — semi_additive: sums a point-in-time balance, so adding period "
+            "buckets double-counts" in out
+        )
+        # WHOLE line, not a substring: the seed's `period` row repeats its class
+        # row's verdict, so a substring check is satisfied by the un-elided line
+        # too and would pass against a broken inheritance rule. This is the only
+        # test driving the real MATCH → fold → render path, so it has to pin the
+        # rendered form exactly.
+        assert (
+            '    - on "period" (time) — semi_additive; finest bucket the data supports: month'
+            in out.splitlines()
+        )
+        assert out.count("sums a point-in-time balance") == 1
+
+
 class TestConceptEdges:
     """part_of / disjoint_with served from og_concept_edges."""
 
@@ -230,6 +294,73 @@ class TestStructuralEdges:
         """derived_from edges attach the view's dimension base TABLES."""
         ev = next(v for v in ctx.enriched_views if v.view_name == "enriched_journal")
         assert ev.dimension_tables == ["accounts"]
+
+    def test_time_axes_are_served_from_the_temporal_coverage_edge(
+        self, ctx: GraphExecutionContext
+    ) -> None:
+        """A relation's time axes come from the graph edge, whole (DAT-671 R6).
+
+        Role, aspect, the authored note, the observed window/grain AND the worst
+        discontinuity all ride ONE relation now — the assembly used to iterate the
+        raw ``table_entities.time_columns`` JSON and look each name up in the
+        separately-read column list, which found nothing for an axis living only
+        on the enriched layer (DAT-866).
+        """
+        t1 = next(t for t in ctx.tables if t.table_name == "journal")
+        axes = {a.column_name: a for a in t1.time_axes}
+        assert set(axes) == {
+            "txn_date",
+            "created_date",
+            "due_date",
+            "account_id__open_date",
+            "account_id__close_date",
+            "orphaned__date",
+        }
+        # The declared anchor sorts first, then the remaining EVENT axes, then the
+        # attribute dates — the order the served document reads them in.
+        assert [a.column_name for a in t1.time_axes][:2] == ["txn_date", "created_date"]
+
+        txn = axes["txn_date"]
+        assert (txn.role, txn.aspect, txn.is_anchor, txn.note) == ("event", "txn", True, "x")
+        assert txn.detected_granularity == "month"
+        assert txn.span_days == 334
+        assert txn.largest_gap_days is None  # a complete series has no worst gap
+
+        # The widening: the worst discontinuity now reaches the author.
+        created = axes["created_date"]
+        assert (created.role, created.is_anchor) == ("event", False)
+        assert created.detected_granularity == "day"
+        assert created.largest_gap_days == 5
+
+        # An axis with no temporal profile keeps its edge with NULL observations —
+        # absence falls loud, never a fabricated window.
+        due = axes["due_date"]
+        assert due.role == "attribute"
+        assert (due.detected_granularity, due.span_days, due.largest_gap_days) == (None, None, None)
+
+        # DAT-866: the enriched-only axis is served at all — the exact case the old
+        # column-list lookup silently dropped.
+        assert axes["account_id__open_date"].detected_granularity == "year"
+        # `orphaned__date` rides the set assertion only: it exists to prove the
+        # edge survives a dangling dim reference, and its properties are pinned
+        # where that behaviour lives (tests/integration/storage/test_property_graph.py).
+
+    def test_time_axes_reach_the_served_document(self, ctx: GraphExecutionContext) -> None:
+        """The graph-served axes have to reach the PROMPT — EVENT axes only, with
+        the gap warning the agent needs before doing period-over-period work."""
+        from dataraum.graphs.context_format import format_served_context
+
+        doc = format_served_context(ctx)
+        rendered = [line for line in doc.splitlines() if "**Time column**" in line]
+        assert len(rendered) == 1, rendered  # both event axes ride ONE meta line
+        line = rendered[0]
+        assert "**Time column**: txn_date (by txn) — month" in line
+        assert "334d span" in line
+        assert "**Time column**: created_date (by created) — day" in line
+        assert "largest gap 5d" in line, "the worst discontinuity reaches the author"
+        # Attribute dates are normal columns, never presented as a trend lens.
+        assert "**Time column**: due_date" not in doc
+        assert "**Time column**: account_id__open_date" not in doc
 
 
 class TestGraphUnreachable:

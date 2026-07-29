@@ -1,22 +1,25 @@
-// `probe` — read-only SQL against an external database source via DuckDB
-// ATTACH (READ_ONLY), cockpit-side (DAT-367, re-homed from the engine's
+// Read-only SQL against an external database source via DuckDB ATTACH
+// (READ_ONLY), cockpit-side (DAT-367, re-homed from the engine's
 // `sources/backends.py`).
 //
-// The agent uses `probe` to look at a configured DB source BEFORE materializing
-// it into the lake — schema sniffing, sample reads, sanity SELECTs. Credentials
-// are resolved by source name (`resolveCredential`); the URL is a SECRET and is
-// never echoed back.
+// A probe looks at a configured DB source BEFORE materializing it into the lake
+// — schema sniffing, sample reads, sanity SELECTs. Credentials are resolved by
+// source name (`resolveCredential`); the URL is a SECRET and is never echoed
+// back. Two live entry points: `openProbeConnection` (the raw connection, which
+// `/api/probe-sql` streams a full result from) and `probeDescribe` (columns + a
+// bounded sample, which stages a query for `frame`). A third — `probe()`,
+// materializing a bounded result for the agent — was deleted with its only
+// caller, the retired `connect` database branch (DAT-671 R6).
 //
-// Isolation: probe opens its OWN throwaway in-memory DuckDB connection per call
-// and DETACHes/closes in a finally. It never touches the long-lived lake reader
-// connection, so an external ATTACH can't leak into lake-catalog state.
+// Isolation: a probe opens its OWN throwaway in-memory DuckDB connection per
+// call and DETACHes/closes in a finally. It never touches the long-lived lake
+// reader connection, so an external ATTACH can't leak into lake-catalog state.
 
 import { type DuckDBConnection, DuckDBInstance } from "@duckdb/node-api";
 
 import { config } from "../config";
 import { resolveCredential } from "./credentials";
 import { clampRowLimit } from "./limit";
-import type { QueryResult } from "./query-result";
 import { readerToResult } from "./query-result";
 import { escapeSqlLiteral } from "./sql-escape";
 
@@ -179,8 +182,7 @@ export interface ProbeSchema {
  * query) plus a bounded sample, on the raw probe connection. This is the
  * query analog of the file path's `DESCRIBE SELECT * FROM read_*(...)` sniff
  * (connect.ts), the schema source for staging a probed query into `frame`
- * (DAT-594). `probe()` wraps SQL in a `LIMIT` subquery so it cannot DESCRIBE,
- * so this opens its own connection and runs DESCRIBE directly.
+ * (DAT-594).
  *
  * Columns + rows only; the credential-bearing URL is redacted from any error.
  */
@@ -189,7 +191,7 @@ export async function probeDescribe(input: ProbeInput): Promise<ProbeSchema> {
 	const limit = clampRowLimit(input.limit);
 	try {
 		// DESCRIBE the UNWRAPPED query — DuckDB returns one row per output column
-		// (column_name, column_type, null, …). Unlike probe(), no LIMIT subquery:
+		// (column_name, column_type, null, …). No LIMIT subquery around it:
 		// DESCRIBE needs the bare SELECT to introspect its projection.
 		const describe = readerToResult(
 			await conn.runAndReadAll(`DESCRIBE SELECT * FROM (${input.sql})`),
@@ -208,35 +210,6 @@ export async function probeDescribe(input: ProbeInput): Promise<ProbeSchema> {
 		const raw = err instanceof Error ? err.message : String(err);
 		throw new Error(
 			`Describe of source '${input.source_name}' (${input.backend.toLowerCase()}) failed: ${redact(raw)}`,
-		);
-	} finally {
-		dispose();
-	}
-}
-
-/**
- * Run read-only SQL against an external database source and MATERIALIZE a bounded
- * sample — the AGENT path (the LLM must never get an unbounded result dumped into
- * context; the full result for the human grid streams via `/api/probe-sql`).
- *
- * The returned {@link QueryResult} contains only column metadata + JSON-safe rows;
- * the connection URL is never included.
- */
-export async function probe(input: ProbeInput): Promise<QueryResult> {
-	const { conn, dispose, redact } = await openProbeConnection(input);
-	const limit = clampRowLimit(input.limit);
-	try {
-		// Wrap the user SQL in a subquery + LIMIT so a probe can never pull an
-		// unbounded result into the chat context. READ_ONLY already blocks writes
-		// at the engine level.
-		const reader = await conn.runAndReadAll(
-			`SELECT * FROM (${input.sql}) AS _probe LIMIT ${limit}`,
-		);
-		return readerToResult(reader);
-	} catch (err) {
-		const raw = err instanceof Error ? err.message : String(err);
-		throw new Error(
-			`Probe of source '${input.source_name}' (${input.backend.toLowerCase()}) failed: ${redact(raw)}`,
 		);
 	} finally {
 		dispose();

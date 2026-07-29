@@ -30,9 +30,9 @@ iterates. React components never reach across to the engine directly — tools a
 the only layer that touches engine state.
 
 The interactive DuckDB read verbs are **cockpit-owned** (DAT-367) — there is no
-HTTP round-trip to the engine for them. `run_sql` / `probe` are thin LLM-facing
-wrappers in `tools/`; the connection lifecycle + query logic live in
-`src/duckdb/` (neo driver `@duckdb/node-api`):
+HTTP round-trip to the engine for them. `run_sql` is a thin LLM-facing wrapper
+in `tools/`; the connection lifecycle + query logic live in `src/duckdb/` (neo
+driver `@duckdb/node-api`):
 
 - `src/duckdb/lake.ts` — one lazily-opened, process-wide DuckDB **instance** that
   ATTACHes the engine's DuckLake catalog **READ_ONLY** once (ATTACH/extensions/
@@ -41,11 +41,16 @@ wrappers in `tools/`; the connection lifecycle + query logic live in
   reads (a report page streams several charts at once) each need their own. Use
   `withLakeConnection(fn)` (opens + closes for you) for read-then-return calls, or
   `getLakeConnection()` when you must own the lifecycle yourself (the streaming
-  grid route). Reusable by any read verb and the `connect` schema-sniff (DAT-381).
+  grid route). Reusable by any read verb.
 - `src/duckdb/run-sql.ts` — `runSql` over the lake (`lake.typed.*`, etc.).
-- `src/duckdb/probe.ts` — `probe` against an external DB source via a throwaway
-  READ_ONLY ATTACH; credentials resolved by source name in
-  `src/duckdb/credentials.ts` (`DATARAUM_<NAME>_URL`, re-homed from the engine).
+- `src/duckdb/probe.ts` — reads against an external DB source via a throwaway
+  READ_ONLY ATTACH (`openProbeConnection` for the streaming probe route,
+  `probeDescribe` for staging a query into `frame`); credentials resolved by
+  source name in `src/duckdb/credentials.ts` (`DATARAUM_<NAME>_URL`, re-homed
+  from the engine).
+- `src/duckdb/connect.ts` — `sniffFileSchema`: DESCRIBE + a bounded sample of an
+  `s3://` object in the configured bucket, behind the DAT-386 path gate. Its
+  database twin was deleted unwired (DAT-671 R6, ADR-0024 decision 3).
 - `src/duckdb/query-result.ts` — shared JSON-safe `{columns, rows, rowCount}`
   result shape (neo `getRowObjectsJson()`; not Arrow IPC — see that file).
 
@@ -85,9 +90,9 @@ export const fooTool = toolDefinition({
   to another tool's internal helpers.
 - **No openapi-fetch.** Pre-pivot the cockpit consumed a generated REST
   client; that surface (and the `codegen` script) retired in DAT-339 Phase 0c.
-  The DuckDB read verbs (`run_sql`, `probe`) are cockpit-owned (DAT-367,
-  `src/duckdb/`); metadata reads go directly via the Drizzle introspected
-  schema. No HTTP to the engine for reads.
+  The DuckDB read verbs (`run_sql`, and the probe route's own reads) are
+  cockpit-owned (DAT-367, `src/duckdb/`); metadata reads go directly via the
+  Drizzle introspected schema. No HTTP to the engine for reads.
 
 ## Why an explicit registry, not autodiscovery?
 

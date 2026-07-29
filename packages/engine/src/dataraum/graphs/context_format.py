@@ -12,9 +12,23 @@ from __future__ import annotations
 from typing import TYPE_CHECKING, Any
 
 from dataraum.core.logging import get_logger
+from dataraum.graphs.additivity import (
+    AVERAGE,
+    DISTINCT_COUNT,
+    MIN_MAX,
+    RATIO,
+    SNAPSHOT_COUNT,
+    STOCK,
+    AbstainReason,
+    AdditivityStatus,
+    AxisKind,
+    AxisVerdict,
+)
+from dataraum.graphs.additivity_db_models import AXIS_KEY_ALL
 from dataraum.graphs.context_models import (
     _NON_CATEGORICAL_ROLES,
     ColumnContext,
+    ConceptAdditivity,
     ConceptReconciliation,
     GraphExecutionContext,
     GroundingContext,
@@ -35,8 +49,10 @@ logger = get_logger(__name__)
 def format_served_context(
     context: GraphExecutionContext,
     source_name: str = "dataset",
+    *,
+    for_grounding: bool = True,
 ) -> str:
-    """Render the served context for the grounding prompt (``{rich_context}``).
+    """Render the served context for its two readers.
 
     Graph structure served AS STRUCTURE — the concept graph (definitions,
     part_of/disjoint/reconciles edges, groundings with their used columns), FK
@@ -44,9 +60,22 @@ def format_served_context(
     sections with no graph element yet: value sets, drivers, business
     processes, validation results (conventions ride their own prompt slot).
 
+    TWO consumers read this document, and they have different jobs (DAT-671):
+    the metric grounding agent (``graphs/agent.py``) AUTHORS an extract, while
+    ``validation_induction`` PROPOSES checks over the same graph. ``for_grounding``
+    gates the four passages that instruct the author — the ``search_values`` drill
+    hint (a tool only the grounding agent holds), the Business Concepts block's
+    "ground each concept / reuse a prior grounding" imperatives, and the
+    conformed-dimension "compose one subquery per fact" recipe. Every FACT is
+    served to both readers unchanged; only the instructions differ, because an
+    imperative aimed at one author silently becomes a rule for the other. The
+    induction passes ``for_grounding=False``.
+
     Args:
         context: GraphExecutionContext from build_execution_context()
         source_name: Human-readable name for the data source
+        for_grounding: Whether the reader is the extract-authoring agent. False
+            drops the four author-directed passages; the facts are unaffected.
 
     Returns:
         Formatted markdown metadata document
@@ -63,7 +92,7 @@ def format_served_context(
     _append_reporting_calendar(lines, context)
 
     # --- Business Concepts (the traversal core, DAT-734) ---
-    _append_concepts(lines, context)
+    _append_concepts(lines, context, for_grounding=for_grounding)
 
     # --- Tables ---
     lines.append("## Tables")
@@ -95,30 +124,31 @@ def format_served_context(
         # Event-time axes (DAT-565): the answer agent picks the lens per question,
         # so render each with its granularity/range and one-line note. EVENT-role
         # only (DAT-780) — an attribute date (role='attribute') is a normal column
-        # in the table below, never presented here as a trend/time lens.
-        for tc in table.time_columns:
-            name = tc.get("column")
-            if not name or tc.get("role") != "event":
+        # in the table below, never presented here as a trend/time lens. Every field
+        # rides ONE relation (the graph's temporal_coverage edge, ADR-0024 d1): the
+        # role JSON and the observed profile are resolved there, not cross-referenced
+        # against the column list here — which used to drop any axis living only on
+        # the enriched layer (DAT-866).
+        for axis in table.time_axes:
+            if axis.role != "event":
                 continue
-            time_col = next((c for c in table.columns if c.column_name == name), None)
-            label = f"by {tc['aspect']}" if tc.get("aspect") else None
-            time_info = f"**Time column**: {name}" + (f" ({label})" if label else "")
-            if time_col:
-                time_parts = []
-                if time_col.detected_granularity:
-                    time_parts.append(time_col.detected_granularity)
-                if time_col.min_timestamp and time_col.max_timestamp:
-                    time_parts.append(f"{time_col.min_timestamp} to {time_col.max_timestamp}")
-                if time_col.span_days is not None:
-                    time_parts.append(f"{time_col.span_days:.0f}d span")
-                # Flag a discontinuous axis: a large worst-gap warns the agent the
-                # series isn't a clean continuum for period-over-period work.
-                if time_col.largest_gap_days:
-                    time_parts.append(f"largest gap {time_col.largest_gap_days:.0f}d")
-                if time_parts:
-                    time_info += f" — {', '.join(time_parts)}"
-            if tc.get("note"):
-                time_info += f". {tc['note']}"
+            label = f"by {axis.aspect}" if axis.aspect else None
+            time_info = f"**Time column**: {axis.column_name}" + (f" ({label})" if label else "")
+            time_parts = []
+            if axis.detected_granularity:
+                time_parts.append(axis.detected_granularity)
+            if axis.min_timestamp and axis.max_timestamp:
+                time_parts.append(f"{axis.min_timestamp} to {axis.max_timestamp}")
+            if axis.span_days is not None:
+                time_parts.append(f"{axis.span_days:.0f}d span")
+            # Flag a discontinuous axis: a large worst-gap warns the agent the
+            # series isn't a clean continuum for period-over-period work.
+            if axis.largest_gap_days:
+                time_parts.append(f"largest gap {axis.largest_gap_days:.0f}d")
+            if time_parts:
+                time_info += f" — {', '.join(time_parts)}"
+            if axis.note:
+                time_info += f". {axis.note}"
             meta_parts.append(time_info.rstrip(".") + ".")
         # Recurring identities (DAT-565): would-be foreign keys / cluster keys —
         # the agent uses these for "per <entity>" grouping when writing queries.
@@ -153,7 +183,7 @@ def format_served_context(
 
         # Value sets (DAT-616): complete enumeration of low-card categoricals, so the
         # agent grounds metric predicates in real values rather than guessing a filter.
-        value_sets = _build_value_sets(table)
+        value_sets = _build_value_sets(table, for_grounding=for_grounding)
         if value_sets:
             lines.append("")
             lines.append("**Value sets** (categorical columns — `value (count)`):")
@@ -198,13 +228,21 @@ def format_served_context(
         lines.append("")
         lines.append("## Conformed Dimensions")
         lines.append("")
+        # The middle sentence is the SQL-author's recipe (compose one subquery per
+        # fact); the two around it are facts about which pairs are alignable at all,
+        # which every reader needs.
+        compose = (
+            "Comparing two facts goes through a shared axis, never a direct "
+            "fact-to-fact join: compose one subquery per fact and merge them on the "
+            "shared axis below. "
+            if for_grounding
+            else ""
+        )
         lines.append(
             "Facts sharing a dimension AXIS (same dimension table + attribute) — the "
-            "alignable drill-across surfaces. Comparing two facts goes through a shared "
-            "axis, never a direct fact-to-fact join: compose one subquery per fact and "
-            "merge them on the shared axis below. Only CONFIRMED conformance is listed; "
-            "a pair absent from this list has no legal merge key, and comparing it "
-            "anyway would assert an identity nobody established."
+            f"alignable drill-across surfaces. {compose}Only CONFIRMED conformance is "
+            "listed; a pair absent from this list has no legal merge key, and comparing "
+            "it anyway would assert an identity nobody established."
         )
         for cd in context.conformed_dimensions:
             attr = f".{cd.attribute}" if cd.attribute else ""
@@ -321,12 +359,15 @@ _MONTHS = (
 def _append_reporting_calendar(lines: list[str], context: GraphExecutionContext) -> None:
     """Render the workspace's reporting calendar (DAT-887).
 
-    **Fact only — no instruction.** This document is shared: ``validation_sql`` and
-    ``validation_induction`` render the same served context, and an imperative aimed at
-    the grounding author ("do not filter the period axis") would silently become a rule
-    for authors this binding does not apply to. The instruction's one home is
+    **Fact only — no instruction.** This document has two readers — the metric
+    grounding agent and ``validation_induction`` (NOT ``validation_sql``, which
+    renders its own schema block and never sees this document) — and an imperative
+    aimed at the grounding author ("do not filter the period axis") would silently
+    become a rule for the other. The instruction's one home is
     ``graph_sql_generation.yaml``; what belongs HERE is the fiscal year's start and
-    whether it was declared or assumed, so any consumer can caveat accordingly.
+    whether it was declared or assumed, so either consumer can caveat accordingly.
+    Where an author-directed passage is unavoidable it is gated on
+    ``format_served_context``'s ``for_grounding``, never written as a shared fact.
 
     Absence is rendered as absence (the section is omitted), never as a fabricated
     calendar year.
@@ -350,30 +391,70 @@ def _append_reporting_calendar(lines: list[str], context: GraphExecutionContext)
     lines.append("")
 
 
-def _append_concepts(lines: list[str], context: GraphExecutionContext) -> None:
-    """Append the concept graph (DAT-734): definitions + edges + groundings.
+def _append_concepts(
+    lines: list[str], context: GraphExecutionContext, *, for_grounding: bool = True
+) -> None:
+    """Append the concept graph (DAT-734): definitions + edges + verdicts + groundings.
 
     The traversal core served as structure. Definition surface (description /
     indicators / excludes — the DAT-616 value-grounding aid, incl. traps like
     ``Cost Recovery Income`` being revenue despite "cost") rides each concept;
-    the graph neighbourhood (part_of / disjoint_with / reconciles_with) and the
-    concept's PRIOR GROUNDINGS (relation + filter + value expression + used
-    columns; failures discriminated with the reason) follow as data lines.
+    the graph neighbourhood (part_of / disjoint_with / reconciles_with), the
+    per-axis ADDITIVITY verdicts of the last promoted run (has_additivity,
+    DAT-857/868 — the gate a composed extract is later judged by, so the author
+    sees it while authoring), and the concept's PRIOR GROUNDINGS (relation +
+    filter + value expression + used columns; failures discriminated with the
+    reason) follow as data lines.
+
+    Both run-observed sections — reconciliation and additivity — sit ahead of
+    the groundings they qualify.
+
+    ``for_grounding=False`` drops the two imperatives in the header — "ground each
+    concept in the Value sets" and "reuse a prior grounding's columns/filters".
+    Both address whoever is AUTHORING an extract; a reader proposing validation
+    checks has no extract to ground and no grounding to reuse, so for it the
+    sentences are instructions to do something it is not doing. What a `grounded
+    by` entry IS stays served, because reading the entries is how any consumer
+    learns where a concept is measured.
     """
     if not context.concepts:
         return
 
     lines.append("## Business Concepts")
     lines.append("")
-    lines.append(
-        "Vertical vocabulary with its operating-model graph. Ground each metric concept "
-        "in specific column values from the **Value sets** below — match by meaning, "
-        "honoring `exclude` patterns; do not improvise a substring filter. A `grounded by` "
-        "entry is a PRIOR COMMITTED grounding of that concept — reuse its columns/filters "
-        "for the same concept unless the served evidence says it is wrong; a concept with "
+    header = "Vertical vocabulary with its operating-model graph. "
+    if for_grounding:
+        header += (
+            "Ground each metric concept in specific column values from the **Value sets** "
+            "below — match by meaning, honoring `exclude` patterns; do not improvise a "
+            "substring filter. A `grounded by` entry is a PRIOR COMMITTED grounding of "
+            "that concept — reuse its columns/filters for the same concept unless the "
+            "served evidence says it is wrong; a concept with "
+        )
+    else:
+        header += (
+            "A `grounded by` entry is a PRIOR COMMITTED grounding of that concept — how "
+            "and where it is currently measured. A concept with "
+        )
+    header += (
         "several groundings is measured on several relations, and `reconciles` means those "
         "computations must tie out — each entry states whether the last completed run "
         "actually checked that, and what it observed."
+    )
+    lines.append(header)
+    lines.append("")
+    lines.append(
+        "`aggregation` reports how the last promoted run judged this concept's measurement "
+        "under aggregation, per axis: `additive` (the parts sum to the total), "
+        "`semi_additive` (each bucket is meaningful, their SUM is not), "
+        "`non_additive_recompute` (the value must be recomputed per bucket from its "
+        "carriers), or a named abstention. The unnamed axis is the rule for every axis of "
+        "its kind; a named column refines it. The verdict is DERIVED from the grounding's "
+        "own aggregate and the stock/flow classification of the columns it reads — so it "
+        "follows from how the concept is grounded: an AVG, a COUNT(DISTINCT), an inline "
+        "ratio, or a point-in-time balance each remove an axis this concept can afterwards "
+        "no longer be broken down by. A concept with no `aggregation` entry was not judged "
+        "by the last promoted run; only grounded MEASURE concepts are judged."
     )
     lines.append("")
     for concept in context.concepts:
@@ -411,6 +492,9 @@ def _append_concepts(lines: list[str], context: GraphExecutionContext) -> None:
                 else f"reconciles with: {rec.partner}"
             )
             lines.append(f"  - {subject}{tol} — {_reconciliation_state(rec)}")
+        if concept.additivity:
+            lines.append("  - aggregation (last promoted run):")
+            lines.extend(f"    - {line}" for line in _additivity_lines(concept.additivity))
         healthy = [g for g in concept.groundings if not g.failed]
         failed = [g for g in concept.groundings if g.failed]
         if healthy:
@@ -478,6 +562,126 @@ def _reconciliation_state(rec: ConceptReconciliation) -> str:
     )
 
 
+#: What a non-additive measurement DOES, phrased for the grounding author (the
+#: reader here writes the extract; it is not the drill's refusal text, which is the
+#: cockpit's own wording for a user). Keyed on ``graphs.additivity``'s constants —
+#: that module owns the vocabulary, so a reason it adds later surfaces here as its
+#: RAW token (visible, diagnosable) rather than as a silently dropped clause.
+_ADDITIVITY_REASON: dict[str, str] = {
+    STOCK: "sums a point-in-time balance, so adding period buckets double-counts",
+    SNAPSHOT_COUNT: (
+        "counts over a periodic-snapshot fact, which restates the same population each period"
+    ),
+    RATIO: "combines measures by division, or by a product of measures",
+    AVERAGE: "averages — an average of averages is not the average",
+    DISTINCT_COUNT: "counts distinct values, whose per-slice sets overlap",
+    MIN_MAX: "takes a min/max, which does not sum",
+}
+
+#: Why an axis could not be judged — the typed abstention in words. Same
+#: raw-token fallback, and the same reason for it.
+_ADDITIVITY_ABSTENTION: dict[str, str] = {
+    AbstainReason.UNKNOWN_TEMPORAL.value: (
+        "it aggregates a column with no stock/flow classification"
+    ),
+    AbstainReason.UNKNOWN_AGGREGATE.value: "its aggregate is outside the classifier's doctrine",
+    AbstainReason.UNRESOLVED_GROUNDING.value: "it has no healthy grounding to classify",
+    AbstainReason.RELATION_OUTSIDE_ANALYSIS.value: (
+        "it reads a relation outside the current analysis"
+    ),
+    AbstainReason.MATERIALIZATION_CONFLICT.value: "its stock/flow evidence contradicts itself",
+    AbstainReason.MISSING_EXTRACT.value: (
+        "one of the measures it is built from could not be classified"
+    ),
+    AbstainReason.NO_CATALOGUE_RUN.value: "the workspace had no promoted analysis run",
+    AbstainReason.GRAPH_PARSE_FAILED.value: "its definition could not be parsed",
+}
+
+
+def _additivity_axis_label(axis: ConceptAdditivity) -> str:
+    """Name the axis a verdict governs, class rows in words and refinements by column."""
+    if axis.axis_key != AXIS_KEY_ALL:
+        return f'on "{axis.axis_key}" ({axis.axis_kind})'
+    if axis.axis_kind == AxisKind.TIME.value:
+        return "over time"
+    if axis.axis_kind == AxisKind.CATEGORICAL.value:
+        return "by category"
+    # An axis kind this renderer predates. Name it rather than drop the verdict.
+    return f"over {axis.axis_kind}"
+
+
+def _judgement(axis: ConceptAdditivity) -> tuple[str, str | None, str | None, str | None]:
+    """Everything a verdict SAYS, minus which axis it says it about.
+
+    The one home for "do these two rows carry the same judgement?" — every
+    explanation-bearing field is in it. A partial tuple is the trap: for an
+    ABSTAINED row ``verdict`` and ``reason`` are both ``None`` by the
+    ``AxisAdditivity`` invariant, so any comparison that omits
+    ``abstain_reason`` collapses every abstention onto one value and would
+    report two rows abstaining for DIFFERENT named reasons as identical.
+    """
+    return (axis.status, axis.verdict, axis.reason, axis.abstain_reason)
+
+
+def _additivity_lines(axes: list[ConceptAdditivity]) -> list[str]:
+    """One concept's per-axis verdicts, class rows first, explained once each.
+
+    A concrete axis usually REFINES its class row only by carrying an observed
+    cadence — the resolver writes a per-column time row precisely to state that
+    — so repeating the class row's explanation verbatim underneath it would
+    make the common case mostly duplicated prose. Where a refinement carries
+    the IDENTICAL judgement (:func:`_judgement`) the explanation is therefore
+    written once, on the class row.
+
+    What is never elided is the VERDICT: every line states its own, so a reader
+    resolving most-specific-first (the ``resolveAxisVerdict`` contract, which
+    reads exactly ONE row) still gets the whole answer from the line it lands
+    on. Only the shared prose is inherited, and only upward, to a line the
+    ordering guarantees it has already passed.
+    """
+    class_judgement = {
+        axis.axis_kind: _judgement(axis) for axis in axes if axis.axis_key == AXIS_KEY_ALL
+    }
+    out: list[str] = []
+    for axis in axes:
+        inherits = axis.axis_key != AXIS_KEY_ALL and class_judgement.get(
+            axis.axis_kind
+        ) == _judgement(axis)
+        out.append(_additivity_state(axis, explain=not inherits))
+    return out
+
+
+def _additivity_state(axis: ConceptAdditivity, *, explain: bool = True) -> str:
+    """One (concept × axis) verdict as a line of the served document.
+
+    The distinction the wording holds, mirroring ``_reconciliation_state``: an
+    axis nobody could judge is NOT an axis that fails to sum. An abstention says
+    "not judged" and names why; a classified non-additive verdict names what the
+    measurement does that stops it summing. ``additive`` carries no reason — it
+    reconciles, so there is nothing it fails to do.
+
+    ``explain=False`` drops only the prose clause (see ``_additivity_lines``);
+    the verdict itself always renders.
+    """
+    label = _additivity_axis_label(axis)
+    if axis.status == AdditivityStatus.ABSTAINED.value:
+        if not explain:
+            return f"{label} — not judged"
+        raw = axis.abstain_reason or ""
+        why = _ADDITIVITY_ABSTENTION.get(raw, raw or "no reason was recorded")
+        return f"{label} — not judged: {why}"
+    rendered = f"{label} — {axis.verdict or 'no verdict recorded'}"
+    if explain and axis.verdict != AxisVerdict.ADDITIVE.value and axis.reason:
+        rendered += f": {_ADDITIVITY_REASON.get(axis.reason, axis.reason)}"
+    if axis.bucket_grain:
+        # The cadence the DATA supports — the fact a concrete time row usually
+        # exists to carry. Stated on any verdict that has one: it bounds how
+        # finely the axis can be bucketed at all, independently of whether the
+        # buckets may then be summed.
+        rendered += f"; finest bucket the data supports: {axis.bucket_grain}"
+    return rendered
+
+
 def _format_grounding(g: GroundingContext) -> str:
     """One healthy grounding as ``statement @ relation: select_expr WHERE ...``."""
     label = f"{g.statement} @ {g.relation}" if g.statement else str(g.relation)
@@ -493,7 +697,7 @@ def _format_grounding(g: GroundingContext) -> str:
 _NEAR_CONSTANT_FRAC = 0.9
 
 
-def _build_value_sets(table: TableContext) -> list[str]:
+def _build_value_sets(table: TableContext, *, for_grounding: bool = True) -> list[str]:
     """Render the value enumeration for a table's categorical columns (DAT-621).
 
     The agent grounds a concept in the discriminator VALUES from here, never a guessed
@@ -509,6 +713,12 @@ def _build_value_sets(table: TableContext) -> list[str]:
     - degenerate (one value dominates) → flagged "near-constant", NO value-set — grounding
       on a ~constant flag (e.g. a 99%-true boolean) is silently wrong.
     Only key/measure/time roles are skipped (never partitions).
+
+    The ``search_values`` hint on the high-card branch is the ONE line here that
+    names a tool, and only the grounding agent is given that tool — so
+    ``for_grounding=False`` drops it. The non-enumeration itself is still stated:
+    a reader without the drill must see that the list is incomplete, or it will
+    read the frequency sample as the whole column.
     """
     out: list[str] = []
     for col in table.columns:
@@ -525,9 +735,15 @@ def _build_value_sets(table: TableContext) -> list[str]:
             sample = ", ".join(
                 str(tv.get("value")) for tv in col.top_values[:8] if tv.get("value") is not None
             )
+            # The separator rides the branch: without the drill sentence the
+            # semicolon would dangle straight into "Most frequent".
+            tail = (
+                "; resolve exact values with the search_values tool before filtering."
+                if for_grounding
+                else "."
+            )
             out.append(
-                f"- **{col.column_name}**: {dc} distinct values — NOT enumerated; "
-                f"resolve exact values with the search_values tool before filtering. "
+                f"- **{col.column_name}**: {dc} distinct values — NOT enumerated{tail} "
                 f"Most frequent: {sample}"
             )
             continue

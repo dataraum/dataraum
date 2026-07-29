@@ -98,7 +98,7 @@ def _config() -> MagicMock:
 
 def _agent(provider: MagicMock, renderer: MagicMock | None = None) -> ColumnAnnotationAgent:
     renderer = renderer or MagicMock()
-    renderer.render_split.return_value = ("system prompt", "user prompt", 0.0)
+    renderer.render_split.return_value = ("system prompt", "user prompt")
     return ColumnAnnotationAgent(config=_config(), provider=provider, prompt_renderer=renderer)
 
 
@@ -207,6 +207,38 @@ class TestRunawaySplitRetry:
         assert names == {"orders"}
         assert len(result.warnings) == 1
         assert "retrying the same table" in result.warnings[0]
+
+    @patch("dataraum.analysis.semantic.column_agent.load_workspace_concepts")
+    def test_each_attempt_dumps_under_its_own_key(self, mock_concepts: MagicMock) -> None:
+        """A same-batch retry must not overwrite the first attempt's dump (DAT-890).
+
+        The offline dump path is (label, dump_key, prompt_hash). Retrying the
+        SAME batch renders the SAME prompt, so label and hash both repeat — only
+        ``dump_key`` separates the attempts. Without it the runaway payload the
+        guard exists to expose is overwritten by the clean retry that follows,
+        which is why no DAT-889 response survives in the eval artifacts.
+        """
+        mock_concepts.return_value = _ONTOLOGY
+        provider = MagicMock()
+        provider.get_model_for_tier.return_value = "test-model"
+        provider.converse.side_effect = [
+            _response('{"tables": [{"table_name": "orders"...', stop_reason="max_tokens"),
+            _response(_valid_content("orders")),
+        ]
+
+        agent = _agent(provider)
+        agent.annotate(
+            session=MagicMock(),
+            table_ids=["t1"],
+            ontology="finance",
+            profiles=[_profile("orders", "amount")],
+        )
+
+        keys = [c.args[0].dump_key for c in provider.converse.call_args_list]
+        assert keys == ["column_annotation.a01", "column_annotation.a02"]
+        # The telemetry label stays stable across attempts — only the dump splits.
+        labels = {c.args[0].label for c in provider.converse.call_args_list}
+        assert labels == {"column_annotation"}
 
 
 class TestContentOmissionRetry:

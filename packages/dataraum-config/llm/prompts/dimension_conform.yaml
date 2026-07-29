@@ -7,11 +7,16 @@
 # the class the DAT-757 scorecard assigned to the LLM (K/L cells). Evidence
 # is names + attribute sets + the columns' authored meanings (DAT-769); the
 # judge decides, meanings corroborate — never auto-confirm.
+#
+# v1.0.1 (DAT-671): ROLE no longer asks the judge to "record the shared family".
+# There is nowhere to record it — the output carries `concept_label`, which the
+# schema requires on CONFORM and requires EMPTY on every other verdict — and the
+# consumer treats role and distinct identically (separate axes, no merge edge).
+# The instruction asked for a field the contract forbids and nobody reads.
 
 name: dimension_conform
-version: "1.0.0"
+version: "1.0.1"
 description: Cross-fact conformed-dimension identity + role judgment (DAT-762)
-temperature: 0.1
 
 system_prompt: |
   <role>
@@ -35,7 +40,7 @@ system_prompt: |
   - ROLE — the same concept family, deliberately distinct instances: the
     two exposures play different parts on their facts (an origin and a
     destination, a sender and a receiver, an opening and a closing state).
-    Keep them apart but record the shared family.
+    Keep them apart.
   - DISTINCT — different concepts; the resemblance is superficial (shared
     naming fashion, shared code format, a false friend).
   - ABSTAIN — the evidence does not decide it. Abstaining is correct and

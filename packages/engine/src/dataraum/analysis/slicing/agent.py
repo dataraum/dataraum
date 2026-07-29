@@ -33,6 +33,65 @@ if TYPE_CHECKING:
 
 logger = get_logger(__name__)
 
+# Structural-statistics fields the v5 slicing_analysis prompt explicitly tells
+# the model NOT to judge on (DAT-879: cardinality/distribution balance are
+# MEASURED by score_axis, not eyeballed) — dropped from the PROMPT COPY only
+# (DAT-671 review, second pass). ``distinct_count`` is the one exception: it
+# stays, because it is the DISCLOSURE for the capped ``top_values`` list below
+# (10 samples shown; without distinct_count the capped list reads as the
+# complete set of values rather than a sample of a larger one — the slicing
+# task judges business MEANING and never cites members, so distinct_count
+# alone — not the other four, which the model is told not to use at all — is
+# the honest caveat a judgment-only reader needs). Both fact columns and
+# enriched dim entries carry these (slicing_phase.py's ``col_dict``/
+# ``dim_entry`` merge), and the shared ``context_data["tables"]`` structure
+# keeps ALL FIVE: score_axis's bucket_counts and the pre-filter
+# (``_pre_filter_columns``) read them deterministically.
+_DROPPED_STATS_FIELDS = frozenset({"total_count", "null_count", "null_ratio", "cardinality_ratio"})
+
+
+def _capped_tables_for_prompt(tables: list[dict[str, Any]], *, limit: int) -> list[dict[str, Any]]:
+    """A prompt-safe copy of the table/column inventory, trimmed and capped.
+
+    ``context_data["tables"]`` (built by ``slicing_phase._build_context_data``)
+    is the SAME structure the phase's deterministic post-processing reads
+    AFTER this call returns: ``score_axis``'s ``bucket_counts``, the
+    ``distinct_values`` MEMBERSHIP write, and ``_pre_filter_columns`` all
+    read each column's ``top_values``/``null_ratio``/``cardinality_ratio``/
+    etc. in full to compute a real relevance score, the persisted value-set
+    of every cataloged axis, and the grain-safety filter. Trimming that
+    shared structure in place would silently change those (a semantics
+    change, not a prompt bound) — and would re-introduce exactly the DAT-671
+    defect, since the membership the validation prompt serves is read from
+    it. So only THIS copy, serialized into the prompt, is bounded:
+
+    - each column's ``top_values`` list is capped to ``privacy.max_sample_values``
+      (DAT-671, validated: the slicing task judges business MEANING and its
+      output cites no members, unlike the cycles builder's membership lists)
+      — count only; each value's count/percentage rides along unchanged.
+    - four of the five structural-statistics fields
+      (:data:`_DROPPED_STATS_FIELDS`) are DROPPED entirely (DAT-671 review,
+      second pass): the v5 ``slicing_analysis`` prompt explicitly forbids
+      judging on cardinality/distribution (DAT-879 moved that to the
+      measured ``score_axis``), so shipping them was pure input drift.
+      ``distinct_count`` is KEPT, as the disclosure for the capped
+      ``top_values`` — the model sees "N samples of M distinct", never an
+      undisclosed partial list.
+    """
+    return [
+        {
+            **table,
+            "columns": [
+                {
+                    **{k: v for k, v in col.items() if k not in _DROPPED_STATS_FIELDS},
+                    "top_values": (col.get("top_values") or [])[:limit],
+                }
+                for col in table.get("columns", [])
+            ],
+        }
+        for table in tables
+    ]
+
 
 class SlicingAgent(LLMFeature):
     """LLM-powered slicing analysis agent.
@@ -92,8 +151,15 @@ class SlicingAgent(LLMFeature):
         # Build context for prompt
         constraints = context_data.get("constraints", {})
         tables = context_data.get("tables", [])
+        # DAT-671: tables_json is prompt content — cap each column's served
+        # top_values here, NOT on context_data["tables"] itself (see
+        # _capped_tables_for_prompt's docstring for why the shared structure
+        # must stay uncapped).
+        capped_tables = _capped_tables_for_prompt(
+            tables, limit=self.config.privacy.max_sample_values
+        )
         context = {
-            "tables_json": json.dumps(tables, indent=2),
+            "tables_json": json.dumps(capped_tables, indent=2),
             "num_tables": len(tables),
             "table_names": ", ".join(t["table_name"] for t in tables),
             "max_recommendations": constraints.get("max_recommendations", 6),
@@ -101,9 +167,7 @@ class SlicingAgent(LLMFeature):
 
         # Render prompt with system/user split
         try:
-            system_prompt, user_prompt, temperature = self.renderer.render_split(
-                "slicing_analysis", context
-            )
+            system_prompt, user_prompt = self.renderer.render_split("slicing_analysis", context)
         except Exception as e:
             return Result.fail(f"Failed to render prompt: {e}")
 
@@ -120,7 +184,6 @@ class SlicingAgent(LLMFeature):
             label="slicing_analysis",
             effort=feature_config.effort,
             max_tokens=self.config.limits.max_output_tokens_per_request,
-            temperature=temperature,
             model=model,
         )
 
@@ -187,24 +250,16 @@ class SlicingAgent(LLMFeature):
                 )
                 continue
 
-            # Get distinct values from output or column dict top_values
-            distinct_values = rec.distinct_values
-            if not distinct_values:
-                top_values = col_info.get("top_values", [])
-                distinct_values = [v.get("value", "") for v in top_values]
-
             recommendation = SliceRecommendation(
                 table_id=table_info.get("table_id", ""),
                 table_name=table_name,
                 column_id=col_info.get("column_id", ""),
                 column_name=column_name,
                 slice_interest=rec.interest,
-                distinct_values=distinct_values,
-                # The column's TRUE distinct count, from the profile — not
-                # ``len(distinct_values)``, which is the length of a bounded
-                # echo of values and was persisted as if it were the cardinality
-                # (DAT-879 / DAT-622). None when unprofiled; the writer falls
-                # back to the same profile field either way.
+                # The column's measured COUNT(DISTINCT), from the profile.
+                # None when unprofiled; the writer reads the same profile field
+                # either way. A judgment carries NO value list (DAT-671) — the
+                # membership has one home, the statistical profile.
                 value_count=col_info.get("distinct_count"),
                 reasoning=rec.reasoning,
                 # The output model states every attribute (DAT-807), using "" for

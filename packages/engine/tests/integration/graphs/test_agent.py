@@ -208,7 +208,7 @@ def _agent_over_status_data(*, where: list[str], filters_status: bool) -> GraphA
     mock_config.limits.cache_ttl_seconds = 3600
     mock_config.features.graph_sql_generation = None
     mock_renderer = MagicMock()
-    mock_renderer.render_split.return_value = ("System prompt", "Test prompt", 0.0)
+    mock_renderer.render_split.return_value = ("System prompt", "Test prompt")
     agent = GraphAgent(config=mock_config, provider=MagicMock(), prompt_renderer=mock_renderer)
     agent.provider.get_model_for_tier.return_value = "test-model"
     response = _grounding_response(
@@ -369,6 +369,67 @@ class TestGraphAgentExecution:
         col_names = [c["name"] for c in result["tables"][0]["columns"]]
         assert "id" in col_names
         assert "amount" in col_names
+        # Nothing is withheld on the typed-table branch, so there is nothing to
+        # disclose — an empty disclosure would assert a cut that did not happen.
+        assert "not_listed" not in result
+
+    def test_enriched_branch_discloses_what_it_withholds(self, duckdb_with_data):
+        """DAT-671 R4 (S1): the enriched-only cut is stated, not silent.
+
+        Serving only the enriched views removes every typed fact and dimension
+        table from BOTH the prompt's ``<data_schema>`` block and the contract
+        validator's allow-list (one artifact — see ``_describe_table``). The
+        agent must be told what is missing and how it remains reachable, or it
+        reasons as though the listed relations are the whole database.
+        """
+        from dataraum.graphs.context_models import EnrichedViewContext, TableContext
+        from dataraum.graphs.grounding_validation import schema_tables_from_info
+
+        duckdb_with_data.execute(
+            "CREATE OR REPLACE VIEW enriched_test_data AS SELECT * FROM test_data"
+        )
+        agent = GraphAgent(config=MagicMock(), provider=MagicMock(), prompt_renderer=MagicMock())
+        rich_context = MagicMock()
+        rich_context.tables = [
+            TableContext(table_id="t1", table_name="test_data", duckdb_name="test_data"),
+        ]
+        rich_context.enriched_views = [
+            EnrichedViewContext(view_name="enriched_test_data", fact_table="test_data"),
+        ]
+        context = ExecutionContext(duckdb_conn=duckdb_with_data, rich_context=rich_context)
+
+        result = agent._build_schema_info(context)
+
+        assert [t["table_name"] for t in result["tables"]] == ["enriched_test_data"]
+        assert result["not_listed"]["relations"] == ["test_data"]
+        assert "not valid `relation` values" in result["not_listed"]["note"]
+        # The disclosure is a SIBLING key: the allow-list reads `tables` alone, so
+        # "served relation" still means exactly what it meant. Disclosing the cut
+        # must not quietly widen what a grounding may name.
+        assert schema_tables_from_info(result) == {"enriched_test_data": {"id", "amount"}}
+
+    def test_full_view_coverage_discloses_nothing(self, duckdb_with_data):
+        """No withholding, no disclosure — the note must never become boilerplate."""
+        from dataraum.graphs.context_models import EnrichedViewContext, TableContext
+
+        duckdb_with_data.execute(
+            "CREATE OR REPLACE VIEW enriched_test_data AS SELECT * FROM test_data"
+        )
+        agent = GraphAgent(config=MagicMock(), provider=MagicMock(), prompt_renderer=MagicMock())
+        rich_context = MagicMock()
+        rich_context.tables = [
+            TableContext(
+                table_id="t1",
+                table_name="enriched_test_data",
+                duckdb_name="enriched_test_data",
+            ),
+        ]
+        rich_context.enriched_views = [
+            EnrichedViewContext(view_name="enriched_test_data", fact_table="test_data"),
+        ]
+        context = ExecutionContext(duckdb_conn=duckdb_with_data, rich_context=rich_context)
+
+        assert "not_listed" not in agent._build_schema_info(context)
 
 
 class TestGraphAgentIntegration:
@@ -394,7 +455,7 @@ class TestGraphAgentIntegration:
         mock_config.features.graph_sql_generation = None
 
         mock_renderer = MagicMock()
-        mock_renderer.render_split.return_value = ("System prompt", "Test prompt", 0.0)
+        mock_renderer.render_split.return_value = ("System prompt", "Test prompt")
 
         agent = GraphAgent(
             config=mock_config,
@@ -499,7 +560,7 @@ def _agent_with_parts(
     mock_config.limits.cache_ttl_seconds = 3600
     mock_config.features.graph_sql_generation = None
     mock_renderer = MagicMock()
-    mock_renderer.render_split.return_value = ("System prompt", "Test prompt", 0.0)
+    mock_renderer.render_split.return_value = ("System prompt", "Test prompt")
 
     agent = GraphAgent(config=mock_config, provider=MagicMock(), prompt_renderer=mock_renderer)
     agent.provider.get_model_for_tier.return_value = "test-model"
@@ -1037,7 +1098,7 @@ class TestGraphAgentSnippets:
         mock_config.features.graph_sql_generation = None
 
         mock_renderer = MagicMock()
-        mock_renderer.render_split.return_value = ("System prompt", "Test prompt", 0.0)
+        mock_renderer.render_split.return_value = ("System prompt", "Test prompt")
 
         agent = GraphAgent(
             config=mock_config,
@@ -1093,7 +1154,7 @@ class TestGraphAgentSnippets:
         mock_config.limits.cache_ttl_seconds = 3600
 
         mock_renderer = MagicMock()
-        mock_renderer.render_split.return_value = ("System prompt", "Test prompt", 0.0)
+        mock_renderer.render_split.return_value = ("System prompt", "Test prompt")
 
         # Pre-populate snippet library with a matching snippet
         library = SnippetLibrary(session, workspace_id=baseline_run_id())
@@ -1147,7 +1208,7 @@ class TestGraphAgentSnippets:
         mock_config.limits.cache_ttl_seconds = 3600
 
         mock_renderer = MagicMock()
-        mock_renderer.render_split.return_value = ("System prompt", "Test prompt", 0.0)
+        mock_renderer.render_split.return_value = ("System prompt", "Test prompt")
 
         # Pre-populate snippet
         library = SnippetLibrary(session, workspace_id=baseline_run_id())

@@ -7,7 +7,6 @@ relevant columns and generate cross-table JOINs when needed.
 
 from __future__ import annotations
 
-import json
 import re
 from datetime import UTC, datetime
 from typing import Any
@@ -408,12 +407,17 @@ class ValidationAgent(LLMFeature):
         # ``guidance`` at load) renders as its own explicit sentence alongside any
         # guidance prose — the binder needs the column-identity claim spelled out,
         # not buried in free text.
-        # ``parameters`` carries ONLY the typed tolerance. Both ``ef.table.column``
-        # and ``ef.formula`` are quoted identically — neither is more "the value"
-        # than the other; both are the user's literal words. This is the SECOND
-        # free-text string landing in the ``sql_hints`` prompt slot (renderer.
-        # _render_text does sequential ``{key}`` substitution — see its docstring
-        # for the pre-existing re-inlining risk this widens).
+        # The spec's ``tolerance`` is NOT served (DAT-671): it is the evaluator's
+        # verdict parameter (``deviation <= tolerance``, ADR-0017), applied to the
+        # rows this SQL returns — never inside them. The prompt's output contract
+        # already forbids what a served threshold invites ("never a boolean
+        # verdict"), so shipping the number only offers the author a way to break
+        # the contract. Both ``ef.table.column`` and ``ef.formula`` are quoted
+        # identically — neither is more "the value" than the other; both are the
+        # user's literal words. This is the SECOND free-text string landing in the
+        # ``sql_hints`` prompt slot (renderer._render_text does sequential ``{key}``
+        # substitution — see its docstring for the pre-existing re-inlining risk
+        # this widens).
         hint_parts: list[str] = []
         if spec.guidance:
             hint_parts.append(spec.guidance)
@@ -434,9 +438,6 @@ class ValidationAgent(LLMFeature):
             "spec_name": spec.name,
             "spec_description": spec.description,
             "check_type": spec.check_type,
-            "parameters": (
-                json.dumps({"tolerance": spec.tolerance}) if spec.tolerance is not None else "None"
-            ),
             "sql_hints": sql_hints,
             "expected_outcome": expected,
             # DAT-870: the measured grain facts restated NEXT TO the spec's
@@ -450,7 +451,7 @@ class ValidationAgent(LLMFeature):
 
         # Render prompt using template
         try:
-            system_prompt, user_prompt, temperature = self.renderer.render_split(
+            system_prompt, user_prompt = self.renderer.render_split(
                 SQL_GENERATION_TEMPLATE_NAME, context
             )
         except Exception as e:
@@ -469,7 +470,6 @@ class ValidationAgent(LLMFeature):
             label="validation_sql",
             effort=feature_config.effort,
             max_tokens=self.config.limits.max_output_tokens_per_request,
-            temperature=temperature,
             model=model,
         )
 

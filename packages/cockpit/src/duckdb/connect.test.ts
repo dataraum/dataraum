@@ -1,21 +1,14 @@
-// Unit tests for connect schema-sniff (DAT-381).
+// Unit tests for the file schema-sniff (DAT-381).
 //
-// The DuckDB boundary is mocked at `#/duckdb/probe` (the database path) so the
-// test asserts the `ConnectSchema` shape without a live driver. The file path's
-// shape logic lives in pure mappers (mapDescribeToTable / groupInformationSchema
-// / collectSampleValues) exercised directly; the real file-reader round-trip is
-// covered by connect.integration.test.ts (a real temp CSV → DuckDB, no DB stack).
+// The shape logic lives in pure mappers (mapDescribeToTable /
+// collectSampleValues) exercised directly; the real file-reader round-trip is
+// covered by connect.integration.test.ts (a real staged object → DuckDB).
 
 import { describe, expect, it, vi } from "vitest";
 
-const { probeMock } = vi.hoisted(() => ({ probeMock: vi.fn() }));
-vi.mock("#/duckdb/probe", () => ({
-	probe: probeMock,
-	SUPPORTED_BACKENDS: ["postgres", "mysql"],
-}));
-// connectFile imports s3-secret, which loads `#/config` at module top. Mock it
-// at the same boundary so this unit needs no real env; the actual s3:// secret
-// registration is exercised in connect.integration (DAT-386).
+// sniffFileSchema imports s3-secret, which loads `#/config` at module top. Mock
+// it at the same boundary so this unit needs no real env; the actual s3://
+// secret registration is exercised in connect.integration (DAT-386).
 vi.mock("#/duckdb/s3-secret", () => ({ applyS3Secret: vi.fn() }));
 // connect.ts itself reads `#/config` (config.s3Bucket) to validate the single
 // allowed `s3://<bucket>/<key>` shape. Mock it so the unit needs no real env and
@@ -23,12 +16,10 @@ vi.mock("#/duckdb/s3-secret", () => ({ applyS3Secret: vi.fn() }));
 vi.mock("#/config", () => ({ config: { s3Bucket: "dataraum-lake" } }));
 
 import {
-	ConnectSchema,
 	collectSampleValues,
-	connect,
-	groupInformationSchema,
 	mapDescribeToTable,
 	readerForPath,
+	sniffFileSchema,
 	validateBucketS3Path,
 } from "./connect";
 
@@ -109,11 +100,10 @@ describe("validateBucketS3Path (DAT-386 arbitrary-file-read hardening)", () => {
 	});
 });
 
-describe("connect (file path validation, DAT-386)", () => {
-	// End-to-end through the public `connect()`: a bad file path must be rejected
-	// BEFORE any DuckDB work — the zod superRefine fires first. (The s3-secret +
-	// DuckDB boundary is mocked, so an accepted path would proceed; rejection here
-	// proves the gate, not the read.)
+describe("sniffFileSchema (file path validation, DAT-386)", () => {
+	// End-to-end through the public entry point: a bad file path must be rejected
+	// BEFORE any DuckDB work. (The s3-secret + DuckDB boundary is mocked, so an
+	// accepted path would proceed; rejection here proves the gate, not the read.)
 	it.each([
 		"/etc/passwd",
 		"/app/.env",
@@ -122,62 +112,8 @@ describe("connect (file path validation, DAT-386)", () => {
 		"foo.csv",
 		"s3://other-bucket/x.csv",
 		"s3://k:s@dataraum-lake/x.csv",
-	])("rejects connect(file, path=%s)", async (path) => {
-		await expect(connect({ source_kind: "file", path })).rejects.toThrow();
-	});
-});
-
-describe("groupInformationSchema", () => {
-	it("groups columns per table and maps nullability + position", () => {
-		const grouped = groupInformationSchema([
-			{
-				table_schema: "public",
-				table_name: "orders",
-				column_name: "id",
-				ordinal_position: 1,
-				data_type: "INTEGER",
-				is_nullable: "NO",
-			},
-			{
-				table_schema: "public",
-				table_name: "orders",
-				column_name: "note",
-				ordinal_position: 2,
-				data_type: "VARCHAR",
-				is_nullable: "YES",
-			},
-			{
-				table_schema: "sales",
-				table_name: "leads",
-				column_name: "email",
-				ordinal_position: 1,
-				data_type: "VARCHAR",
-				is_nullable: "YES",
-			},
-		]);
-
-		expect(grouped).toHaveLength(2);
-		const orders = grouped.find((g) => g.table === "orders");
-		expect(orders?.info.name).toBe("orders"); // default schema → unqualified
-		expect(orders?.info.columns).toEqual([
-			{
-				name: "id",
-				position: 1,
-				sourceType: "INTEGER",
-				nullable: false,
-				sampleValues: [],
-			},
-			{
-				name: "note",
-				position: 2,
-				sourceType: "VARCHAR",
-				nullable: true,
-				sampleValues: [],
-			},
-		]);
-
-		const leads = grouped.find((g) => g.table === "leads");
-		expect(leads?.info.name).toBe("sales.leads"); // non-default → qualified
+	])("rejects sniffFileSchema(%s)", async (path) => {
+		await expect(sniffFileSchema(path)).rejects.toThrow();
 	});
 });
 
@@ -216,82 +152,5 @@ describe("mapDescribeToTable", () => {
 				},
 			],
 		});
-	});
-});
-
-describe("connect (database path, mocked probe)", () => {
-	it("returns a valid ConnectSchema with per-column samples", async () => {
-		probeMock.mockReset();
-		probeMock.mockImplementation((input: { sql: string }): Promise<unknown> => {
-			if (input.sql.includes("information_schema")) {
-				return Promise.resolve({
-					columns: [
-						"table_schema",
-						"table_name",
-						"column_name",
-						"ordinal_position",
-						"data_type",
-						"is_nullable",
-					],
-					rows: [
-						{
-							table_schema: "public",
-							table_name: "orders",
-							column_name: "id",
-							ordinal_position: 1,
-							data_type: "INTEGER",
-							is_nullable: "NO",
-						},
-						{
-							table_schema: "public",
-							table_name: "orders",
-							column_name: "status",
-							ordinal_position: 2,
-							data_type: "VARCHAR",
-							is_nullable: "YES",
-						},
-					],
-					rowCount: 2,
-				});
-			}
-			// sample SELECT for the table
-			return Promise.resolve({
-				columns: ["id", "status"],
-				rows: [
-					{ id: 10, status: "open" },
-					{ id: 11, status: "open" },
-					{ id: 12, status: "closed" },
-				],
-				rowCount: 3,
-			});
-		});
-
-		const schema = await connect({
-			source_kind: "database",
-			source_name: "warehouse",
-			backend: "postgres",
-		});
-
-		// shape is valid against the contract
-		expect(() => ConnectSchema.parse(schema)).not.toThrow();
-		expect(schema.sourceKind).toBe("database");
-		expect(schema.source).toBe("warehouse");
-		expect(schema.tables).toHaveLength(1);
-
-		const orders = schema.tables[0];
-		expect(orders.name).toBe("orders");
-		expect(orders.rowCountEstimate).toBeNull();
-		expect(orders.columns.map((c) => c.name)).toEqual(["id", "status"]);
-		expect(orders.columns[0].sampleValues).toEqual([10, 11, 12]);
-		expect(orders.columns[1].sampleValues).toEqual(["open", "closed"]);
-
-		// one introspection call + one sample call
-		expect(probeMock).toHaveBeenCalledTimes(2);
-	});
-
-	it("rejects a database input missing source_name", async () => {
-		await expect(
-			connect({ source_kind: "database", backend: "postgres" }),
-		).rejects.toThrow();
 	});
 });

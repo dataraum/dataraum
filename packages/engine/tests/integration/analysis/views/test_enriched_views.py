@@ -265,14 +265,8 @@ class TestEnrichedViewsPhaseDuckLake:
                             relationship_id="rel-1",
                         )
                     ],
-                    relationship_role="reference/lookup",
-                    confidence=0.9,
-                    reasoning="customers names/regions enrich orders",
-                    enrichment_columns=["name", "country"],
                 )
             ],
-            summary="stub",
-            model_name="stub-model",
         )
         return fact.table_id, dim.table_id, canned
 
@@ -570,14 +564,8 @@ class TestEnrichedViewsPhaseDuckLake:
                             relationship_id="rel-1",
                         )
                     ],
-                    relationship_role="reference/lookup",
-                    confidence=0.9,
-                    reasoning="contradictory re-judgment",
-                    enrichment_columns=["name"],
                 )
             ],
-            summary="stub",
-            model_name="stub-model",
         )
         run("run-3")
         views = enriched_views()
@@ -596,17 +584,16 @@ class TestEnrichedViewsPhaseDuckLake:
             == 1
         )
 
-    def test_zero_views_with_facts_fails_loud(self, session, duckdb_conn, monkeypatch):
-        """DAT-812 invariant: facts present but EVERY view failed to build → the phase
-        FAILS, not a silent success.
+    def test_view_creation_failure_fails_the_run(self, session, duckdb_conn, monkeypatch):
+        """A view CREATE that raises FAILS the run, naming the fact table.
 
-        The grounding resolvers (period_resolver / additivity_resolver) dropped the
-        typed-table fallback and depend on every fact having an enriched view; a run that
-        registered zero views for real facts is broken — every metric would ground on a
-        bare typed name the resolvers can't resolve — so it must surface (Temporal
-        retry), never ship a half-resolvable catalog. Here no LLM joins are offered (a
-        passthrough is attempted) and the fact's physical table is removed, so the
-        passthrough ``SELECT *`` creation fails for the only fact → zero views."""
+        This used to be ``logger.warning`` + ``continue``: the fact silently ended up
+        with no enriched view while the phase reported success, and every metric
+        grounded on it degraded to the flagged default. The view SQL is composed from
+        this run's own catalog against tables it just resolved, so a raise is a broken
+        invariant, never dirty data. Here no LLM joins are offered (a passthrough
+        ``SELECT *`` is attempted) and the fact's physical table is removed, so the
+        creation raises for the only fact."""
         from dataraum.pipeline.base import PhaseContext, PhaseStatus
 
         fact_id, dim_id, _canned = self._seed(session, duckdb_conn)
@@ -625,7 +612,101 @@ class TestEnrichedViewsPhaseDuckLake:
         )
         result = EnrichedViewsPhase().run(ctx)
         assert result.status == PhaseStatus.FAILED
+        error = result.error or ""
+        assert "orders" in error, "the failure names the fact table"
+        assert "DAT-812" in error, "the failure names the broken invariant"
+
+    def test_grain_verification_failure_fails_the_run_and_drops_the_view(
+        self, session, duckdb_conn, monkeypatch, capsys
+    ):
+        """The belt-and-braces whole-view grain check failing FAILS the run (DAT-801).
+
+        Per-join filtering already guarantees the grain, so this check can only fail
+        if the one-hop-star independence assumption it rests on broke — a defect in
+        the reasoning, not dirty data. It used to drop the view and ``continue``,
+        leaving that fact viewless in an otherwise-successful run. The fan-out view
+        must still be dropped (grain is the view's CONTRACT — never ship one) and the
+        run must fail naming the fact.
+
+        The check is a should-never-fire invariant, so it is forced here by stubbing
+        ``_verify_grain``; everything above it (real joins, real CREATE) is live.
+        """
+        from sqlalchemy import select
+
+        from dataraum.analysis.views.db_models import EnrichedView
+        from dataraum.pipeline.base import PhaseContext, PhaseStatus
+
+        fact_id, dim_id, canned = self._seed(session, duckdb_conn)
+        monkeypatch.setattr(
+            EnrichedViewsPhase, "_get_llm_recommendations", lambda self, **kw: canned
+        )
+        monkeypatch.setattr(EnrichedViewsPhase, "_verify_grain", lambda *a, **kw: False)
+        self._seed_fact_entity(session, table_id=fact_id, run_id="run-grain")
+        self._seed_relationship(
+            session,
+            from_table_id=fact_id,
+            from_col="customer_id",
+            to_table_id=dim_id,
+            to_col="id",
+            run_id="run-grain",
+        )
+
+        ctx = PhaseContext(
+            session=session,
+            duckdb_conn=duckdb_conn,
+            table_ids=[fact_id, dim_id],
+            run_id="run-grain",
+        )
+        result = EnrichedViewsPhase().run(ctx)
+        assert result.status == PhaseStatus.FAILED
+        error = result.error or ""
+        assert "orders" in error, "the failure names the fact table"
+        assert "DAT-801" in error, "the failure names the broken invariant"
+
+        # The suspect view never ships, and no EnrichedView row was registered.
+        assert (
+            duckdb_conn.execute(
+                "SELECT count(*) FROM duckdb_views() WHERE view_name = 'enriched_csv__orders'"
+            ).fetchone()[0]
+            == 0
+        ), "the fan-out view is dropped, not shipped"
+        assert (
+            session.execute(
+                select(EnrichedView).where(EnrichedView.fact_table_id == fact_id)
+            ).scalar_one_or_none()
+            is None
+        )
+        assert "grain_verification_failed_after_per_join_filter" in capsys.readouterr().err
+
+    def test_zero_views_with_facts_fails_loud(self, session, duckdb_conn, monkeypatch):
+        """DAT-812 invariant: facts present but NO view registered → the phase FAILS.
+
+        The grounding resolvers (period_resolver / additivity_resolver) dropped the
+        typed-table fallback and depend on every fact having an enriched view; a run
+        that registered zero views for real facts is broken — every metric would
+        ground on a bare typed name the resolvers can't resolve — so it must surface
+        (Temporal retry), never ship a half-resolvable catalog. Creation and grain
+        failures now return above, so the surviving way to reach zero is a fact entity
+        whose table never materialized (no ``duckdb_path``)."""
+        from dataraum.pipeline.base import PhaseContext, PhaseStatus
+        from dataraum.storage import Table
+
+        fact_id, dim_id, _canned = self._seed(session, duckdb_conn)
+        monkeypatch.setattr(EnrichedViewsPhase, "_get_llm_recommendations", lambda self, **kw: None)
+        self._seed_fact_entity(session, table_id=fact_id, run_id="run-fail")
+        # The fact entity exists but its table was never materialized → skipped.
+        session.get(Table, fact_id).duckdb_path = None
+        session.flush()
+        ctx = PhaseContext(
+            session=session,
+            duckdb_conn=duckdb_conn,
+            table_ids=[fact_id, dim_id],
+            run_id="run-fail",
+        )
+        result = EnrichedViewsPhase().run(ctx)
+        assert result.status == PhaseStatus.FAILED
         assert "0 views" in (result.error or "")
+        assert "DAT-812" in (result.error or "")
 
     def test_run_scoped_fact_query_ignores_prior_runs(self, session, duckdb_conn, monkeypatch):
         """Coexisting prior-run fact entities must not multiply EnrichedViews.
@@ -1135,14 +1216,8 @@ class TestEnrichedViewsPhaseDuckLake:
                             relationship_id="rel-regions",
                         )
                     ],
-                    relationship_role="reference/lookup",
-                    confidence=0.9,
-                    reasoning="regions enrich orders",
-                    enrichment_columns=["region_name"],
                 )
             ],
-            summary="stub",
-            model_name="stub-model",
         )
         run("run-2", with_regions=True)
         assert len(seen_pairs) == 2, "the new pair IS re-judged (one more LLM call)"
@@ -1268,14 +1343,8 @@ class TestEnrichedViewsPhaseDuckLake:
                             relationship_id="rel-fanout",
                         ),
                     ],
-                    relationship_role="reference/lookup",
-                    confidence=0.9,
-                    reasoning="customers + tags both proposed",
-                    enrichment_columns=["name", "country", "tag"],
                 )
             ],
-            summary="stub",
-            model_name="stub-model",
         )
         return fact.table_id, good.table_id, fanout.table_id, canned
 
@@ -1330,7 +1399,6 @@ class TestEnrichedViewsPhaseDuckLake:
         # The view SHIPS (not dropped) with exactly the good join's columns dropped
         # to the survivors, and one join was dropped for fanning out.
         assert result.outputs["enriched_views"] == 1
-        assert result.outputs["views_dropped"] == 0
         assert result.outputs["joins_dropped"] == 1
 
         view = session.execute(

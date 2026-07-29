@@ -1010,7 +1010,6 @@ class TestSliceDefinitionWriterIdempotent:
             column_id=seeded["fk_col"].column_id,
             column_name="invoice_id__status",
             slice_interest="primary",
-            distinct_values=["open", "paid"],
             value_count=2,
             reasoning="status partitions",
             confidence=confidence,
@@ -1199,7 +1198,6 @@ class TestReferencedDimensionIdentity:
             column_id=column_id,
             column_name=column_name,
             slice_interest="primary",
-            distinct_values=["a", "b"],
             value_count=2,
             reasoning="partitions",
             confidence=0.9,
@@ -1325,7 +1323,6 @@ class TestDeterministicInventory:
             column_id=seeded["fk_col"].column_id,
             column_name="invoice_id__status",
             slice_interest=interest,  # type: ignore[arg-type]
-            distinct_values=["open", "paid"],
             value_count=2,
             reasoning="status partitions",
             business_context="document lifecycle state",
@@ -1671,6 +1668,134 @@ class TestDeterministicInventory:
         }
         assert "amount" in names_b
 
+    def test_judged_row_membership_is_measured_not_the_agent_s_claim(
+        self,
+        mock_load_config: MagicMock,
+        mock_create_provider: MagicMock,
+        mock_renderer_cls: MagicMock,
+        mock_agent_cls: MagicMock,
+        session: Session,
+        duckdb_conn: duckdb.DuckDBPyConnection,
+    ) -> None:
+        """DAT-671: the persisted value-set comes from the profile, always.
+
+        The ranking agent used to hand back a ``distinct_values`` list and the
+        writer stored it verbatim whenever it was non-empty, so a JUDGED axis
+        carried whatever the model retyped from the 10-sample prefix it had been
+        shown — the validation prompt then served that as "the actual values in
+        the data". Judged and structural rows must now be indistinguishable in
+        provenance: both are this run's profile.
+        """
+        from dataraum.analysis.statistics.db_models import StatisticalProfile
+
+        mock_load_config.return_value = _mock_llm_config()
+        seeded = _seed(session)
+        # The JUDGED axis is the enriched ``invoice_id__status``; its values are
+        # profiled on the VIEW's column, under the enriched layer.
+        dim_col_id = session.execute(
+            select(Column.column_id).where(Column.column_name == "invoice_id__status")
+        ).scalar_one()
+        session.add(
+            StatisticalProfile(
+                column_id=dim_col_id,
+                layer="enriched",
+                total_count=100,
+                null_count=0,
+                distinct_count=17,
+                profile_data={"top_values": [{"value": "open"}, {"value": "paid"}]},
+            )
+        )
+        session.flush()
+        mock_agent_cls.return_value.analyze.return_value = self._ranked_status(seeded)
+
+        result = SlicingPhase()._run(_ctx(session, duckdb_conn, [seeded["fact"].table_id], "run-A"))
+        assert result.status == PhaseStatus.COMPLETED
+        session.commit()
+
+        row = session.execute(
+            select(SliceDefinition).where(SliceDefinition.column_name == "invoice_id__status")
+        ).scalar_one()
+        assert row.detection_source == "llm"
+        assert row.distinct_values == ["open", "paid"], "the profile's values, not a claim"
+        assert row.value_count == 17, "the honest COUNT(DISTINCT), above the stored list"
+
+    def test_measured_membership_scopes_to_the_promoted_generation_head(
+        self,
+        mock_load_config: MagicMock,
+        mock_create_provider: MagicMock,
+        mock_renderer_cls: MagicMock,
+        mock_agent_cls: MagicMock,
+        session: Session,
+        duckdb_conn: duckdb.DuckDBPyConnection,
+    ) -> None:
+        """Coexisting profiles: the promoted head decides which values are served.
+
+        ``StatisticalProfile`` is run-versioned with a ``(column_id, run_id)``
+        UNIQUE, so a replay leaves N rows per column. The unscoped scan let an
+        arbitrary one win — and that row is now the membership every downstream
+        claim rests on, so a stale generation's values could become "the actual
+        values in the data". Flipping the head must flip the served set.
+        """
+        from uuid import uuid4
+
+        from dataraum.analysis.statistics.db_models import StatisticalProfile
+        from dataraum.storage.snapshot_head import GENERATION_STAGE, MetadataSnapshotHead
+
+        mock_load_config.return_value = _mock_llm_config()
+        mock_agent_cls.return_value.analyze.return_value = _analysis_result({})
+        seeded = _seed(session)
+        fk_col_id = seeded["fk_col"].column_id
+        session.add_all(
+            [
+                StatisticalProfile(
+                    column_id=fk_col_id,
+                    run_id="gen-current",
+                    layer="typed",
+                    total_count=100,
+                    null_count=0,
+                    distinct_count=2,
+                    profile_data={"top_values": [{"value": "CURRENT"}]},
+                ),
+                StatisticalProfile(
+                    column_id=fk_col_id,
+                    run_id="gen-stale",
+                    layer="typed",
+                    total_count=100,
+                    null_count=0,
+                    distinct_count=2,
+                    profile_data={"top_values": [{"value": "STALE"}]},
+                ),
+            ]
+        )
+        head = MetadataSnapshotHead(
+            head_id=str(uuid4()),
+            target=f"table:{seeded['fact'].table_id}",
+            stage=GENERATION_STAGE,
+            run_id="gen-current",
+        )
+        session.add(head)
+        session.flush()
+
+        def _values(run: str) -> list[str] | None:
+            assert (
+                SlicingPhase()
+                ._run(_ctx(session, duckdb_conn, [seeded["fact"].table_id], run))
+                .status
+                == PhaseStatus.COMPLETED
+            )
+            session.flush()
+            return session.execute(
+                select(SliceDefinition.distinct_values).where(
+                    SliceDefinition.column_name == "invoice_id",
+                    SliceDefinition.run_id == run,
+                )
+            ).scalar_one()
+
+        assert _values("run-A") == ["CURRENT"]
+        head.run_id = "gen-stale"
+        session.flush()
+        assert _values("run-B") == ["STALE"]
+
     def test_llm_config_missing_persists_inventory_and_backstop(
         self,
         mock_load_config: MagicMock,
@@ -1761,7 +1886,13 @@ class TestDeterministicInventory:
         assert ranked.slice_interest == "supporting"
         assert ranked.confidence == 0.9
         assert ranked.business_context == "document lifecycle state"
-        assert ranked.distinct_values == ["open", "paid"]
+        # The judgment brings NO values with it (DAT-671). This seed has no
+        # StatisticalProfile, so there is nothing measured to serve and the row
+        # says so — where the agent's ``distinct_values`` echo used to fill the
+        # gap with a list it had retyped from a 10-sample prefix. Judged and
+        # unjudged rows agree here, exactly as they do on relevance below:
+        # membership tracks the profile, never the judgment.
+        assert ranked.distinct_values == []
         floor = by_name["invoice_id"]
         assert floor.detection_source == "structural"
         assert floor.slice_interest is None

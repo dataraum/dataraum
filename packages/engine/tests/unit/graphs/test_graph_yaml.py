@@ -6,6 +6,10 @@ catalogue's post-execution expectations (``StepValidation``, DAT-616) — so the
 model grounds consistently with what the catalogue declares about the value.
 Enforcement stays post-hoc in ``graphs.verifier`` (flags, never gates); this
 only serves the declared facts at authoring time.
+
+It must ALSO carry nothing else about the parent metric (DAT-671). The warming
+mini-graph is that metric with one step swapped in, so every graph-level field
+it still holds describes the metric, not the leaf being grounded.
 """
 
 from __future__ import annotations
@@ -17,8 +21,11 @@ from dataraum.graphs.models import (
     GraphMetadata,
     GraphSource,
     GraphStep,
+    Interpretation,
+    InterpretationRange,
     OutputDef,
     OutputType,
+    ParameterDef,
     StepSource,
     StepType,
     StepValidation,
@@ -104,3 +111,92 @@ def test_mini_graph_carries_validations_into_the_yaml() -> None:
     assert parsed["dependencies"]["revenue"]["validations"] == [
         {"condition": "value >= 0", "severity": "error"}
     ]
+
+
+def _composite_metric_graph() -> TransformationGraph:
+    """A metric whose freight is emphatically NOT about the leaf below it.
+
+    Modelled on cash_conversion_cycle: a days-denominated metric with interpretation
+    bands about paying suppliers, composed from currency-denominated leaves.
+    """
+    leaf = GraphStep(
+        step_id="accounts_payable",
+        step_type=StepType.EXTRACT,
+        source=StepSource(standard_field="accounts_payable", statement="balance_sheet"),
+        aggregation="sum",
+    )
+    graph = TransformationGraph(
+        graph_id="cash_conversion_cycle",
+        version="1.0",
+        metadata=GraphMetadata(
+            name="Cash Conversion Cycle",
+            description="Days between paying suppliers and collecting from customers",
+            category="activity",
+            source=GraphSource.SYSTEM,
+        ),
+        output=OutputDef(
+            output_type=OutputType.SCALAR, metric_id="cash_conversion_cycle", unit="days"
+        ),
+        steps={leaf.step_id: leaf},
+        parameters=[
+            ParameterDef(
+                name="days_in_period",
+                param_type="integer",
+                default=30,
+                description="Analysis period length",
+            )
+        ],
+        interpretation=Interpretation(
+            ranges=[
+                InterpretationRange(
+                    min_value=-999.0,
+                    max_value=0.0,
+                    label="NEGATIVE",
+                    description="Excellent - collecting before paying suppliers",
+                )
+            ]
+        ),
+    )
+    return build_mini_graph(
+        WarmNode(
+            key=("extract", "accounts_payable", "balance_sheet", "sum"), graph=graph, step=leaf
+        )
+    )
+
+
+def test_metric_freight_is_not_served_with_the_leaf() -> None:
+    """The parent metric's identity never rides the leaf's spec (DAT-671).
+
+    ``build_mini_graph`` is ``dataclasses.replace(metric_graph, steps={leaf})``, so
+    without this cut the prompt grounding a currency SUM of ``accounts_payable``
+    arrived titled "Cash Conversion Cycle", unit ``days``, carrying a
+    ``days_in_period`` parameter and bands about collecting before paying
+    suppliers. The concept's own definition is served — once, at the right level —
+    by the served context's Business Concepts block.
+    """
+    parsed = _to_yaml(_composite_metric_graph())
+
+    assert set(parsed) == {"graph_id", "dependencies"}
+    rendered = yaml.safe_dump(parsed)
+    assert "Cash Conversion Cycle" not in rendered
+    assert "days" not in rendered
+    assert "collecting before paying suppliers" not in rendered
+
+
+def test_leaf_serves_no_always_empty_composition_keys() -> None:
+    """An EXTRACT leaf has no ``expression`` and no ``depends_on`` — so neither is
+    serialized. Both rendered as ``null`` / ``[]`` on every prompt this path has
+    ever produced: formula composition is deterministic and never reaches here."""
+    step = GraphStep(
+        step_id="revenue",
+        step_type=StepType.EXTRACT,
+        source=StepSource(standard_field="revenue", statement="income_statement"),
+        aggregation="sum",
+    )
+    served = _to_yaml(_graph({"revenue": step}))["dependencies"]["revenue"]
+
+    assert "expression" not in served
+    assert "depends_on" not in served
+    # What the leaf DOES declare is untouched.
+    assert served["aggregation"] == "sum"
+    assert served["source"] == {"standard_field": "revenue", "statement": "income_statement"}

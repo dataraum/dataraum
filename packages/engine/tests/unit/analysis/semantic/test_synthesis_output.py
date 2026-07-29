@@ -77,7 +77,9 @@ def _provider(*responses: MagicMock) -> MagicMock:
 def _agent_with(provider: MagicMock, monkeypatch) -> SemanticAgent:
     # Everything before the converse call is mocked so the test drives only the
     # converse → validate → build seam.
-    monkeypatch.setattr("dataraum.analysis.semantic.agent.DataSampler", MagicMock())
+    monkeypatch.setattr(
+        "dataraum.analysis.semantic.agent.prompt_samples", MagicMock(return_value={})
+    )
     monkeypatch.setattr(
         "dataraum.analysis.semantic.agent.load_persisted_annotations", lambda s, t: []
     )
@@ -85,7 +87,7 @@ def _agent_with(provider: MagicMock, monkeypatch) -> SemanticAgent:
     agent = SemanticAgent.__new__(SemanticAgent)
     agent.provider = provider  # type: ignore[attr-defined]
     renderer = MagicMock()
-    renderer.render_split.return_value = ("system", "user", 0.0)
+    renderer.render_split.return_value = ("system", "user")
     agent.renderer = renderer  # type: ignore[attr-defined]
 
     config = MagicMock()

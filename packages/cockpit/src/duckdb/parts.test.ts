@@ -15,6 +15,7 @@ import { afterAll, beforeAll, describe, expect, it } from "vitest";
 
 import type { DrillPinValue } from "./drill";
 import {
+	bareRelationName,
 	type ComposedNodeQuery,
 	composeNodeQuery,
 	composeNodeTotals,
@@ -142,6 +143,28 @@ const DEPR = extract(
 );
 
 // --- narrowSnippetParts (the DB boundary) -------------------------------------
+
+describe("bareRelationName", () => {
+	// The production format. The prompt tells the model `lake.<layer>.<name>`,
+	// and mosaic-sql would quote the whole string as ONE identifier — so without
+	// this reduction nothing a real answer declares can ever bind.
+	it("reduces the qualified form the model is told to write", () => {
+		expect(bareRelationName("lake.typed.orders")).toBe("orders");
+		expect(bareRelationName("  lake.typed.enriched_orders  ")).toBe(
+			"enriched_orders",
+		);
+		expect(bareRelationName("typed.orders")).toBe("orders");
+		expect(bareRelationName("orders")).toBe("orders");
+	});
+
+	it("refuses what it has no business rewriting", () => {
+		expect(bareRelationName('lake.typed."my orders"')).toBeNull();
+		expect(bareRelationName("a.b.c.d")).toBeNull();
+		expect(bareRelationName("lake..orders")).toBeNull();
+		expect(bareRelationName("lake.typed.")).toBeNull();
+		expect(bareRelationName("   ")).toBeNull();
+	});
+});
 
 describe("narrowSnippetParts", () => {
 	const persisted = {

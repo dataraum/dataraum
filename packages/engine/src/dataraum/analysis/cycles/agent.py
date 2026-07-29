@@ -105,15 +105,17 @@ class BusinessCycleAgent(LLMFeature):
             table_ids,
             vertical=vertical,
             base_runs=base_runs,
-            # Entity-flow value samples respect the same sensitive-name patterns
-            # the semantic agents' DataSampler enforces.
-            privacy=self.config.privacy,
+            max_sample_values=self.config.privacy.max_sample_values,
+            max_sample_value_chars=self.config.privacy.max_sample_value_chars,
         )
-        context_str = format_context_for_prompt(context)
+        context_str = format_context_for_prompt(
+            context,
+            max_sample_value_chars=self.config.privacy.max_sample_value_chars,
+        )
 
         # 2. Render prompt from template
         try:
-            system_prompt, user_prompt, temperature = self.renderer.render_split(
+            system_prompt, user_prompt = self.renderer.render_split(
                 CYCLE_DETECTION_TEMPLATE_NAME, {"context": context_str}
             )
         except Exception as e:
@@ -131,7 +133,6 @@ class BusinessCycleAgent(LLMFeature):
             label="business_cycles",
             effort=feature_config.effort,
             max_tokens=self.config.limits.max_output_tokens_per_request,
-            temperature=temperature,
             model=model,
         )
 
@@ -301,10 +302,7 @@ class BusinessCycleAgent(LLMFeature):
             cycles=cycles,
             total_cycles_detected=len(cycles),
             high_value_cycles=sum(1 for c in cycles if c.business_value == "high"),
-            business_summary=output.business_summary,
-            detected_processes=output.detected_processes,
             data_quality_observations=output.data_quality_observations,
-            recommendations=output.recommendations,
             llm_model=model,
             analysis_duration_seconds=time.time() - start_time,
             context_provided={"summary": context["summary"]},

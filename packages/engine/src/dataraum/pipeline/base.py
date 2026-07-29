@@ -80,6 +80,28 @@ class PhaseResult:
     outputs: dict[str, Any] = field(default_factory=dict)
     duration_seconds: float = 0.0
     error: str | None = None
+    #: A phase's non-fatal disclosures — a dropped phantom annotation, a retried
+    #: runaway response, a per-table profile that failed while its siblings
+    #: succeeded, a quarantine percentage, a surrogate mint that abstained.
+    #:
+    #: **Its terminal sink is the structlog line in
+    #: ``worker/activity.py::run_phase`` / ``run_session_phase``**, which logs the
+    #: whole list under ``activity.phase_done`` for EVERY phase. That is the whole
+    #: contract, decided in DAT-671 R6 (ADR-0024 d3, wire-or-delete): the channel
+    #: is operator-visible in the worker's logs and nowhere else.
+    #:
+    #: It deliberately does NOT cross the Temporal boundary. :class:`PhaseRun`
+    #: (``worker/activity.py``) has no ``warnings`` field and :class:`PhaseOutcome`
+    #: (``worker/contracts.py``) collapses to ``status``/``summary``/``declared``,
+    #: so the cockpit never sees these strings. Widening the wire is a
+    #: cross-package hand-mirrored contract change (``contracts.py`` +
+    #: ``cockpit/src/temporal/types.ts``) AND needs a cockpit surface that renders
+    #: them — a design decision, not a field addition. Until that lands, do not
+    #: add a second persisted "warnings" home beside this one: a phase whose
+    #: disclosure must reach a USER writes it onto the artifact it is about
+    #: (``lifecycle_artifacts.state_reason``, ``type_decisions.decision_reason``,
+    #: ``column_eligibility.reason``), which is a different, per-artifact channel
+    #: with its own readers.
     warnings: list[str] = field(default_factory=list)
     summary: str = ""
 

@@ -3,8 +3,8 @@
 ``build_execution_context`` assembles the GraphAgent's served context by GRAPH
 TRAVERSAL over the operating-model property graph (ADR-0021): concept →
 part_of subconcepts → groundings (grounded_by) → columns (uses), with
-disjoint_with / reconciles_with / conformed-dimension / references /
-materializes_as served AS STRUCTURE. The knowledge sections with no graph
+disjoint_with / reconciles_with / has_additivity / conformed-dimension /
+references / materializes_as served AS STRUCTURE. The knowledge sections with no graph
 element yet — value sets, drivers, validation results, business cycles — are
 assembled from their typed rows alongside the traversal core (conventions ride
 their own prompt slot). ``context_format.format_served_context`` renders the
@@ -21,11 +21,13 @@ from sqlalchemy import select, text
 from sqlalchemy.orm import Session
 
 from dataraum.core.logging import get_logger
+from dataraum.graphs.additivity_db_models import AXIS_KEY_ALL
 from dataraum.graphs.context_models import (
     _NON_CATEGORICAL_ROLES,
     _VALUE_SET_COMPLETE_MAX,
     BusinessCycleContext,
     ColumnContext,
+    ConceptAdditivity,
     ConceptContext,
     ConceptReconciliation,
     ConformedDimensionContext,
@@ -40,6 +42,7 @@ from dataraum.graphs.context_models import (
     ReportingCalendarContext,
     SliceContext,
     TableContext,
+    TimeAxisContext,
     ValidationContext,
 )
 
@@ -650,17 +653,6 @@ def build_execution_context(
                     numeric_min=numeric_min,
                     numeric_max=numeric_max,
                     is_stale=temp_profile.is_stale if temp_profile else None,
-                    detected_granularity=temp_profile.detected_granularity
-                    if temp_profile
-                    else None,
-                    min_timestamp=str(temp_profile.min_timestamp)
-                    if temp_profile and temp_profile.min_timestamp
-                    else None,
-                    max_timestamp=str(temp_profile.max_timestamp)
-                    if temp_profile and temp_profile.max_timestamp
-                    else None,
-                    span_days=temp_profile.span_days if temp_profile else None,
-                    largest_gap_days=temp_profile.largest_gap_days if temp_profile else None,
                     is_derived=is_derived,
                     derived_formula=derived_columns.get(col.column_id),
                     flags=flags,
@@ -690,7 +682,7 @@ def build_execution_context(
                 entity_type=table_entity.detected_entity_type if table_entity else None,
                 table_description=table_entity.description if table_entity else None,
                 grain_columns=grain_cols,
-                time_columns=(table_entity.time_columns or []) if table_entity else [],
+                time_axes=(graph_reads.time_axes_by_table.get(table_id, []) if graph_reads else []),
                 identity_columns=((table_entity.identity_columns or []) if table_entity else []),
                 columns=column_contexts,
             )
@@ -731,6 +723,15 @@ def build_execution_context(
 
 # Depth cap for the part_of closure — the ADR-0021 bounded-CTE mechanism (≈4
 # hops with a cycle guard; PGQ MATCH is fixed-depth and cannot walk it).
+#
+# HAND-MIRRORED cross-package (the worker/contracts.py discipline): the cockpit
+# walks the SAME closure over the SAME edge view with its own copy,
+# ``PART_OF_MAX_DEPTH`` in ``packages/cockpit/src/tools/concept-graph-load.ts``.
+# Two ancestries of different depths over one graph is a silent capability
+# difference, so the two literals are pinned against each other from BOTH sides:
+# here by ``tests/unit/graphs/test_hand_mirrored_constants.py``, there by
+# ``concept-graph-load.integration.test.ts`` (a chain one link longer than the
+# cap). Change one → change the other in the same commit.
 _PART_OF_MAX_DEPTH = 4
 
 
@@ -745,6 +746,7 @@ class _GraphReads:
     anchor_by_column: dict[str, str] = field(default_factory=dict)
     stored_sign_by_column: dict[str, str] = field(default_factory=dict)
     dimension_tables_by_view: dict[str, list[str]] = field(default_factory=dict)
+    time_axes_by_table: dict[str, list[TimeAxisContext]] = field(default_factory=dict)
 
 
 def _reporting_calendar(
@@ -977,7 +979,49 @@ def _read_grounding_rows(session: Session, read_schema: str) -> list[Any]:
                 "           g.relation AS relation, g.select_expr AS select_expr,\n"
                 "           g.where_predicates AS where_predicates,\n"
                 "           g.statement AS statement, g.aggregation AS aggregation,\n"
-                "           g.description AS description, g.failed AS failed))"
+                "           g.description AS description, g.failed AS failed,\n"
+                "           g.failure_mode AS failure_mode,\n"
+                "           g.failure_reason AS failure_reason))"
+            )
+        ).all()
+    )
+
+
+def _read_additivity_rows(session: Session, read_schema: str) -> list[Any]:
+    """Concept → per-axis additivity verdict via PGQ MATCH over ``has_additivity``.
+
+    The traversal the edge was built for (DAT-857/868): "how does concept X
+    aggregate?" is one hop from the concept, so it is read as one hop rather
+    than re-joining ``current_metric_axis_additivity`` to the vocabulary here —
+    ``og_has_additivity`` already performs that resolution once, on the engine
+    side, which is the ADR-0024 pattern (the cockpit's ``concept-target.ts``
+    walks the sibling ``grounded_by`` edge for the same reason).
+
+    MEASURE targets only, by construction: the edge view filters
+    ``target_kind = 'measure'`` because a measure's ``target_key`` IS the
+    concept name (``standard_field``), while a ``metric`` target keys on a
+    formula ``graph_id`` with no concept vertex to hang an edge from.
+
+    Read through ``current_metric_axis_additivity``, so — exactly like
+    ``_read_reconciliation_rows`` — this is what the last PROMOTED
+    operating_model run observed, and the rendered document says so. The claim
+    holds on EVERY path including the in-run metrics phase: that phase assembles
+    its context before it computes and persists this run's own verdicts, and an
+    ``om_run_id`` override does not reach here (the head-scoped view is the only
+    version axis this table has). A run in flight is never readable as the
+    current head anyway (ADR-0008/0010).
+    """
+    return list(
+        session.execute(
+            text(
+                f'SELECT * FROM GRAPH_TABLE ("{read_schema}".operating_model\n'
+                "  MATCH (c IS concept_node)-[e IS has_additivity]->"
+                "(a IS additivity_verdict)\n"
+                "  COLUMNS (c.name AS concept_name, a.axis_kind AS axis_kind,\n"
+                "           a.axis_key AS axis_key, a.status AS status,\n"
+                "           a.verdict AS verdict, a.reason AS reason,\n"
+                "           a.abstain_reason AS abstain_reason,\n"
+                "           a.bucket_grain AS bucket_grain))"
             )
         ).all()
     )
@@ -997,23 +1041,84 @@ def _read_use_rows(session: Session, read_schema: str) -> list[Any]:
     )
 
 
-def _read_grounding_provenance(session: Session, read_schema: str) -> dict[str, Any]:
-    """``snippet_id → (concept, failed, failure_mode, failure_reason)`` from the source view.
+def _read_grounding_vertices(session: Session, read_schema: str) -> dict[str, str]:
+    """``snippet_id → concept`` over every ``grounding_node``, MATCHed or not.
 
-    ``current_groundings`` is the graph's membership authority; the failure keys
-    live in the provenance JSON (not vertex properties). Also the basis for the
-    dropped-edge check: a snippet here but absent from the ``grounded_by`` MATCH
-    names no ACTIVE concept — that edge dropped, and absence falls loud.
+    The ONE job left here is the dropped-edge check: a vertex present in
+    ``og_grounding`` but absent from the ``grounded_by`` MATCH names no ACTIVE
+    concept, so its edge dropped and absence must fall loud. PGQ ``MATCH`` has no
+    optional-pattern form, so the unattached vertices cannot come out of the same
+    traversal — this reads the ELEMENT VIEW (the graph's own membership
+    authority), never the source table beside it.
+
+    The failure keys used to ride a second read of ``current_groundings``'
+    provenance JSON here; they are ``og_grounding`` vertex properties now and come
+    off the MATCH with the rest of the node (ADR-0024 d1).
+    """
+    rows = session.execute(
+        text(f'SELECT snippet_id, concept FROM "{read_schema}".og_grounding')  # noqa: S608
+    ).all()
+    return {str(r.snippet_id): str(r.concept) for r in rows}
+
+
+def _read_temporal_axes(session: Session, read_schema: str) -> dict[str, list[TimeAxisContext]]:
+    """``table_id → declared time axes`` via PGQ MATCH over ``temporal_coverage``.
+
+    One hop answers the whole question the served document asks of a relation's
+    time axes — which columns, in what role, with what observed window/grain and
+    worst discontinuity — because ``og_temporal_coverage`` performs the
+    role-JSON × profile resolution once, on the engine side (ADR-0024 d1). The
+    document used to re-do it per table: iterate the raw
+    ``table_entities.time_columns`` JSON and look each name up in the separately
+    assembled column list, which silently lost every anchor that exists only on
+    the ENRICHED layer (DAT-866 — the edge resolves those; the column list does
+    not).
+
+    Order is deterministic and meaning-carrying: the declared anchor first, then
+    the remaining EVENT axes (the trend lenses) before the attribute dates, then
+    aspect/name.
     """
     rows = session.execute(
         text(
-            f"SELECT snippet_id, concept, failed,\n"  # noqa: S608
-            f"       provenance->>'failure_mode' AS failure_mode,\n"
-            f"       provenance->>'failure_reason' AS failure_reason\n"
-            f'FROM "{read_schema}".current_groundings'
+            f'SELECT * FROM GRAPH_TABLE ("{read_schema}".operating_model\n'
+            "  MATCH (t IS table_node)-[c IS temporal_coverage]->(col IS column_node)\n"
+            "  COLUMNS (t.table_id AS table_id, c.column_name AS column_name,\n"
+            "           c.role AS role, c.aspect AS aspect, c.note AS note,\n"
+            "           c.declared_anchor AS declared_anchor,\n"
+            "           c.observed_grain AS observed_grain,\n"
+            "           c.observed_min AS observed_min, c.observed_max AS observed_max,\n"
+            "           c.span_days AS span_days,\n"
+            "           c.largest_gap_days AS largest_gap_days))"
         )
     ).all()
-    return {str(r.snippet_id): r for r in rows}
+    out: dict[str, list[TimeAxisContext]] = {}
+    for r in rows:
+        out.setdefault(str(r.table_id), []).append(
+            TimeAxisContext(
+                column_name=str(r.column_name),
+                role=str(r.role) if r.role else None,
+                aspect=str(r.aspect) if r.aspect else None,
+                note=str(r.note) if r.note else None,
+                is_anchor=bool(r.declared_anchor),
+                detected_granularity=str(r.observed_grain) if r.observed_grain else None,
+                min_timestamp=str(r.observed_min) if r.observed_min else None,
+                max_timestamp=str(r.observed_max) if r.observed_max else None,
+                span_days=float(r.span_days) if r.span_days is not None else None,
+                largest_gap_days=(
+                    float(r.largest_gap_days) if r.largest_gap_days is not None else None
+                ),
+            )
+        )
+    for axes in out.values():
+        axes.sort(
+            key=lambda a: (
+                not a.is_anchor,
+                a.role != "event",
+                a.aspect or "",
+                a.column_name,
+            )
+        )
+    return out
 
 
 def _read_references(
@@ -1164,9 +1269,10 @@ def _assemble_concept_contexts(
     ancestry: dict[str, list[str]],
     grounding_rows: list[Any],
     use_rows: list[Any],
-    provenance: dict[str, Any],
+    grounding_vertices: dict[str, str],
     tables: dict[str, tuple[str, str | None]],
     reconciliations: dict[tuple[str, str], Any],
+    additivity_rows: list[Any],
 ) -> list[ConceptContext]:
     """Fold the traversal reads into per-concept contexts (deterministic order).
 
@@ -1175,7 +1281,11 @@ def _assemble_concept_contexts(
       active concept — the dropped edge is WARNED, never silently invisible;
     - a healthy grounding with no ``uses`` rows (pre-v2 provenance / rename) is
       served but WARNED — the graph could not enumerate its columns;
-    - a healthy grounding with no relation (pre-parts row) is skipped + WARNED.
+    - a healthy grounding with no relation (pre-parts row) is skipped + WARNED;
+    - an additivity verdict whose concept is not in the served vocabulary is
+      dropped + WARNED (the two reads are scoped by DIFFERENT verticals — the
+      edge view rides ``workspace_settings.active_vertical``, this fold's
+      concept list rides the RUNTIME vertical the caller passed).
     """
     # uses per snippet, resolved to (column, table, role) — endpoint misses are loud.
     uses_by_snippet: dict[str, list[GroundingUseContext]] = {}
@@ -1201,7 +1311,6 @@ def _assemble_concept_contexts(
                 "grounding_relation_missing", snippet_id=snippet_id, concept=str(r.concept_name)
             )
             continue
-        prov = provenance.get(snippet_id)
         uses = sorted(
             uses_by_snippet.get(snippet_id, []),
             key=lambda u: (u.role, u.table_name, u.column_name),
@@ -1231,19 +1340,17 @@ def _assemble_concept_contexts(
                 aggregation=r.aggregation,
                 description=r.description,
                 failed=failed,
-                failure_mode=(prov.failure_mode if prov is not None else None),
-                failure_reason=(prov.failure_reason if prov is not None else None),
+                failure_mode=r.failure_mode,
+                failure_reason=r.failure_reason,
                 uses=uses,
             )
         )
 
     # Absence falls loud: a grounding the graph could not attach to any active
     # concept (name resolves no og_concepts row) — the edge dropped visibly.
-    for snippet_id, prov in provenance.items():
+    for snippet_id, concept in grounding_vertices.items():
         if snippet_id not in matched_snippets:
-            logger.warning(
-                "grounding_concept_unresolved", snippet_id=snippet_id, concept=str(prov.concept)
-            )
+            logger.warning("grounding_concept_unresolved", snippet_id=snippet_id, concept=concept)
 
     children: dict[str, list[str]] = {}
     parents: dict[str, list[str]] = {}
@@ -1280,6 +1387,33 @@ def _assemble_concept_contexts(
                 )
             )
 
+    # Per-axis additivity, keyed by concept. Ordered class-row-first within each
+    # axis kind, because a concrete axis REFINES the class verdict — reading the
+    # refinement before the rule it refines inverts the relationship.
+    served_names = {name for name, _kind in concept_rows}
+    additivity: dict[str, list[ConceptAdditivity]] = {}
+    for r in additivity_rows:
+        concept_name = str(r.concept_name)
+        if concept_name not in served_names:
+            logger.warning(
+                "additivity_concept_unresolved",
+                concept=concept_name,
+                axis_kind=str(r.axis_kind),
+                axis_key=str(r.axis_key),
+            )
+            continue
+        additivity.setdefault(concept_name, []).append(
+            ConceptAdditivity(
+                axis_kind=str(r.axis_kind),
+                axis_key=str(r.axis_key),
+                status=str(r.status),
+                verdict=r.verdict,
+                reason=r.reason,
+                abstain_reason=r.abstain_reason,
+                bucket_grain=r.bucket_grain,
+            )
+        )
+
     out: list[ConceptContext] = []
     for name, kind in concept_rows:
         out.append(
@@ -1294,6 +1428,10 @@ def _assemble_concept_contexts(
                 groundings=sorted(
                     groundings_by_concept.get(name, []),
                     key=lambda g: (g.failed, g.relation or "", g.snippet_id),
+                ),
+                additivity=sorted(
+                    additivity.get(name, []),
+                    key=lambda a: (a.axis_kind, a.axis_key != AXIS_KEY_ALL, a.axis_key),
                 ),
             )
         )
@@ -1328,20 +1466,23 @@ def _load_graph_reads(
         ancestry = _read_part_of_ancestry(session, read_schema)
         grounding_rows = _read_grounding_rows(session, read_schema)
         use_rows = _read_use_rows(session, read_schema)
-        provenance = _read_grounding_provenance(session, read_schema)
+        grounding_vertices = _read_grounding_vertices(session, read_schema)
         reconciliations = _read_reconciliation_rows(session, read_schema)
+        additivity_rows = _read_additivity_rows(session, read_schema)
         references = _read_references(session, read_schema, tables, columns, table_ids)
         conformed = _read_conformed(session, read_schema, tables)
         derived = _read_derived_from(session, read_schema, tables)
+        time_axes = _read_temporal_axes(session, read_schema)
         concepts = _assemble_concept_contexts(
             concept_rows,
             edge_rows,
             ancestry,
             grounding_rows,
             use_rows,
-            provenance,
+            grounding_vertices,
             tables,
             reconciliations,
+            additivity_rows,
         )
         return _GraphReads(
             concepts=concepts,
@@ -1357,6 +1498,7 @@ def _load_graph_reads(
                 cid: str(r.stored_sign) for cid, r in columns.items() if r.stored_sign
             },
             dimension_tables_by_view=derived,
+            time_axes_by_table=time_axes,
         )
     except Exception as e:
         logger.warning("graph_context_read_failed", error=str(e))

@@ -17,9 +17,9 @@ tiebreak ``column_name`` decided what an "interesting dimension" was).
 
 from __future__ import annotations
 
-from typing import Any, Literal
+from typing import Literal
 
-from pydantic import BaseModel, Field, field_validator
+from pydantic import BaseModel, Field
 
 from dataraum.core.models.base import DecisionSource
 
@@ -56,21 +56,7 @@ class SliceRecommendation(BaseModel):
     slice_interest: SliceInterest = Field(
         description="The agent's absolute interest judgment for this dimension"
     )
-    distinct_values: list[str] = Field(
-        default_factory=list,
-        description="List of unique values that will become slices",
-    )
-
-    @field_validator("distinct_values", mode="before")
-    @classmethod
-    def coerce_to_strings(cls, v: Any) -> list[str]:
-        """Coerce distinct values to strings (LLM may return ints)."""
-        if isinstance(v, list):
-            return [str(item) for item in v]
-        return []
-
-    # The column's measured COUNT(DISTINCT), from the statistical profile —
-    # NOT the length of ``distinct_values``, which is a bounded echo (DAT-879).
+    # The column's measured COUNT(DISTINCT), from the statistical profile.
     # None when the column has no profile to read it from.
     value_count: int | None = Field(
         default=None, description="Measured number of distinct values on this axis"
@@ -111,7 +97,17 @@ class SlicingAnalysisResult(BaseModel):
 
 
 class SliceRecommendationOutput(BaseModel):
-    """Pydantic model for a slice recommendation in the LLM structured output."""
+    """Pydantic model for a slice recommendation in the LLM structured output.
+
+    The model is asked for a JUDGMENT and nothing else. It is never asked to
+    echo the column's membership (DAT-671): a ``distinct_values`` field here
+    made the model retype a value list it had only been shown a 10-sample
+    prefix of, and that echo was persisted verbatim as
+    ``SliceDefinition.distinct_values`` — so the validation prompt swore a
+    median 4-of-20 subset was "the actual values in the data". The pipeline
+    already holds the real membership in the statistical profile; the writer
+    reads it there for every row (``slicing_phase._run``).
+    """
 
     table_name: str = Field(description="Name of the table containing the column")
     column_name: str = Field(description="Name of the column to slice on")
@@ -125,7 +121,6 @@ class SliceRecommendationOutput(BaseModel):
             "and do not let a column's position in the list influence it."
         )
     )
-    distinct_values: list[str] = Field(description="List of unique values that will become slices")
     reasoning: str = Field(description="Why this column is a good slicing dimension")
     business_context: str = Field(
         description='Business meaning of this dimension; "" when there is none'

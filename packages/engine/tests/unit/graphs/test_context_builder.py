@@ -187,7 +187,10 @@ class TestBuilderExtractsTableEntity:
         table = ctx.tables[0]
         assert table.table_description == "Records of all financial transactions"
         assert table.grain_columns == ["invoice_id"]
-        assert [tc["column"] for tc in table.time_columns] == ["created_at"]
+        # Time axes are NOT read here: they are served from the graph's
+        # temporal_coverage edge (Postgres/PGQ), so this SQLite path has none.
+        # Their read + render is pinned in tests/integration/graphs/test_graph_context.py.
+        assert table.time_axes == []
         # DAT-566: identity_columns flows through the DB→context read path (the
         # `or []` None-guard branch is the common pre-DAT-565 case).
         assert [ic["column"] for ic in table.identity_columns] == ["customer_id"]

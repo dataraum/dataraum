@@ -28,6 +28,22 @@ run; they read this-run rows + the pinned base-run map (DAT-448).
 
 Rows with ``run_id IS NULL`` (legacy / non-workflow writers) never match a
 head and are invisible here by design: nothing promoted them.
+
+**The surface is COMPLETE, and an unread view is not dead surface (DAT-671 R6).**
+:func:`read_view_statements` derives this list from the live model metadata —
+one view per table, no exceptions, and a run-stamped table with no grain
+classification RAISES rather than being skipped. That completeness is
+load-bearing twice over: the reader role is granted ``SELECT`` on this schema
+and nothing else, so a table absent here is unreachable to every current and
+future consumer; and the cockpit's Drizzle mirror introspects ONLY this schema,
+so a table absent here cannot be mirrored at all.
+
+So the wire-or-delete unit (ADR-0024 d3) is the TABLE, never the view: a view
+with no reader is the uniform projection of a live table, not an artifact
+someone shipped without a consumer. Deleting one individually would require an
+opt-out list plus weakening the raise above — trading a real invariant for a
+generated ``CREATE VIEW``. Pull the table instead and its view goes with it,
+which is exactly what happened to ``metric_unit_grain`` in this same slice.
 """
 
 from __future__ import annotations
@@ -103,10 +119,6 @@ _CATALOG_GRAIN: dict[str, str] = {
     "validation_results": "operating_model",
     "detected_business_cycles": "operating_model",
     "metric_axis_additivity": "operating_model",  # operating_model metrics phase (DAT-857/868)
-    # The per-entity breakdown the same phase composes once a verdict permits it
-    # (DAT-671 B1) — same head as the verdict that gated it, so a consumer can
-    # never read a breakdown whose verdict is not current.
-    "metric_unit_grain": "operating_model",
     # The evaluated reconciles_with tie-out (DAT-739) — same phase, same head as
     # the groundings it re-executed, so a consumer can never read a tie-out
     # computed from a grounding set that is no longer current.

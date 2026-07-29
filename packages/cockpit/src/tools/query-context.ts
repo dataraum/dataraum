@@ -216,7 +216,18 @@ export function formatSchema(
 	return (
 		"<schema>\n" +
 		`Address each table in SQL as ${LAKE_ALIAS}.<layer>.<name> exactly as shown ` +
-		"(quote column names with double quotes). Use a column's [meaning: …] tag — its " +
+		"(quote column names with double quotes). " +
+		// The prefer-enriched cut is ALL-OR-NOTHING: when any enriched view
+		// exists, the typed fact and dimension tables it was built from are not
+		// listed here at all. That was disclosed only in <relationships> and
+		// <entities> — blocks about something else — so a model reading <schema>
+		// alone saw an inventory that looked complete and was not. State it where
+		// the omission happens. Disclosure ONLY: what is served is unchanged.
+		"When an enriched view is listed, it is a pre-joined superset of a typed fact " +
+		"table, and that fact table and its dimension tables are NOT listed separately " +
+		"here — they remain queryable, and the <relationships> block gives the join " +
+		"paths that reach them. " +
+		"Use a column's [meaning: …] tag — its " +
 		"authored business meaning — to map a question's business terms to the concrete " +
 		"column. The (additive)/" +
 		"(point_in_time) marker is the stock/flow verdict RECONCILED FROM THE DATA — it is " +
@@ -366,10 +377,11 @@ export interface CatalogAxisRow {
 	// silently-wrong trap). The agent drills the COMPLETE set via look_values(columnId).
 	//
 	// DAT-879: the count comes from `value_count` — the engine's measured
-	// COUNT(DISTINCT) — NOT `distinctValues.length`. The stored list is a bounded
-	// echo, so rendering its length announced "(2 values)" for a 500-value axis.
+	// COUNT(DISTINCT) — NOT the length of the stored `distinct_values` echo,
+	// which is bounded and would have announced "(2 values)" for a 500-value
+	// axis. That echo is deliberately NOT carried here: this block serves the
+	// cardinality and the id, never the values (see `formatCatalog`).
 	valueCount?: number | null;
-	distinctValues?: string[] | null;
 	/** Engine-measured relevance in [0,1] (coverage x evenness); null = unmeasured. */
 	relevance?: number | null;
 	/** The cataloguing agent's absolute judgment: 'primary' | 'supporting'. */
@@ -505,7 +517,7 @@ export function formatCatalog(
 		// demand via the id and grounds an IN(...) over what comes back.
 		//
 		// DAT-879: the count is the engine's MEASURED distinct count. It used to be
-		// `distinctValues.length` — the length of a bounded stored echo — so a
+		// the LENGTH of the stored `distinct_values` echo — a bounded list — so a
 		// 500-value axis advertised itself as having however many values the
 		// cataloguing agent happened to list.
 		const count =
@@ -605,7 +617,6 @@ export async function buildCatalogBlock(): Promise<string> {
 				columnId: currentSliceDefinitions.columnId,
 				columnName: currentSliceDefinitions.columnName,
 				valueCount: currentSliceDefinitions.valueCount,
-				distinctValues: currentSliceDefinitions.distinctValues,
 				relevance: currentSliceDefinitions.sliceRelevance,
 				interest: currentSliceDefinitions.sliceInterest,
 			})
@@ -657,9 +668,6 @@ export async function buildCatalogBlock(): Promise<string> {
 			columnId: a.columnId as string,
 			columnName: a.columnName as string,
 			valueCount: a.valueCount ?? null,
-			distinctValues: Array.isArray(a.distinctValues)
-				? (a.distinctValues as string[])
-				: null,
 			relevance: a.relevance ?? null,
 			interest: a.interest ?? null,
 		}));
@@ -727,10 +735,31 @@ export interface RelationshipBlockRow {
  * Each line is a directly usable JOIN predicate (`<from>."col" = <to>."col"`) plus the
  * cardinality/type and, when the edge fans out, the SUM-double-counts caution. Empty →
  * a one-line note.
+ *
+ * `omitted` is how many CONFIRMED relationships were dropped because an endpoint
+ * would not resolve (DAT-671 R5). It has to be said, and this block is the one
+ * place that can say it: the instruction below tells the model that an unlisted
+ * join must not be invented — "abstain or state the limitation". So a silently
+ * dropped edge does not merely go unmentioned, it converts into a confident,
+ * false abstention about data the workspace HAS. Naming the count and the reason
+ * (the engine's `CuratedSlices.note` rule) turns that back into a knowable gap.
+ *
+ * REQUIRED, not defaulted (senior review): the disclosure's whole failure mode is
+ * being absent, so a caller must state the count — including stating zero. A
+ * default would let a future call site compile clean while silently dropping it.
  */
-export function formatRelationships(rows: RelationshipBlockRow[]): string {
+export function formatRelationships(
+	rows: RelationshipBlockRow[],
+	omitted: number,
+): string {
+	// Written for a model reader: the reason matters as much as the number,
+	// because "3 omitted" alone invites the assumption that they were junk.
+	const omittedNote =
+		omitted > 0
+			? `\n\n(${omitted} confirmed ${omitted === 1 ? "relationship is" : "relationships are"} NOT listed: an endpoint table or column is no longer under the promoted analysis head, so no runnable join predicate could be formed. That is a gap in what can be addressed here, not a claim that no path exists.)`
+			: "";
 	if (rows.length === 0) {
-		return "<relationships>\n(No confirmed relationships between tables.)\n</relationships>";
+		return `<relationships>\n(No confirmed relationships between tables.)${omittedNote}\n</relationships>`;
 	}
 	const lines = rows
 		.map((r) => {
@@ -755,7 +784,7 @@ export function formatRelationships(rows: RelationshipBlockRow[]): string {
 		"are shown; these paths still reach it (join lake.typed.<dim>). Ground EVERY join " +
 		"on a pair listed here; if the join you need isn't listed, do not invent one — " +
 		"abstain or state the limitation.\n\n" +
-		`${lines.join("\n")}\n` +
+		`${lines.join("\n")}${omittedNote}\n` +
 		"</relationships>"
 	);
 }
@@ -788,7 +817,7 @@ export async function buildRelationshipsBlock(): Promise<string> {
 			r.toTableId &&
 			r.toColumnId,
 	);
-	if (defined.length === 0) return formatRelationships([]);
+	if (defined.length === 0) return formatRelationships([], 0);
 
 	// Resolve endpoint table addresses + column names in one pass each (no N+1).
 	const tableIds = new Set<string>();
@@ -841,7 +870,10 @@ export async function buildRelationshipsBlock(): Promise<string> {
 		const fromColumn = colNameById.get(r.fromColumnId as string);
 		const toColumn = colNameById.get(r.toColumnId as string);
 		// A dropped endpoint (stale id) can't form a usable JOIN predicate — skip it
-		// rather than render a half-resolved, un-runnable line.
+		// rather than render a half-resolved, un-runnable line. COUNTED, not just
+		// skipped (DAT-671 R5): the block instructs the model to abstain on any
+		// join it cannot find here, so an unmentioned drop becomes a confident
+		// false abstention. `formatRelationships` states the total.
 		if (!fromAddress || !toAddress || !fromColumn || !toColumn) continue;
 		blockRows.push({
 			fromAddress,
@@ -858,7 +890,7 @@ export async function buildRelationshipsBlock(): Promise<string> {
 					: null,
 		});
 	}
-	return formatRelationships(blockRows);
+	return formatRelationships(blockRows, defined.length - blockRows.length);
 }
 
 // --- Table entities (DAT-607) ----------------------------------------------------
@@ -1266,9 +1298,11 @@ export async function buildGrainBlock(): Promise<string> {
 // authors reasoning over ONE structure): the engine renders each vocabulary
 // concept's `part_of`/`disjoint_with`/`reconciles_with` neighbourhood and its
 // groundings (`graphs/context_format.py::_append_concepts`) into its own
-// prompt; nothing equivalent reached this sub-agent before. `buildConceptGraph`
-// (`concept-graph.ts`) is the SAME model the Model route's Concepts view
-// renders — one structure, two consumers, matching the ticket's own framing.
+// prompt; nothing equivalent reached this sub-agent before. `loadConceptGraph`
+// (`concept-graph-load.ts`) serves the SAME model the Model route's Concepts
+// view renders — one structure, two consumers, matching the ticket's own
+// framing, and since DAT-671 R3 read from the operating-model property graph
+// rather than rebuilt in memory (ADR-0024: one resolution home).
 
 /**
  * Read the concept vocabulary graph and format it as the sub-agent's

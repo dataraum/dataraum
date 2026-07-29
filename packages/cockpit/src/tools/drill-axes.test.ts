@@ -5,7 +5,7 @@
 // table → curated ∪ substrate) is where a silent shape mismatch would produce
 // zero axes, so it gets pinned with fake rows.
 
-import { describe, expect, it, vi } from "vitest";
+import { beforeEach, describe, expect, it, vi } from "vitest";
 
 vi.mock("#/config", () => ({
 	config: { dataraumWorkspaceId: "ws-test" },
@@ -73,6 +73,26 @@ vi.mock("#/db/metadata/client", () => ({
 	},
 }));
 
+// The IDENTITY read is a GRAPH_TABLE MATCH (integration-tested in
+// concept-target.integration.test.ts); here it is a controllable double so the
+// TARGET-SHAPE logic — measure vs composed, and what withholds — can be pinned
+// as a unit. `sqlEquivalent` stays REAL (it parses through the shared in-memory
+// DuckDB), because comparing the declared expression to the classified one IS
+// the behaviour under test.
+const groundedConcepts = new Map<
+	string,
+	{ concept: string; selectExpr: string }
+>();
+vi.mock("./concept-target", () => ({
+	resolveGroundedConcepts: async (ids: readonly string[]) =>
+		new Map(
+			ids.flatMap((id) => {
+				const hit = groundedConcepts.get(id);
+				return hit ? [[id, hit] as const] : [];
+			}),
+		),
+}));
+
 // The AST read (real DuckDB) is integration-tested in sql-ast.integration.test;
 // here a thin regex stub extracts the aggregated column so the GATE logic is
 // tested in this pure-metadata unit.
@@ -109,6 +129,8 @@ import {
 	applyTemporalKinds,
 	axesFromSliceRows,
 	buildTargetAdditivity,
+	coarsestGrain,
+	composedVerdict,
 	decideTimeAxis,
 	demoteWithheldDateAxes,
 	describeTimeWithhold,
@@ -118,6 +140,8 @@ import {
 	markAlreadyInResult,
 	measureFieldsFromDag,
 	orderAxesByDrivers,
+	resolveAnswerTarget,
+	resolveAxisVerdict,
 	resolveDrillAxes,
 	temporalKindsFromColumns,
 	unionSubstrateAxes,
@@ -279,12 +303,13 @@ describe("markAlreadyInResult (DAT-671 slice-menu curation)", () => {
 		expect(out[1].disabledReason).toBeNull();
 	});
 
-	it("passes axes through unchanged when existing is null (structural read couldn't decide)", () => {
-		const axes = [axis("account_id__name")];
-		expect(markAlreadyInResult(axes, null)).toBe(axes);
-	});
-
-	it("passes axes through unchanged when existing is empty (nothing already sliced)", () => {
+	// One case, not two, since DAT-671 R5: "the structural read couldn't decide"
+	// and "nothing is already sliced" both arrive here as an EMPTY set, because
+	// `alreadyInResult` absorbs `existingIdentifierColumns`'s null into the union
+	// it returns. They were always the same behaviour — pass everything through,
+	// never guess — and they are now the same value too, so this parameter is no
+	// longer nullable.
+	it("passes axes through unchanged when nothing is known to be already sliced", () => {
 		const axes = [axis("account_id__name")];
 		expect(markAlreadyInResult(axes, new Set())).toBe(axes);
 	});
@@ -1528,5 +1553,199 @@ describe("demoteWithheldDateAxes (DAT-857)", () => {
 			axis("region"),
 		];
 		expect(demoteWithheldDateAxes(input)).toBe(input);
+	});
+});
+
+describe("the COMPOSED answer target (DAT-671 R2)", () => {
+	// Built through the same constructor the DB read uses, so these cannot drift
+	// from the key format.
+	const carrier = (verdict: string, bucketGrain: string | null = null) =>
+		buildTargetAdditivity([
+			{
+				axisKind: "time",
+				axisKey: "*",
+				status: "classified",
+				verdict,
+				reason: null,
+				abstainReason: null,
+				bucketGrain,
+			},
+			{
+				axisKind: "categorical",
+				axisKey: "*",
+				status: "classified",
+				verdict,
+				reason: null,
+				abstainReason: null,
+				bucketGrain: null,
+			},
+		]);
+
+	describe("coarsestGrain", () => {
+		// COARSEST, not finest: a formula re-evaluated per bucket is only as fine
+		// as its least frequent input. Bucketing monthly data by day would print a
+		// value in one bucket and a dash in the other thirty.
+		it("takes the coarsest rung across the carriers", () => {
+			expect(coarsestGrain(["day", "month"])).toBe("month");
+			expect(coarsestGrain(["quarter", "month", "day"])).toBe("quarter");
+			expect(coarsestGrain(["year"])).toBe("year");
+		});
+
+		it("makes NO claim when any carrier makes none", () => {
+			// Not out-votable: one carrier with no observed cadence means the
+			// composition has no floor to state, and the menu offers every preset.
+			expect(coarsestGrain(["month", null])).toBeNull();
+			expect(coarsestGrain([])).toBeNull();
+		});
+
+		it("treats a token outside the mirrored ladder as no claim", () => {
+			// The ladder mirrors additivity_db_models.BUCKET_GRAINS. If the engine
+			// adds a rung, inventing a position for it here would claim a cadence
+			// nobody served — so an unknown token degrades to "no claim", loudly
+			// enough to notice and never wrong.
+			expect(coarsestGrain(["fortnight"])).toBeNull();
+			expect(coarsestGrain(["month", "fortnight"])).toBeNull();
+		});
+	});
+
+	describe("composedVerdict", () => {
+		it("treats the combination as a RECOMPUTE, floored at the coarsest carrier", () => {
+			const composed = composedVerdict(
+				new Map([
+					["revenue", carrier("additive", "month")],
+					["cogs", carrier("additive", "day")],
+				]),
+			);
+			// The verdict the answer's own arithmetic implies — the same one a ratio
+			// metric carries, so decideTimeAxis decides it through one rule.
+			expect(
+				decideTimeAxis("entry_date", {
+					target: composed,
+					carriers: new Map([
+						["revenue", carrier("additive", "month")],
+						["cogs", carrier("additive", "day")],
+					]),
+				}),
+			).toEqual({ offer: true, bucketGrain: "month" });
+		});
+
+		it("never claims additivity — a composed total is always recomputed", () => {
+			// The conservative direction, deliberately: the arithmetic MIGHT be a
+			// plain difference whose parts sum, and understating that costs a label.
+			// Overstating it would present a ratio's buckets as if they added up.
+			const composed = composedVerdict(
+				new Map([["revenue", carrier("additive", "month")]]),
+			);
+			for (const axisKind of ["time", "categorical"]) {
+				expect(resolveAxisVerdict(composed, axisKind, "*")?.verdict).toBe(
+					"non_additive_recompute",
+				);
+			}
+		});
+
+		it("withholds when a carrier does not sum — naming it", () => {
+			const carriers = new Map([
+				["revenue", carrier("additive", "month")],
+				["closing_balance", carrier("semi_additive", "month")],
+			]);
+			const got = decideTimeAxis("entry_date", {
+				target: composedVerdict(carriers),
+				carriers,
+			});
+			expect(got.offer).toBe(false);
+			if (got.offer === false) expect(got.reason).toContain("closing_balance");
+		});
+	});
+});
+
+describe("resolveAnswerTarget (DAT-671 R2 — the identity spine)", () => {
+	const REVENUE = "CASE WHEN COUNT(*) = 0 THEN NULL ELSE SUM(credit) END";
+	const source = (snippetId: string | null, selectExpr = REVENUE) => ({
+		snippetId,
+		selectExpr,
+	});
+
+	beforeEach(() => {
+		groundedConcepts.clear();
+		groundedConcepts.set("snip_rev", {
+			concept: "revenue",
+			selectExpr: REVENUE,
+		});
+		groundedConcepts.set("snip_rev_alt", {
+			concept: "revenue",
+			selectExpr: REVENUE,
+		});
+		groundedConcepts.set("snip_cogs", {
+			concept: "cogs",
+			selectExpr: "SUM(debit)",
+		});
+	});
+
+	it("ONE source IS the measure — its own persisted verdict governs", async () => {
+		expect(await resolveAnswerTarget([source("snip_rev")])).toEqual({
+			kind: "measure",
+			key: "revenue",
+		});
+	});
+
+	it("several concepts are carriers of a COMPOSED target", async () => {
+		expect(
+			await resolveAnswerTarget([
+				source("snip_rev"),
+				source("snip_cogs", "SUM(debit)"),
+			]),
+		).toEqual({ kind: "composed", carriers: ["revenue", "cogs"] });
+	});
+
+	// The branch is on how many operands the ANSWER combined, never on how many
+	// distinct concepts they resolved to. A period-over-period change of ONE
+	// measure — (revenue_this - revenue_prior) / revenue_prior — resolves to a
+	// single concept and is emphatically not that concept: as a `measure` target
+	// it would inherit revenue's own `additive` verdict and print a percentage
+	// as though the monthly rows summed to it.
+	it("TWO sources of the SAME concept still compose — never collapse to the measure", async () => {
+		expect(
+			await resolveAnswerTarget([source("snip_rev"), source("snip_rev_alt")]),
+		).toEqual({ kind: "composed", carriers: ["revenue"] });
+	});
+
+	it("withholds when any source names no grounding", async () => {
+		expect(await resolveAnswerTarget([source(null)])).toBeNull();
+		// All-or-nothing: one unjudged operand poisons a composed bucket, and
+		// saying so once beats naming a carrier the practitioner never saw.
+		expect(
+			await resolveAnswerTarget([source("snip_rev"), source(null)]),
+		).toBeNull();
+	});
+
+	it("withholds when a grounding does not resolve", async () => {
+		// Hallucinated, retired, or retained-FAILED (the graph read drops those).
+		expect(await resolveAnswerTarget([source("snip_ghost")])).toBeNull();
+	});
+
+	// The identity is a claim the answer makes, and this is what verifies it.
+	it("withholds when the declared expression is no longer the classified one", async () => {
+		// The sanctioned ADAPT (a tighter filter, a narrower period) lives in
+		// `where` and leaves this untouched. Adapting the ARITHMETIC makes the
+		// answer a different measure than the one whose additivity was judged —
+		// the verdict would then license a bucketing nobody ruled on.
+		expect(
+			await resolveAnswerTarget([source("snip_rev", "AVG(credit)")]),
+		).toBeNull();
+		expect(
+			await resolveAnswerTarget([source("snip_rev", "SUM(credit) * 2")]),
+		).toBeNull();
+	});
+
+	it("accepts a differently-SPELLED but identical expression", async () => {
+		// Canonicalized through the same AST comparison the reuse classifier
+		// uses, so quoting and whitespace never cost a legitimate reuse.
+		groundedConcepts.set("snip_plain", {
+			concept: "revenue",
+			selectExpr: "SUM(credit)",
+		});
+		expect(
+			await resolveAnswerTarget([source("snip_plain", 'SUM( "credit" )')]),
+		).toEqual({ kind: "measure", key: "revenue" });
 	});
 });

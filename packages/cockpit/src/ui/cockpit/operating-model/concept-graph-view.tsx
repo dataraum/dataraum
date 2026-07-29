@@ -3,8 +3,8 @@
 // each concept's `part_of` ancestry, `disjoint_with` peers, `reconciles_with`
 // assertions, and its groundings (a concept can be measured on SEVERAL
 // relations — "multi-groundings"). A pure render of already-fetched values
-// (React idiom 12) — no recomputation, the `concept-graph.ts` builder already
-// did that server-side, INCLUDING the sort order (`graph.nodes` arrives
+// (React idiom 12) — no recomputation, the graph read (`concept-graph-load.ts`)
+// already did that server-side, INCLUDING the sort order (`graph.nodes` arrives
 // already sorted by name — this view must not re-sort it).
 //
 // Deliberately NOT the xyflow canvas the Metrics view uses: that canvas's node
@@ -183,7 +183,7 @@ export function ConceptGraphView({ graph }: { graph: ConceptGraph }) {
 		);
 	}
 
-	// graph.nodes is ALREADY sorted by name (buildConceptGraph's contract) —
+	// graph.nodes is ALREADY sorted by name (the loader's contract) —
 	// no re-sort here (the one-source-of-truth-for-order rule this lane's spec
 	// review asked for).
 	const visible = graph.nodes.slice(0, MAX_VISIBLE_CONCEPTS);
@@ -201,8 +201,8 @@ export function ConceptGraphView({ graph }: { graph: ConceptGraph }) {
 				<Accordion multiple variant="separated" data-testid="concept-accordion">
 					{visible.map((c) => (
 						<Accordion.Item
-							key={c.id}
-							value={c.id}
+							key={c.conceptId}
+							value={c.conceptId}
 							data-testid={`concept-item-${c.name}`}
 						>
 							<Accordion.Control>

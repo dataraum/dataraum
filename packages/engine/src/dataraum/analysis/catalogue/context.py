@@ -40,6 +40,7 @@ from dataraum.analysis.relationships.db_models import Relationship
 from dataraum.analysis.relationships.surrogate import is_surrogate_column
 from dataraum.analysis.relationships.utils import load_defined_relationships
 from dataraum.analysis.semantic.db_models import SemanticAnnotation, TableEntity
+from dataraum.analysis.semantic.utils import truncate_sample_value
 from dataraum.analysis.slicing.db_models import SliceDefinition
 from dataraum.analysis.statistics.db_models import StatisticalProfile
 from dataraum.analysis.typing.db_models import TypeCandidate
@@ -51,20 +52,7 @@ from dataraum.storage.snapshot_head import GENERATION_STAGE, head_run_id
 if TYPE_CHECKING:
     import duckdb
 
-    from dataraum.llm.privacy import DataSampler
-
 logger = get_logger(__name__)
-
-# String truncation for a single sample value — the house cap the semantic
-# agent applies (``SemanticAgent._truncate_sample``).
-_SAMPLE_MAX_CHARS = 100
-
-
-def _truncate(value: Any, max_length: int = _SAMPLE_MAX_CHARS) -> str:
-    text = str(value)
-    if len(text) > max_length:
-        return text[:max_length] + "..."
-    return text
 
 
 def _generation_heads(session: Session, table_ids: list[str]) -> dict[str, str | None]:
@@ -103,27 +91,27 @@ def _load_profiles(
 
 
 def _sample_line(
-    sampler: DataSampler, column_name: str, profile: StatisticalProfile | None
+    sample_limit: int, sample_char_limit: int, profile: StatisticalProfile | None
 ) -> str | None:
-    """Render a column's top values as one privacy-gated line, or None.
+    """Render a column's top values as one capped line, or None.
 
-    Sensitive names (the same ``DataSampler.is_sensitive`` gate every prompt
-    sample passes) render as ``<REDACTED>`` — existence stays visible, values
-    never leave. Capped at the configured ``max_sample_values``; each value
-    truncated.
+    Capped at ``sample_limit`` (``privacy.max_sample_values``); each value
+    truncated to ``sample_char_limit`` (``privacy.max_sample_value_chars``,
+    via :func:`~dataraum.analysis.semantic.utils.truncate_sample_value`) —
+    the count cap is the one every prompt builder honours; see
+    ``analysis/semantic/utils.prompt_samples`` for why it is load-bearing.
     """
     if profile is None or not profile.profile_data:
         return None
     top_values = profile.profile_data.get("top_values") or []
     if not top_values:
         return None
-    if sampler.is_sensitive(column_name):
-        return "<REDACTED>"
     parts = []
-    for tv in top_values[: sampler.config.max_sample_values]:
+    for tv in top_values[:sample_limit]:
         pct = tv.get("percentage")
         pct_str = f" ({pct:.0f}%)" if isinstance(pct, (int, float)) else ""
-        parts.append(f"'{_truncate(tv.get('value', ''))}'{pct_str}")
+        value = truncate_sample_value(tv.get("value", ""), max_chars=sample_char_limit)
+        parts.append(f"'{value}'{pct_str}")
     return ", ".join(parts)
 
 
@@ -243,7 +231,8 @@ def _format_structural_tables(
     columns_by_table: dict[str, list[Column]],
     annotation_rows: list[dict[str, Any]],
     profiles: dict[str, StatisticalProfile],
-    sampler: DataSampler,
+    sample_limit: int,
+    sample_char_limit: int,
     *,
     run_id: str,
     relationship_endpoint_ids: set[str],
@@ -293,7 +282,7 @@ def _format_structural_tables(
                 lines.append(f"  identity column {name}: {ic.get('note', '')}")
                 column_id = col_id_by_name.get(name)
                 if column_id and column_id not in relationship_endpoint_ids:
-                    sample = _sample_line(sampler, name, profiles.get(column_id))
+                    sample = _sample_line(sample_limit, sample_char_limit, profiles.get(column_id))
                     if sample:
                         lines.append(f"    values: {sample}")
         # Measure sign/range (section 7): from the typed profile at the
@@ -363,6 +352,7 @@ def _conditioned_top_values(
     key: str,
     label_column: str,
     limit: int,
+    char_limit: int,
 ) -> str | None:
     """One DuckDB aggregate: a label's top values over rows riding the join.
 
@@ -405,7 +395,10 @@ def _conditioned_top_values(
         return None
     if not rows:
         return None
-    return ", ".join(f"'{_truncate(value)}' ({pct:.0f}%)" for value, _cnt, pct in rows)
+    return ", ".join(
+        f"'{truncate_sample_value(value, max_chars=char_limit)}' ({pct:.0f}%)"
+        for value, _cnt, pct in rows
+    )
 
 
 def _sign_summary(min_v: float, max_v: float) -> str:
@@ -476,7 +469,8 @@ def _conditioned_evidence(
     session: Session,
     duckdb_conn: duckdb.DuckDBPyConnection,
     relationships: list[Relationship],
-    sampler: DataSampler,
+    sample_limit: int,
+    sample_char_limit: int,
     *,
     run_id: str,
     endpoint_ids: set[str],
@@ -549,9 +543,6 @@ def _conditioned_evidence(
             if label_col is None or label_col.column_id in endpoint_ids:
                 continue
             header = f"{name} ({rel.from_column.column_name}-joined rows)"
-            if sampler.is_sensitive(name):
-                lines.append(f"{header}: <REDACTED>")
-                continue
             samples = _conditioned_top_values(
                 duckdb_conn,
                 from_path=from_table.duckdb_path,
@@ -559,7 +550,8 @@ def _conditioned_evidence(
                 fk=rel.from_column.column_name,
                 key=rel.to_column.column_name,
                 label_column=name,
-                limit=sampler.config.max_sample_values,
+                limit=sample_limit,
+                char_limit=sample_char_limit,
             )
             if samples:
                 lines.append(f"{header}: {samples}")
@@ -574,9 +566,6 @@ def _conditioned_evidence(
         )
         for measure_col in measure_columns:
             header = f"{measure_col.column_name} ({rel.from_column.column_name}-joined rows)"
-            if sampler.is_sensitive(measure_col.column_name):
-                lines.append(f"{header}: <REDACTED>")
-                continue
             value_range = _conditioned_measure_range(
                 duckdb_conn,
                 from_path=from_table.duckdb_path,
@@ -597,7 +586,8 @@ def _conditioned_evidence(
 def _format_relationships(
     relationships: list[Relationship],
     profiles: dict[str, StatisticalProfile],
-    sampler: DataSampler,
+    sample_limit: int,
+    sample_char_limit: int,
     conditioned: dict[str, list[str]],
 ) -> str:
     """The confirmed relationship catalogue WITH evidence and endpoint samples.
@@ -630,11 +620,15 @@ def _format_relationships(
         metrics = _evidence_metrics(evidence)
         if metrics:
             lines.append(f"  measured:{metrics}")
+        # Authored evidence prose (DAT-671 prompt-content bounds policy):
+        # metadata is NOT capped — a freak-length reasoning string fails
+        # honestly against the phase's token budget rather than being
+        # silently truncated (the prior [:400] cut was deleted here).
         reasoning = evidence.get("reasoning")
         if reasoning:
-            lines.append(f"  reasoning: {_truncate(reasoning, 400)}")
+            lines.append(f"  reasoning: {reasoning}")
         for label, col in (("from", from_col), ("to", to_col)):
-            sample = _sample_line(sampler, col.column_name, profiles.get(col.column_id))
+            sample = _sample_line(sample_limit, sample_char_limit, profiles.get(col.column_id))
             if sample:
                 lines.append(f"  {label} values ({col.column_name}): {sample}")
         # Chain-conditioned evidence (DAT-853): label samples + measure
@@ -753,7 +747,8 @@ def build_catalogue_inputs(
     table_ids: list[str],
     session_table_ids: list[str],
     run_id: str,
-    sampler: DataSampler,
+    sample_limit: int,
+    sample_char_limit: int,
 ) -> dict[str, str]:
     """Assemble the catalogue prompt's evidence inputs (sections 1-7).
 
@@ -834,7 +829,8 @@ def build_catalogue_inputs(
         session,
         duckdb_conn,
         relationships,
-        sampler,
+        sample_limit,
+        sample_char_limit,
         run_id=run_id,
         endpoint_ids=endpoint_ids,
         measure_ids=measure_ids,
@@ -898,13 +894,14 @@ def build_catalogue_inputs(
             columns_by_table,
             annotation_rows,
             profiles,
-            sampler,
+            sample_limit,
+            sample_char_limit,
             run_id=run_id,
             relationship_endpoint_ids=endpoint_ids,
         ),
         "column_annotations": _format_annotations(annotation_rows),
         "relationship_catalogue": _format_relationships(
-            relationships, profiles, sampler, conditioned
+            relationships, profiles, sample_limit, sample_char_limit, conditioned
         ),
         "enriched_views": _format_enriched_views(views, all_table_names, rel_by_id),
         "shared_axes": _format_shared_axes(slices, all_table_names, scope=scope),

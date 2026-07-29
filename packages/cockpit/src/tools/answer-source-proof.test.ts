@@ -80,7 +80,10 @@ function declaredRevenue(filters: string[] = ["year = 2024"]) {
 		filters,
 	});
 	if (!parts) throw new Error("declaration should narrow");
-	return { sources: [{ name: "revenue", parts }], expression: "revenue" };
+	return {
+		sources: [{ name: "revenue", snippetId: null, parts }],
+		expression: "revenue",
+	};
 }
 
 const validated = (

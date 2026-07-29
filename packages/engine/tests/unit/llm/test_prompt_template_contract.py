@@ -23,14 +23,13 @@ _VALID: dict[str, object] = {
     "name": "t",
     "version": "1.0.0",
     "description": "d",
-    "temperature": 0.0,
     "system_prompt": "sys",
     "user_prompt": "usr",
 }
 
 
 def test_minimal_template_loads() -> None:
-    """The six required scalars are sufficient; the three dict fields default."""
+    """The five required scalars are sufficient; the three dict fields default."""
     t = PromptTemplate(**_VALID)
     assert t.inputs == {}
     assert t.output_schema == {}

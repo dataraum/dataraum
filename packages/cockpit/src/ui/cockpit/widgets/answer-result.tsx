@@ -326,6 +326,12 @@ function AnswerResultBody({
 								partsSources: state.drillSource.sources.map((s) => ({
 									relation: s.parts.relation,
 									selectExpr: s.parts.selectExpr,
+									// DAT-671 R2: WHICH grounding each source reuses. The
+									// server resolves it to a concept and reads that target's
+									// additivity verdict — dropping it here would silently
+									// cost this answer its time grain, since a source with no
+									// identity is indistinguishable from a fresh one.
+									snippetId: s.snippetId,
 								})),
 								// DAT-671: the answer's own BASE statement — deliberately
 								// `state.sql`, NOT this component's own `shownSql` (which

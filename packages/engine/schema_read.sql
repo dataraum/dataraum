@@ -321,16 +321,6 @@ SELECT * FROM __WS__.metric_parameters
 WHERE vertical = COALESCE(
   (SELECT active_vertical FROM __WS__.workspace_settings), '_adhoc');
 
-DROP VIEW IF EXISTS __READ__.current_metric_unit_grain;
-CREATE VIEW __READ__.current_metric_unit_grain AS
-SELECT r.* FROM __WS__.metric_unit_grain r
-WHERE EXISTS (
-  SELECT 1 FROM __WS__.metadata_snapshot_head h
-  WHERE h.target = 'catalog'
-    AND h.stage = 'operating_model'
-    AND h.run_id = r.run_id
-);
-
 DROP VIEW IF EXISTS __READ__.metrics;
 CREATE VIEW __READ__.metrics AS
 SELECT * FROM __WS__.metrics

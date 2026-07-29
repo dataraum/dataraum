@@ -1,4 +1,4 @@
-// select-stage pure mappers (DAT-398) — turn a `ConnectSchema` + the user's
+// select-stage pure mappers (DAT-398) — turn a staged source + the user's
 // subset choice into the exact `sources`-row payload the engine import phase
 // consumes. NO I/O here: `select/source-write.ts` carries the DB write and
 // `server/import-sources.ts` drives the batch; everything that decides the
@@ -11,22 +11,17 @@
 //   - file:     `connection_config.file_uris = ["s3://<bucket>/<key>", …]`
 //               + `source_type` derived from the URI suffix (csv|parquet|json),
 //                 NOT the literal "file".
-//   - database: `connection_config.tables = [{name, sql}, …]` synthesized from
-//               the picked `ConnectSchema.tables[]`, + `source_type="db_recipe"`,
-//               + the `backend` COLUMN (import fails loud without it).
+//   - database: `connection_config.tables = [{name, sql}, …]` + the `backend`
+//               COLUMN (import fails loud without it). `RecipeTable` is that
+//               entry's shape; the recipe rows themselves are written by
+//               `select/recipe-source.ts`, ONE per staged query.
 //
-// The recipe synthesis is the subtle part. A `ConnectSchema.tables[].name` is a
-// DISPLAY name `groupInformationSchema` qualifies as `<schema>.<table>` only for
-// non-default schemas (e.g. `dbo.Invoices`); the default schema stays
-// unqualified (`Invoices`). The engine runs each recipe `sql` VERBATIM after
-// `USE src.<backend-default-schema>`, so:
-//   - the recipe `name` must be a fresh sanitized `[a-z][a-z0-9_]*` identifier
-//     (it becomes the DuckDB raw table `raw_<name>` / `<source>__<name>`), and
-//   - the `sql` is `SELECT * FROM <quoted schema-qualified ident>` so a
-//     non-default-schema table still resolves, with identifier quoting treated
-//     as a (low) injection surface and escaped.
-
-import type { ConnectSchema } from "../duckdb/connect";
+// A second producer of those rows used to live here — the picked tables of a
+// database-wide `ConnectSchema`, whose `<schema>.<table>` display names were
+// re-quoted into `SELECT * FROM "schema"."table"`. Its only source was the
+// `connect(source_kind=database)` introspection, which had no caller and is
+// gone (DAT-671 R6), so the synthesis went with it rather than waiting for a
+// producer that was never coming (ADR-0024 decision 3).
 
 // THE source-name rule — this pattern is the authority (DAT-430 deleted the
 // engine's legacy `SourceManager` and its `_NAME_PATTERN`; the cockpit's
@@ -117,39 +112,6 @@ export interface RecipeTable {
 // `recipeContentHash` (sha256 over `{backend, tables}`) moved to the server-only
 // `select/source-content-hash.ts` — see the note above.
 
-/** Quote a single SQL identifier segment, doubling embedded double-quotes.
- *
- * The schema-qualified display name is split on the FIRST dot into a
- * schema + table; each segment is quoted independently so a dot inside a
- * (quoted) table name is impossible to confuse with the schema separator, and
- * any `"` in a segment is escaped. This is the (low) injection surface the spec
- * flags: the display name originates from `information_schema`, but we never
- * interpolate it raw. */
-function quoteIdent(segment: string): string {
-	return `"${segment.replace(/"/g, '""')}"`;
-}
-
-/**
- * The `SELECT * FROM …` SQL for a `ConnectSchema.tables[].name` display name.
- *
- * `groupInformationSchema` qualifies the name `<schema>.<table>` ONLY for a
- * non-default schema; a default-schema table is the bare `<table>`. We split on
- * the first dot to recover that structure and quote each part, producing
- * `SELECT * FROM "schema"."table"` (qualified) or `SELECT * FROM "table"`
- * (unqualified). The engine runs this verbatim after `USE src.<default_schema>`,
- * so the unqualified form resolves against the backend default schema and the
- * qualified form against its explicit schema.
- */
-export function recipeSqlForDisplayName(displayName: string): string {
-	const dot = displayName.indexOf(".");
-	if (dot > 0 && dot < displayName.length - 1) {
-		const schema = displayName.slice(0, dot);
-		const table = displayName.slice(dot + 1);
-		return `SELECT * FROM ${quoteIdent(schema)}.${quoteIdent(table)}`;
-	}
-	return `SELECT * FROM ${quoteIdent(displayName)}`;
-}
-
 /** Lowercase + collapse non-identifier runs to `_`, strip edge underscores, and
  * ensure a leading letter — the cockpit mirror of the engine's
  * `sanitize_identifier` (core/duckdb_naming.py), tightened to the recipe
@@ -167,33 +129,4 @@ export function sanitizeRecipeName(displayName: string): string {
 		s = `t_${s}`.replace(/_+$/g, "");
 	}
 	return s;
-}
-
-/**
- * Synthesize the `connection_config.tables` recipe list from the picked
- * `ConnectSchema.tables[]`.
- *
- * Each picked table becomes one `{name, sql}` recipe entry: `name` is a fresh
- * sanitized identifier (it becomes the DuckDB raw table `raw_<name>`), `sql` is
- * `SELECT * FROM <quoted schema-qualified ident>`. Recipe names must be unique
- * (two display names sanitizing to the same identifier would collide on one raw
- * table); a collision is de-duplicated by appending `_2`, `_3`, … so the
- * persisted recipe is always materializable.
- */
-export function connectTablesToRecipeTables(
-	tables: ConnectSchema["tables"],
-): RecipeTable[] {
-	if (tables.length === 0) {
-		throw new Error(
-			"Database select has no tables — pick at least one table to import.",
-		);
-	}
-	const used = new Map<string, number>();
-	return tables.map((t) => {
-		const base = sanitizeRecipeName(t.name);
-		const seen = used.get(base) ?? 0;
-		used.set(base, seen + 1);
-		const name = seen === 0 ? base : `${base}_${seen + 1}`;
-		return { name, sql: recipeSqlForDisplayName(t.name) };
-	});
 }

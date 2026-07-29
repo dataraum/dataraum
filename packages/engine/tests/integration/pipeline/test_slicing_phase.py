@@ -178,7 +178,6 @@ class TestSlicingPhase:
             table_id=table_id,
             column_id=col_id,
             slice_type="categorical",
-            distinct_values=["A", "B", "C"],
             value_count=3,
             reasoning="Test slice",
             detection_source="llm",

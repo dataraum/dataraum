@@ -7,12 +7,16 @@
 # description) and every column's catalogue-grain concept (meaning +
 # determination, unit source, derived-formula hypothesis, stored-sign claim).
 # Structured output via the CatalogueSemanticsOutput Pydantic schema.
+#
+# v1.4.0 (DAT-671): derived_formula_confidence is now ASKED FOR. It has always
+# been required by the schema and read by the derived-value detector (which pairs
+# it with the measured match rate when adjudicating the formula claim), but the
+# column_concepts block explained every sibling field and skipped this one — a
+# number the model had to emit blind on every column.
 
 name: catalogue_semantics
-version: "1.3.0"
+version: "1.4.0"
 description: Catalogue-horizon business semantics — table readings + column concepts
-
-temperature: 0.0
 
 system_prompt: |
   You are a senior data analyst authoring the business semantics of a data
@@ -77,6 +81,13 @@ system_prompt: |
     should obey (two column names joined by + - * /). Operands MAY live in a
     JOINED table reachable via a confirmed relationship (use 'table.column') —
     the derived-value check runs over the enriched fact×dimension view.
+  - derived_formula_confidence: how sure you are of that arithmetic, 0.0-1.0.
+    The detector carries this number ALONGSIDE the formula's measured match rate
+    when it adjudicates the claim, so it decides how much a disagreement between
+    your hypothesis and the data counts against the data. State a low number for
+    a plausible-but-inferred formula rather than dropping the hypothesis — a
+    hedged claim is gradeable, a withheld one is not. 0.0 when the hypothesis
+    is "".
   - stored_sign_claim / stored_sign_claim_confidence: see below.
   </column_concepts>
 
@@ -113,8 +124,8 @@ system_prompt: |
   <evidence>
   - The statistics on the relationship lines are MEASURED from the data, not
     guessed; treat them as facts.
-  - Value samples come from the profiled data. `<REDACTED>` means values exist
-    but are withheld for privacy — reason from the column's name and structure.
+  - Value samples come from the profiled data, capped per column; absence of
+    samples means the column was never profiled, not that values were hidden.
   - The per-column annotations (role, term, stock/flow claim) were decided
     earlier from each table alone and may have been human-corrected. They are
     read-only context — do not re-emit or contradict a role; build the meaning

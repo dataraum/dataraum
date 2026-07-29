@@ -166,9 +166,11 @@ class DimensionIdentityJudge(LLMFeature):
 
         Args:
             candidates: Each ``{ref, table, a, b, meanings}`` where ``a`` and
-                ``b`` are ``{name, distinct, samples}`` (the two bijective
-                columns) and ``meanings`` maps column name to its authored
-                meaning (may be empty — the judge then leans on names + values).
+                ``b`` are ``{name, samples}`` (the two bijective columns) and
+                ``meanings`` maps column name to its authored meaning (may be
+                empty — the judge then leans on names + values). No cardinality
+                rides a side: the counts are equal by construction and the prompt
+                excludes the bijection itself from the evidence (DAT-671).
 
         Returns:
             One verdict per pair, or a failed Result on an unusable response.
@@ -207,7 +209,7 @@ class DimensionIdentityJudge(LLMFeature):
         tier = feature.model_tier if feature else "balanced"
         effort = feature.effort if feature else None
         try:
-            system_prompt, user_prompt, temperature = self.renderer.render_split(template, context)
+            system_prompt, user_prompt = self.renderer.render_split(template, context)
         except Exception as e:  # noqa: BLE001 — template errors are config errors
             return Result.fail(f"Failed to render {template} prompt: {e}")
 
@@ -219,7 +221,6 @@ class DimensionIdentityJudge(LLMFeature):
             label=template,
             effort=effort,
             max_tokens=self.config.limits.max_output_tokens_per_request,
-            temperature=temperature,
             model=model,
         )
         response = self.provider.converse(request).unwrap()
@@ -252,8 +253,7 @@ class DimensionIdentityJudge(LLMFeature):
                 side = c[side_name]
                 samples = ", ".join(str(v) for v in side.get("samples", []))
                 blocks.append(
-                    f"    {side_name}: {side['name']} — {side['distinct']:,} distinct"
-                    + (f", e.g. {samples}" if samples else "")
+                    f"    {side_name}: {side['name']}" + (f" — e.g. {samples}" if samples else "")
                 )
             meanings: dict[str, str] = c.get("meanings") or {}
             for col in sorted(meanings):

@@ -19,6 +19,44 @@ CREATE TABLE concept_edges (
 
 CREATE UNIQUE INDEX uq_concept_edge_active ON concept_edges (vertical, predicate, from_concept, to_concept) WHERE superseded_at IS NULL;
 
+CREATE TABLE concept_reconciliation (
+	reconciliation_id VARCHAR NOT NULL, 
+	run_id VARCHAR NOT NULL, 
+	vertical VARCHAR NOT NULL, 
+	from_concept VARCHAR NOT NULL, 
+	to_concept VARCHAR NOT NULL, 
+	pair_key VARCHAR NOT NULL, 
+	left_snippet_id VARCHAR, 
+	right_snippet_id VARCHAR, 
+	left_relation VARCHAR, 
+	right_relation VARCHAR, 
+	left_as_of VARCHAR, 
+	right_as_of VARCHAR, 
+	left_value NUMERIC, 
+	right_value NUMERIC, 
+	delta NUMERIC, 
+	relative_delta NUMERIC, 
+	tolerance FLOAT, 
+	status VARCHAR NOT NULL, 
+	verdict VARCHAR, 
+	abstain_reason VARCHAR, 
+	created_at TIMESTAMP WITH TIME ZONE NOT NULL, 
+	CONSTRAINT pk_concept_reconciliation PRIMARY KEY (reconciliation_id), 
+	CONSTRAINT uq_concept_reconciliation_pair UNIQUE (vertical, from_concept, to_concept, pair_key, run_id), 
+	CONSTRAINT ck_concept_reconciliation_status CHECK (status IN ('abstained', 'evaluated')), 
+	CONSTRAINT ck_concept_reconciliation_verdict CHECK (verdict IS NULL OR verdict IN ('beyond_tolerance', 'no_tolerance_declared', 'within_tolerance')), 
+	CONSTRAINT ck_concept_reconciliation_abstain_reason CHECK (abstain_reason IS NULL OR abstain_reason IN ('different_aggregations', 'different_reporting_instants', 'execution_failed', 'no_evaluable_pair', 'no_value', 'unresolved_grounding')), 
+	CONSTRAINT ck_concept_reconciliation_status_verdict_reason CHECK ((status = 'evaluated' AND verdict IS NOT NULL AND abstain_reason IS NULL AND left_value IS NOT NULL AND right_value IS NOT NULL AND delta IS NOT NULL AND relative_delta IS NOT NULL) OR (status = 'abstained' AND verdict IS NULL AND abstain_reason IS NOT NULL AND delta IS NULL AND relative_delta IS NULL)), 
+	CONSTRAINT ck_concept_reconciliation_tolerance_verdict CHECK (verdict IS NULL OR (verdict = 'no_tolerance_declared' AND tolerance IS NULL) OR (verdict <> 'no_tolerance_declared' AND tolerance IS NOT NULL)), 
+	CONSTRAINT ck_concept_reconciliation_pair_key_snippets CHECK ((pair_key = '*' AND left_snippet_id IS NULL AND right_snippet_id IS NULL) OR (pair_key <> '*' AND left_snippet_id IS NOT NULL AND right_snippet_id IS NOT NULL))
+);
+
+CREATE INDEX ix_concept_reconciliation_from_concept ON concept_reconciliation (from_concept);
+
+CREATE INDEX ix_concept_reconciliation_run_id ON concept_reconciliation (run_id);
+
+CREATE INDEX ix_concept_reconciliation_vertical ON concept_reconciliation (vertical);
+
 CREATE TABLE concepts (
 	concept_id VARCHAR NOT NULL, 
 	vertical VARCHAR NOT NULL, 

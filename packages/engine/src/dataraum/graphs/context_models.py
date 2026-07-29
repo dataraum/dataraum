@@ -328,15 +328,38 @@ class GroundingContext:
 
 @dataclass
 class ConceptReconciliation:
-    """One ``reconciles_with`` verdict on a concept (concept_edges).
+    """One ``reconciles_with`` assertion on a concept, with its evaluation.
 
     The landed shape (owner-ruled) derives concept-grain SELF-LOOPS for
     multi-grounding tie-out (``partner == concept``); seed/declared rows may
     name a distinct partner concept.
+
+    The fields below the assertion carry what the last promoted run OBSERVED
+    when it executed both sides (DAT-739). They are folded from that run's
+    per-pair rows: ``evaluated_pairs`` of ``pairs`` produced comparable numbers,
+    and the delta reported is the WIDEST divergence among them — the pair that
+    puts the assertion most in question. ``status is None`` means the assertion
+    has not been evaluated yet (no promoted run carries a row for it), which is
+    a different statement from "evaluated and found consistent" and must be
+    rendered as one.
+
+    ``observed_delta`` NEVER implies a failure on its own: with no declared
+    ``tolerance`` there is no band to have missed, and ``verdict`` says exactly
+    that (``no_tolerance_declared``).
     """
 
     partner: str
     tolerance: float | None = None
+    #: ``'evaluated'`` | ``'abstained'`` | ``None`` (never evaluated).
+    status: str | None = None
+    verdict: str | None = None
+    #: Why no pair could be compared — set only when NO pair was evaluated and
+    #: every abstention agreed on the reason.
+    abstain_reason: str | None = None
+    observed_delta: float | None = None
+    relative_delta: float | None = None
+    pairs: int = 0
+    evaluated_pairs: int = 0
 
 
 @dataclass

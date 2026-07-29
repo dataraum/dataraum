@@ -126,6 +126,7 @@ class MetricsPhase(BasePhase):
 
     @property
     def db_models(self) -> list[ModuleType]:
+        from dataraum.analysis.semantic import reconciliation_db_models
         from dataraum.graphs import (
             additivity_db_models,
             metric_graph_db_models,
@@ -140,6 +141,7 @@ class MetricsPhase(BasePhase):
             additivity_db_models,
             unit_grain_db_models,
             metric_graph_db_models,
+            reconciliation_db_models,
         ]
 
     def _run(self, ctx: PhaseContext) -> PhaseResult:
@@ -410,6 +412,38 @@ class MetricsPhase(BasePhase):
         except Exception as e:
             _log.warning("reconciles_with_derivation_failed", error=str(e))
 
+        # reconciles_with EVALUATION (DAT-739): the block above derives the
+        # assertion that two computations of one quantity must tie out. Nothing
+        # ever computed whether they DO — three surfaces render "must tie out"
+        # as a contract, and it was never checked. This re-executes each
+        # asserted concept's groundings and records the observed tie-out.
+        #
+        # Runs AFTER the derivation because it evaluates the edge set that call
+        # just settled: an assertion whose support vanished must not be
+        # evaluated, and one newly supported must. Note the edges are workspace-
+        # persistent, not run-versioned, so a failed derivation above leaves the
+        # PREVIOUS assertions active and evaluating them is still correct.
+        #
+        # SAVEPOINT-isolated like its three siblings, for the same reason: a
+        # failure here costs this run's tie-out evidence and nothing else, never
+        # the recorded metric execute-state. The outcome is promoted only after
+        # the block RELEASES cleanly — releasing flushes, so a value assigned
+        # inside could otherwise count rows its own savepoint had rolled back.
+        from dataraum.analysis.semantic.reconciliation import (
+            ReconciliationOutcome,
+            evaluate_reconciliations,
+        )
+
+        reconciliation = ReconciliationOutcome()
+        try:
+            with ctx.session.begin_nested():
+                produced = evaluate_reconciliations(
+                    ctx.session, ctx.duckdb_conn, vertical=vertical, run_id=run_id
+                )
+            reconciliation = produced
+        except Exception as e:
+            _log.warning("concept_reconciliation_failed", error=str(e))
+
         executed = sum(1 for a in artifacts.values() if a.state == "executed")
         grounded_stuck = sum(1 for a in artifacts.values() if a.state == "grounded")
         declared_stuck = sum(1 for a in artifacts.values() if a.state == "declared")
@@ -440,6 +474,20 @@ class MetricsPhase(BasePhase):
             for graph_id, error in sorted(unit_grain.failures.items())
         )
 
+        # A tie-out that BREACHED a declared band is a warning — someone stated
+        # the bound and the data missed it. An observed delta with no declared
+        # band is NOT: it is the measurement this phase now makes, and shouting
+        # every one of them would invent alarm out of the absence of a
+        # threshold. Those ride the structured output below instead.
+        previews.extend(
+            f"{concept}: reconciliation breached — {detail}"
+            for concept, detail in sorted(reconciliation.breached.items())
+        )
+        previews.extend(
+            f"{concept}: reconciliation grounding failed — {error}"
+            for concept, error in sorted(reconciliation.failures.items())
+        )
+
         return PhaseResult.success(
             outputs={
                 "declared": len(artifacts),
@@ -455,6 +503,16 @@ class MetricsPhase(BasePhase):
                 # {graph_id: what was cut} — these metrics DID get rows; the note
                 # says the rows are a bounded prefix, not the whole partition.
                 "unit_grain_truncated": unit_grain.truncated,
+                "reconciliation_rows": reconciliation.rows,
+                "reconciliation_evaluated": reconciliation.evaluated,
+                # {concept: the observed delta} — an asserted tie-out that was
+                # MEASURED with no declared band to grade it against. The
+                # feature's normal output, not a complaint.
+                "reconciliation_observed": reconciliation.observed,
+                # {concept: why} — asserted but not comparable (one grounding,
+                # different reporting instants, different aggregations).
+                "reconciliation_withheld": reconciliation.withheld,
+                "reconciliation_truncated": reconciliation.truncated,
             },
             records_processed=len(table_ids),
             records_created=len(artifacts),
@@ -463,7 +521,9 @@ class MetricsPhase(BasePhase):
                 f"{executed}/{len(artifacts)} metrics executed; "
                 f"{declared_stuck} ungroundable, {grounded_stuck} composed but inconclusive/failed; "
                 f"{unit_grain.offered} broken down per entity "
-                f"({len(unit_grain.withheld)} withheld, {len(unit_grain.truncated)} truncated)"
+                f"({len(unit_grain.withheld)} withheld, {len(unit_grain.truncated)} truncated); "
+                f"{reconciliation.evaluated} tie-outs evaluated "
+                f"({len(reconciliation.withheld)} not comparable)"
             ),
         )
 

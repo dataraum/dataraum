@@ -15,6 +15,7 @@ from dataraum.core.logging import get_logger
 from dataraum.graphs.context_models import (
     _NON_CATEGORICAL_ROLES,
     ColumnContext,
+    ConceptReconciliation,
     GraphExecutionContext,
     GroundingContext,
     SliceContext,
@@ -371,7 +372,8 @@ def _append_concepts(lines: list[str], context: GraphExecutionContext) -> None:
         "entry is a PRIOR COMMITTED grounding of that concept — reuse its columns/filters "
         "for the same concept unless the served evidence says it is wrong; a concept with "
         "several groundings is measured on several relations, and `reconciles` means those "
-        "computations must tie out."
+        "computations must tie out — each entry states whether the last completed run "
+        "actually checked that, and what it observed."
     )
     lines.append("")
     for concept in context.concepts:
@@ -403,10 +405,12 @@ def _append_concepts(lines: list[str], context: GraphExecutionContext) -> None:
             lines.append(f"  - disjoint with: {', '.join(concept.disjoint_with)}")
         for rec in concept.reconciles_with:
             tol = f" (tolerance {rec.tolerance:g})" if rec.tolerance is not None else ""
-            if rec.partner == concept.name:
-                lines.append(f"  - reconciles: across its own groundings{tol} — must tie out")
-            else:
-                lines.append(f"  - reconciles with: {rec.partner}{tol}")
+            subject = (
+                "reconciles: across its own groundings"
+                if rec.partner == concept.name
+                else f"reconciles with: {rec.partner}"
+            )
+            lines.append(f"  - {subject}{tol} — {_reconciliation_state(rec)}")
         healthy = [g for g in concept.groundings if not g.failed]
         failed = [g for g in concept.groundings if g.failed]
         if healthy:
@@ -421,6 +425,49 @@ def _append_concepts(lines: list[str], context: GraphExecutionContext) -> None:
             reason = g.failure_reason or "(no reason recorded)"
             lines.append(f"  - failed attempt [{mode}]: {reason}")
     lines.append("")
+
+
+#: Why a tie-out was not computed, phrased for a reader of the served document.
+_ABSTAIN_PHRASING: dict[str, str] = {
+    "no_evaluable_pair": "only one grounding exists to measure",
+    "different_reporting_instants": "the groundings are bound to different reporting instants",
+    "different_aggregations": "the groundings aggregate differently",
+    "unresolved_grounding": "a grounding has no executable form",
+    "execution_failed": "a grounding failed to execute",
+    "no_value": "a grounding measured no support",
+}
+
+
+def _reconciliation_state(rec: ConceptReconciliation) -> str:
+    """What the last promoted run observed for one assertion.
+
+    The distinction this wording exists to hold: an assertion nobody has
+    evaluated is NOT an assertion that held. Only a run that executed both sides
+    can say anything about agreement, so the un-evaluated case states the
+    contract and says plainly that it is unchecked.
+
+    A delta observed with no declared tolerance is reported as a MEASUREMENT and
+    nothing more. Calling it a discrepancy would grade it against a band nobody
+    set, which is the judgement this whole path refuses to invent.
+    """
+    if rec.status is None:
+        return "must tie out (not yet evaluated)"
+    if rec.status == "abstained":
+        reason = _ABSTAIN_PHRASING.get(rec.abstain_reason or "", "no comparable pair was found")
+        return f"must tie out; not compared because {reason}"
+
+    scope = f" (widest of {rec.evaluated_pairs} pairs)" if rec.evaluated_pairs > 1 else ""
+    relative = rec.relative_delta or 0.0
+    if rec.verdict == "beyond_tolerance":
+        return f"evaluated: {relative:.3g} relative divergence exceeds the tolerance{scope}"
+    if rec.verdict == "within_tolerance":
+        return f"evaluated: ties out within tolerance, {relative:.3g} relative{scope}"
+    if not rec.observed_delta:
+        return f"evaluated: the groundings tie out exactly{scope}"
+    return (
+        f"evaluated: observed delta {rec.observed_delta:g} ({relative:.3g} relative){scope}"
+        " — no tolerance is declared, so this is a measurement, not a failure"
+    )
 
 
 def _format_grounding(g: GroundingContext) -> str:

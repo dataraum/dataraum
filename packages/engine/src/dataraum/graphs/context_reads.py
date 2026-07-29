@@ -854,6 +854,66 @@ def _read_concept_edges(session: Session, read_schema: str) -> list[Any]:
     )
 
 
+def _read_reconciliation_rows(session: Session, read_schema: str) -> dict[tuple[str, str], Any]:
+    """The last promoted run's evaluated tie-out, folded per ``(concept, partner)``.
+
+    Read from ``current_concept_reconciliation``, so this is what the last
+    PROMOTED operating_model run observed — the in-run metrics phase assembles
+    its context before it writes this run's own rows, and a run in flight is
+    never readable as the current head anyway (ADR-0008/0010).
+
+    Folded here rather than in the assembly because the fold is a property of
+    the rows: an assertion covering several grounding pairs reports how many
+    were comparable and the WIDEST divergence among them, which is the pair that
+    puts the tie-out most in question. When nothing was comparable, the shared
+    abstention reason is carried only if every pair agreed on it — the per-pair
+    detail stays in the table rather than being guessed at here.
+    """
+    rows = session.execute(
+        text(  # noqa: S608 - read_schema is an internal identifier, not user input
+            "SELECT from_concept, to_concept, status, verdict, abstain_reason,"
+            " delta, relative_delta\n"
+            f'FROM "{read_schema}".current_concept_reconciliation'
+        )
+    ).all()
+
+    folded: dict[tuple[str, str], dict[str, Any]] = {}
+    for r in rows:
+        key = (str(r.from_concept), str(r.to_concept))
+        acc = folded.setdefault(
+            key,
+            {
+                "pairs": 0,
+                "evaluated_pairs": 0,
+                "status": None,
+                "verdict": None,
+                "abstain_reason": None,
+                "delta": None,
+                "relative_delta": None,
+                "reasons": set(),
+            },
+        )
+        acc["pairs"] += 1
+        if r.status != "evaluated":
+            acc["reasons"].add(r.abstain_reason)
+            continue
+        acc["evaluated_pairs"] += 1
+        acc["status"] = "evaluated"
+        widest = acc["relative_delta"]
+        current = float(r.relative_delta) if r.relative_delta is not None else 0.0
+        if widest is None or current > widest:
+            acc["relative_delta"] = current
+            acc["delta"] = float(r.delta) if r.delta is not None else None
+            acc["verdict"] = r.verdict
+
+    for acc in folded.values():
+        reasons = acc.pop("reasons")
+        if acc["status"] is None:
+            acc["status"] = "abstained"
+            acc["abstain_reason"] = next(iter(reasons)) if len(reasons) == 1 else None
+    return folded
+
+
 def _read_part_of_ancestry(session: Session, read_schema: str) -> dict[str, list[str]]:
     """Transitive ``part_of`` ancestors per concept, depth 2..cap, nearest first.
 
@@ -1099,6 +1159,7 @@ def _assemble_concept_contexts(
     use_rows: list[Any],
     provenance: dict[str, Any],
     tables: dict[str, tuple[str, str | None]],
+    reconciliations: dict[tuple[str, str], Any],
 ) -> list[ConceptContext]:
     """Fold the traversal reads into per-concept contexts (deterministic order).
 
@@ -1195,10 +1256,20 @@ def _assemble_concept_contexts(
             # Self-loop (from == to) = the derived multi-grounding tie-out; a
             # cross pair (seed/declared, both directions stored) reads from the
             # from-side. Either way one row per (concept, partner).
+            # The evaluated state rides the assertion it belongs to. Absent =
+            # never evaluated, which the renderer must not report as agreement.
+            observed = reconciliations.get((frm, to), {})
             reconciles.setdefault(frm, []).append(
                 ConceptReconciliation(
                     partner=to,
                     tolerance=float(e.tolerance) if e.tolerance is not None else None,
+                    status=observed.get("status"),
+                    verdict=observed.get("verdict"),
+                    abstain_reason=observed.get("abstain_reason"),
+                    observed_delta=observed.get("delta"),
+                    relative_delta=observed.get("relative_delta"),
+                    pairs=observed.get("pairs", 0),
+                    evaluated_pairs=observed.get("evaluated_pairs", 0),
                 )
             )
 
@@ -1251,11 +1322,19 @@ def _load_graph_reads(
         grounding_rows = _read_grounding_rows(session, read_schema)
         use_rows = _read_use_rows(session, read_schema)
         provenance = _read_grounding_provenance(session, read_schema)
+        reconciliations = _read_reconciliation_rows(session, read_schema)
         references = _read_references(session, read_schema, tables, columns, table_ids)
         conformed = _read_conformed(session, read_schema, tables)
         derived = _read_derived_from(session, read_schema, tables)
         concepts = _assemble_concept_contexts(
-            concept_rows, edge_rows, ancestry, grounding_rows, use_rows, provenance, tables
+            concept_rows,
+            edge_rows,
+            ancestry,
+            grounding_rows,
+            use_rows,
+            provenance,
+            tables,
+            reconciliations,
         )
         return _GraphReads(
             concepts=concepts,

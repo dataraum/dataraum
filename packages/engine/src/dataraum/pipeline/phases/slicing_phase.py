@@ -456,16 +456,16 @@ class SlicingPhase(BasePhase):
                         # Slicing directly by the FK key itself — no enriched attribute.
                         fk_role = column_name or None
                 rank = ranked.get((table_id, column_name))
-                if rank is not None and rank.distinct_values:
-                    distinct_values = rank.distinct_values
-                else:
-                    # Structural rows carry the profile's top values as the value
-                    # evidence (the same fallback the agent applies to a ranked row
-                    # without values); value_count stays the honest full distinct
-                    # count, which can exceed the bounded list.
-                    distinct_values = [
-                        str(v.get("value", "")) for v in (col.get("top_values") or [])
-                    ]
+                # MEASURED membership, on every row (DAT-671) — the profiler's
+                # stored top-K for this column, never the ranking agent's echo
+                # of it. A judged row and a structural row now carry value
+                # evidence of the SAME provenance: the LLM judges business
+                # meaning, the profile owns what the values ARE. ``value_count``
+                # below stays the honest full COUNT(DISTINCT), which can exceed
+                # this list when the profiler's top-K truncated a wider column —
+                # every consumer discloses that split rather than presenting the
+                # list as complete.
+                distinct_values = [str(v.get("value", "")) for v in (col.get("top_values") or [])]
                 # Measured relevance for EVERY inventory row (DAT-879), from this
                 # column's own profile — independent of whether the agent judged
                 # it. ``top_values`` is the profiler's top-K, so the scorer is
@@ -491,10 +491,9 @@ class SlicingPhase(BasePhase):
                     "distinct_values": distinct_values,
                     # The profile's COUNT(DISTINCT), always — never the length of
                     # the bounded ``distinct_values`` list (DAT-879, a DAT-622
-                    # instance): the agent used to report ``len(distinct_values)``
-                    # here, so a judged 500-value dimension was persisted as
-                    # having however many values the model happened to echo, and
-                    # the cockpit rendered that as "(N values)".
+                    # instance). It is also the DISCLOSURE that makes the bounded
+                    # list honest: every consumer compares the two and says "N of
+                    # M distinct" when they differ (DAT-671).
                     "value_count": col.get("distinct_count"),
                     "reasoning": rank.reasoning if rank else None,
                     "business_context": rank.business_context if rank else None,
@@ -703,7 +702,6 @@ class SlicingPhase(BasePhase):
                     column_id=target_col_id,
                     column_name=col_name,
                     slice_interest=rec.slice_interest,
-                    distinct_values=rec.distinct_values,
                     value_count=rec.value_count,
                     reasoning=f"Propagated from {rec.table_name}: {rec.reasoning}",
                     business_context=rec.business_context,
@@ -861,9 +859,22 @@ class SlicingPhase(BasePhase):
             # Also build lookup from column_name -> column_id (for FK prefix resolution)
             col_id_by_name = {col.column_name: col.column_id for col in columns}
 
-            # Merge statistical profiles into columns
+            # Merge statistical profiles into columns, at the table's PROMOTED
+            # add_source generation head (``_is_current``, the same gate the
+            # annotations below use). ``StatisticalProfile`` is run-versioned
+            # with a ``(column_id, run_id)`` UNIQUE, so a replay/re-typed table
+            # leaves N coexisting rows and the unscoped scan used to let an
+            # ARBITRARY one win (last row read). That row's ``top_values`` is
+            # now the persisted membership every downstream membership claim
+            # rests on (DAT-671) — and its ``distinct_count``/``null_ratio``
+            # drive ``score_axis`` and ``_pre_filter_columns`` besides — so a
+            # stale generation's values must not decide them. Fail-OPEN when the
+            # table has no promoted head: there is no "current" to scope to, and
+            # dropping the only profile there would silently unmeasure the axis.
             stats_stmt = select(StatisticalProfile).where(StatisticalProfile.column_id.in_(col_ids))
             for profile in (ctx.session.execute(stats_stmt)).scalars().all():
+                if not _is_current(table.table_id, profile.run_id):
+                    continue
                 col_dict = col_dict_by_id.get(profile.column_id)
                 if col_dict:
                     profile_data = profile.profile_data or {}
@@ -898,7 +909,15 @@ class SlicingPhase(BasePhase):
                 dim_cols = enriched_dimension_columns(ctx.session, table_ev.view_table_id)
                 dim_col_ids = [c.column_id for c in dim_cols]
 
-                # Load their StatisticalProfiles
+                # Load their StatisticalProfiles. Deliberately NOT run-scoped,
+                # unlike the fact columns above: ``enriched_views_phase``
+                # profiles ONLY newly-registered dimension columns, and its
+                # reconcile-by-name keeps a surviving column's ``column_id``
+                # *and its profile* across re-runs — so a stable dim column has
+                # exactly one profile row, written under whichever run first
+                # created it. There is no per-run row to pin to, and scoping to
+                # this run would fail closed and silently unmeasure every
+                # long-lived enriched axis.
                 dim_profiles: dict[str, StatisticalProfile] = {}
                 if dim_col_ids:
                     prof_stmt = select(StatisticalProfile).where(

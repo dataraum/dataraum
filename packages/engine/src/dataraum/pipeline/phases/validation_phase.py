@@ -194,7 +194,6 @@ class ValidationPhase(BasePhase):
             table_ids,
             duckdb_conn=ctx.duckdb_conn,
             base_runs=base_runs,
-            max_sample_values=config.privacy.max_sample_values,
         )
         if "error" in schema:
             return PhaseResult.failed(str(schema["error"]))

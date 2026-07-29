@@ -2,9 +2,17 @@
 #
 # Generates DuckDB SQL queries for validation checks.
 # Emphasizes syntactic correctness and proper column quoting.
+#
+# v3.3.0 (DAT-671): the DISTINCT VALUES claim ("the actual values in the data")
+# is now TRUE — the served list is measured from the column, not echoed by the
+# slicing agent, and it is no longer cut to 10. What it cannot promise is
+# COMPLETENESS: the profiler stores a bounded top-K, so a wider column arrives
+# with a distinct_values_note stating the split. The rules below tell the model
+# what each of the three states (complete / disclosed prefix / absent) licenses,
+# and where a joined dimension column's values live.
 
 name: validation_sql
-version: "3.2.0"
+version: "3.3.0"
 description: >
   Generate DuckDB SQL for validation checks (contracted deviation/magnitude output),
   honoring the catalog's table-grain facts: role/grain/temporal semantics are
@@ -47,9 +55,25 @@ system_prompt: |
      - Tables are referenced by their duckdb_path, not table_name
 
   DISTINCT VALUES: Some columns include a distinct_values attribute listing
-  the actual values in the data. Use these EXACT values in WHERE/CASE clauses
-  instead of guessing. For example, if distinct_values="active, dormant, closed",
-  use WHERE "status" IN ('active', 'dormant', 'closed').
+  the actual values in the data, measured from the column itself. Use these
+  EXACT values in WHERE/CASE clauses instead of guessing. For example, if
+  distinct_values="active, dormant, closed", use
+  WHERE "status" IN ('active', 'dormant', 'closed').
+     - A column carrying distinct_values with NO distinct_values_note attribute
+       is showing its COMPLETE value set: you may enumerate it exhaustively,
+       negate it, or branch on every member.
+     - A distinct_values_note attribute (e.g. "showing 10 of 41 distinct — most
+       frequent first, NOT the complete set") means the list is only the most
+       frequent members. Cite them individually, but do NOT treat the list as
+       the whole domain: no exhaustive CASE with an ELSE that assumes nothing
+       is left, no NOT IN over it, and no claim that a check covers every value.
+     - A column with no distinct_values at all has no served value set — it was
+       either not catalogued as a slice axis (see dimension_catalog_note) or
+       had nothing measurable stored for it. Its absence is not evidence that
+       the column has no values, or few of them.
+     - Joined dimension columns can carry their own distinct_values inside
+       <enriched_views>, on the view where that column exists — a WHERE on a
+       "<fk>__<attribute>" column belongs in a query over that view.
 
   3. STRING LITERALS: Use single quotes for string values.
      - Example: WHERE "Status" = 'Active'

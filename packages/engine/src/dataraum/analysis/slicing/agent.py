@@ -56,13 +56,14 @@ def _capped_tables_for_prompt(tables: list[dict[str, Any]], *, limit: int) -> li
     ``context_data["tables"]`` (built by ``slicing_phase._build_context_data``)
     is the SAME structure the phase's deterministic post-processing reads
     AFTER this call returns: ``score_axis``'s ``bucket_counts``, the
-    ``distinct_values`` persistence fallback, and ``_pre_filter_columns`` all
+    ``distinct_values`` MEMBERSHIP write, and ``_pre_filter_columns`` all
     read each column's ``top_values``/``null_ratio``/``cardinality_ratio``/
-    etc. in full to compute a real relevance score, the persisted evidence
-    for an un-ranked column, and the grain-safety filter. Trimming that
+    etc. in full to compute a real relevance score, the persisted value-set
+    of every cataloged axis, and the grain-safety filter. Trimming that
     shared structure in place would silently change those (a semantics
-    change, not a prompt bound) — so only THIS copy, serialized into the
-    prompt, is bounded:
+    change, not a prompt bound) — and would re-introduce exactly the DAT-671
+    defect, since the membership the validation prompt serves is read from
+    it. So only THIS copy, serialized into the prompt, is bounded:
 
     - each column's ``top_values`` list is capped to ``privacy.max_sample_values``
       (DAT-671, validated: the slicing task judges business MEANING and its
@@ -249,24 +250,16 @@ class SlicingAgent(LLMFeature):
                 )
                 continue
 
-            # Get distinct values from output or column dict top_values
-            distinct_values = rec.distinct_values
-            if not distinct_values:
-                top_values = col_info.get("top_values", [])
-                distinct_values = [v.get("value", "") for v in top_values]
-
             recommendation = SliceRecommendation(
                 table_id=table_info.get("table_id", ""),
                 table_name=table_name,
                 column_id=col_info.get("column_id", ""),
                 column_name=column_name,
                 slice_interest=rec.interest,
-                distinct_values=distinct_values,
-                # The column's TRUE distinct count, from the profile — not
-                # ``len(distinct_values)``, which is the length of a bounded
-                # echo of values and was persisted as if it were the cardinality
-                # (DAT-879 / DAT-622). None when unprofiled; the writer falls
-                # back to the same profile field either way.
+                # The column's measured COUNT(DISTINCT), from the profile.
+                # None when unprofiled; the writer reads the same profile field
+                # either way. A judgment carries NO value list (DAT-671) — the
+                # membership has one home, the statistical profile.
                 value_count=col_info.get("distinct_count"),
                 reasoning=rec.reasoning,
                 # The output model states every attribute (DAT-807), using "" for

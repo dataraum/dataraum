@@ -10,6 +10,13 @@
 # eye a number the pipeline computes exactly — and an ordinal it emitted could
 # not be compared across tables or against a numeric axis anyway.
 #
+# v5.2.0 (DAT-671): the emitted structure lost `distinct_values`. The model was
+# being asked to retype a value list it had only been shown a 10-sample prefix
+# of, and that echo was persisted verbatim as the axis's membership — the
+# validation prompt then served it as "the actual values in the data". The
+# pipeline already holds the real membership in the statistical profile and now
+# reads it there for every row. Judgment only; the model never reports data.
+#
 # v5.1.0 (DAT-671): criterion 3 no longer asks the model to weigh row count —
 # that substance is the measured coverage factor score_axis already applies
 # (the DAT-879 class: don't ask the model to re-derive by eye what the
@@ -22,7 +29,7 @@
 # tables_json actually carries.
 
 name: slicing_analysis
-version: "5.1.0"
+version: "5.2.0"
 description: Judge which cataloged dimensions are business breakdown axes
 
 # System prompt - defines role and behavior

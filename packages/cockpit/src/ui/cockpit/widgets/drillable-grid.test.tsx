@@ -179,6 +179,7 @@ const PARTS_SOURCE: DrillSource = {
 		sources: [
 			{
 				name: "revenue",
+				snippetId: null,
 				parts: {
 					selectExpr: 'SUM("amount")',
 					relation: "lake.typed.enriched_orders",

@@ -19,10 +19,7 @@ describe.skipIf(!fx.available)(
 		});
 
 		it("resolves each grounding snippet to its concept", async () => {
-			const byId = await resolveGroundedConcepts([
-				"snip_revenue",
-				"snip_cost",
-			]);
+			const byId = await resolveGroundedConcepts(["snip_revenue", "snip_cost"]);
 			expect(Object.fromEntries(byId)).toEqual({
 				snip_revenue: "revenue",
 				snip_cost: "cost",

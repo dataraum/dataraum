@@ -301,6 +301,12 @@ describe("toolResultToCanvas", () => {
 			sources: [
 				{
 					name: "revenue",
+					// DAT-671 R2: the identity handle rides across with the parts. It
+					// is what the drill resolves to a concept and then to an
+					// additivity verdict, so losing it here silently costs the answer
+					// its time grain — the exact class of drop this boundary exists
+					// to make visible.
+					snippetId: "snip_revenue",
 					parts: {
 						selectExpr: "SUM(amount)",
 						relation: "lake.typed.orders",
@@ -350,6 +356,39 @@ describe("toolResultToCanvas", () => {
 			})?.drillSource,
 		).toBeNull();
 		expect(drilled("nope")?.drillSource).toBeNull();
+	});
+
+	// The ONE field narrowed leniently, and deliberately so (DAT-671 R2): the
+	// identity handle is a lookup key, not SQL. An absent or off-shape one means
+	// "no classified concept" — the drill then withholds the time grain and says
+	// why — whereas dropping the whole handle would take the source drill with
+	// it. A FRESH step legitimately has none, so this is the common case.
+	it("keeps the drill source when the identity handle is absent or off-shape", () => {
+		const drilled = (source: unknown) =>
+			toolResultToCanvas("answer", {
+				answer: "x",
+				grid: { sql: "SELECT 1" },
+				drill_source: { sources: [source], expression: "revenue" },
+			}) as {
+				drillSource: { sources: { snippetId: unknown }[] } | null;
+			} | null;
+		const parts = { selectExpr: "SUM(a)", relation: "o", where: [] };
+
+		expect(
+			drilled({ name: "revenue", parts })?.drillSource?.sources[0].snippetId,
+		).toBeNull();
+		expect(
+			drilled({ name: "revenue", snippetId: "", parts })?.drillSource
+				?.sources[0].snippetId,
+		).toBeNull();
+		expect(
+			drilled({ name: "revenue", snippetId: 7, parts })?.drillSource?.sources[0]
+				.snippetId,
+		).toBeNull();
+		expect(
+			drilled({ name: "revenue", snippetId: "snip_x", parts })?.drillSource
+				?.sources[0].snippetId,
+		).toBe("snip_x");
 	});
 
 	it("leaves the canvas unchanged only for an agent error or a non-object answer result", () => {

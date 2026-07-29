@@ -167,6 +167,12 @@ const DrillSource = z
 		sources: z.array(
 			z.object({
 				name: z.string(),
+				// DAT-671 R2: the identity spine on the wire. The drill resolves this
+				// snippet to its concept (= standard_field) and reads the additivity
+				// verdict for THAT target — which is what licenses a time-grain
+				// bucket. null (a fresh step) means no classified concept, and the
+				// drill withholds the grain with a stated reason.
+				snippetId: z.string().nullable(),
 				parts: z.object({
 					selectExpr: z.string(),
 					relation: z.string(),
@@ -344,6 +350,10 @@ export interface DeclaredSourceOutcome {
 export async function candidateSource(
 	steps: {
 		name: string;
+		/** The CLASSIFIED snippet id (`classifyComponents`), never the model's raw
+		 *  claim: a hallucinated id has already been cleared to null there. This is
+		 *  the drill's identity handle — see `AnswerSource.snippetId`. */
+		snippet_id: string | null;
 		source: { relation: string; value_expr: string; filters: string[] };
 	}[],
 	combiningExpression: string,
@@ -369,7 +379,7 @@ export async function candidateSource(
 			notes.push(`'${step.name}' — ${refusal}`);
 			continue;
 		}
-		sources.push({ name: step.name, parts });
+		sources.push({ name: step.name, snippetId: step.snippet_id, parts });
 	}
 	return {
 		candidate: sources.length > 0 ? { sources, expression } : null,
@@ -514,8 +524,21 @@ export function makeRunStepsTool(
 		// so an ambiguous "per X" question that meant a summary is caught. Computed
 		// only after a clean run; captured for the deterministic surface too.
 		const grainNote = await computeGrainNote(composed, nearUniqueColumns);
+		// The declaration is joined to its CLASSIFIED reuse id, keyed by step name
+		// — unique and already validated above, so this is a real key, not a
+		// positional guess. Classification is what makes the id trustworthy: a
+		// model-claimed id that resolves to no snippet came back as `fresh` with
+		// the id cleared, so nothing downstream can resolve a concept from an
+		// invention.
+		const snippetIdByStep = new Map(
+			components.map((c) => [c.name, c.snippet_id]),
+		);
 		const declared = await candidateSource(
-			input.steps,
+			input.steps.map((step) => ({
+				name: step.name,
+				snippet_id: snippetIdByStep.get(step.name) ?? null,
+				source: step.source,
+			})),
 			input.combining_expression,
 		);
 		captured.value = {

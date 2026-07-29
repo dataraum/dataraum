@@ -51,6 +51,7 @@ const source = (
 const revenue2024 = (where: string[] = ["year = 2024"]) => [
 	{
 		name: "revenue",
+		snippetId: null,
 		parts: { selectExpr: "SUM(amount)", relation: "orders", where },
 	},
 ];
@@ -142,6 +143,7 @@ describe("answerNodeSteps", () => {
 					...revenue2024(),
 					{
 						name: "cost",
+						snippetId: null,
 						parts: {
 							selectExpr: "SUM(cost)",
 							relation: "orders",
@@ -190,7 +192,10 @@ describe("the value proof", () => {
 		});
 		if (!parts) throw new Error("declaration should narrow");
 		expect(
-			await prove(source([{ name: "revenue", parts }], "revenue"), ANSWER_2024),
+			await prove(
+				source([{ name: "revenue", snippetId: null, parts }], "revenue"),
+				ANSWER_2024,
+			),
 		).toBe(true);
 	});
 
@@ -211,6 +216,7 @@ describe("the value proof", () => {
 					[
 						{
 							name: "revenue",
+							snippetId: null,
 							parts: {
 								selectExpr: "SUM(cost)",
 								relation: "orders",
@@ -229,6 +235,7 @@ describe("the value proof", () => {
 					[
 						{
 							name: "revenue",
+							snippetId: null,
 							parts: {
 								selectExpr: "SUM(amount)",
 								relation: "invoices",
@@ -275,6 +282,7 @@ describe("the value proof", () => {
 				...revenue2024(),
 				{
 					name: "cost",
+					snippetId: null,
 					parts: {
 						selectExpr: "SUM(cost)",
 						relation: "orders",

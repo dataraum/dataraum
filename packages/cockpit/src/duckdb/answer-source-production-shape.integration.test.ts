@@ -97,7 +97,7 @@ const declared = (relation: string, valueExpr: string, filters: string[]) => ({
 const single = (
 	parts: NonNullable<ReturnType<typeof narrowDeclaredSource>>,
 ): AnswerDrillSource => ({
-	sources: [{ name: "revenue", parts }],
+	sources: [{ name: "revenue", snippetId: null, parts }],
 	expression: "revenue",
 });
 
@@ -147,6 +147,7 @@ describe("answer-source on production-shaped declarations (DAT-671)", () => {
 				[
 					{
 						name: "revenue",
+						snippetId: null,
 						parts: {
 							selectExpr: caseGuarded("SUM(amount)"),
 							relation: QUALIFIED,
@@ -168,6 +169,7 @@ describe("answer-source on production-shaped declarations (DAT-671)", () => {
 				[
 					{
 						name: "revenue",
+						snippetId: null,
 						parts: {
 							selectExpr: "SUM(amount)",
 							relation: '"quoted.thing"',
@@ -261,8 +263,8 @@ describe("answer-source on production-shaped declarations (DAT-671)", () => {
 			);
 			const candidate: AnswerDrillSource = {
 				sources: [
-					{ name: "revenue", parts: revenue },
-					{ name: "cost", parts: cost },
+					{ name: "revenue", snippetId: null, parts: revenue },
+					{ name: "cost", snippetId: null, parts: cost },
 				],
 				expression: "revenue - cost",
 			};

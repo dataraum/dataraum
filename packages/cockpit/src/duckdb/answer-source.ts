@@ -38,6 +38,7 @@ import { parseFormulaExpression } from "./metric-formula";
 import {
 	type ComposedNodeQuery,
 	composeNodeQuery,
+	composeNodeTotals,
 	type NodeDrill,
 	type NodeStep,
 	type SnippetParts,
@@ -51,10 +52,22 @@ export interface AnswerSourceParts extends SnippetParts {
 	relation: string;
 }
 
-/** One declared step source: the concept name (the step's CTE name, already
- *  identifier-validated by `validateStepNames`) + its clause parts. */
+/** One declared step source: the step's CTE name, its clause parts, and — when
+ *  the step declared REUSE of a curated snippet — that snippet's id.
+ *
+ *  The two fields answer different questions and must not be confused
+ *  (ADR-0024 decision 1). `name` is the model's own CTE label: it is what the
+ *  combining `expression` references, and it is DISPLAY text — the model picks
+ *  it, so nothing may key on it. `snippetId` is IDENTITY: `classifyComponents`
+ *  resolved it against the snippet library (a hallucinated id was already
+ *  cleared to null), and it is the entry point to the spine
+ *  `snippet → standard_field → verdict target` that decides whether this
+ *  number may be bucketed by period. `null` — a FRESH step — is a first-class
+ *  outcome: the drill then has no classified concept and withholds the grain
+ *  with a stated reason, exactly as it does for any unclassified computation. */
 export interface AnswerSource {
 	name: string;
+	snippetId: string | null;
 	parts: AnswerSourceParts;
 }
 
@@ -149,6 +162,7 @@ export function narrowDeclaredSource(
  *  a handle this server produced. */
 export interface WireSource {
 	name: string;
+	snippetId?: string | null;
 	parts: { selectExpr: string; relation: string; where: string[] };
 }
 
@@ -188,7 +202,11 @@ export function acceptWireSources(
 				refusal: `'${source.name}' does not name a relation and a value this drill can recompose`,
 			};
 		}
-		accepted.push({ name: source.name, parts });
+		accepted.push({
+			name: source.name,
+			snippetId: source.snippetId ?? null,
+			parts,
+		});
 	}
 	return { sources: accepted, expression };
 }
@@ -280,6 +298,34 @@ export function composeAnswerSource(
 		};
 	}
 	return composeNodeQuery(steps, undefined, drill);
+}
+
+/**
+ * The answer's FOOTER statement (pure; DAT-671 R2): its unrestricted scalar
+ * with the operand components projected alongside `value`, exactly as
+ * `composeNodeTotals` does for a canvas node.
+ *
+ * The undrilled total is not a node-path privilege — it is the number the
+ * practitioner started from, and a drilled grid that cannot print it makes
+ * them navigate away to check whether the parts still add up. The node route
+ * has shipped it since DAT-712; this is the same statement for the same
+ * reason, so both surfaces read one composition rather than two.
+ *
+ * Unlike the node path this is NOT restricted to the open call: an answer grid
+ * has no "open" — the widget composes for the first time when the first drill
+ * is applied — so the footer must ride every composition or it never appears.
+ */
+export function composeAnswerTotals(
+	source: AnswerDrillSource,
+): ComposedNodeQuery | { refusal: string } {
+	const steps = answerNodeSteps(source);
+	if (steps === null) {
+		return {
+			refusal:
+				"this answer's declared source doesn't form a composable calculation",
+		};
+	}
+	return composeNodeTotals(steps, undefined);
 }
 
 /**

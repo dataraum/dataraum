@@ -503,9 +503,10 @@ def build_served_context(
     """Serve the promoted graph: (rendered context, conventions, membership vocab).
 
     Reuses the shared graph assembler (``build_execution_context`` +
-    ``format_served_context`` — the SAME served graph the metric grounding agent
+    ``format_served_context`` — the same served FACTS the metric grounding agent
     reads: concepts + part_of, references, cycles, per-column materialization = the
-    additivity signal, reconciles_with), then APPENDS induction-specific sections
+    additivity signal, reconciles_with; the author-directed instructions are gated
+    off with ``for_grounding=False``), then APPENDS induction-specific sections
     the served graph leaves implicit: the additivity verdicts and the metric DAG
     the balance-check class needs (DAT-735); the per-measure temporal-form facts
     (DAT-874) — the stock/flow verdicts restated next to the task, with the
@@ -537,7 +538,13 @@ def build_served_context(
         catalogue_run_id=catalogue_run_id,
         workspace_id=workspace_id,
     )
-    served = format_served_context(context)
+    # for_grounding=False (DAT-671): the induction reads the SAME facts as the
+    # grounding agent but does a different job — it proposes checks, it does not
+    # author an extract. The four author-directed passages are therefore withheld:
+    # the search_values drill hint (induction holds no tools at all), the "ground
+    # each concept in the Value sets" and "reuse a prior grounding" imperatives,
+    # and the conformed-dimension subquery recipe.
+    served = format_served_context(context, for_grounding=False)
 
     # The promoted operating_model head for the run-versioned additivity read (DAT-848
     # scoping mirrors the concept reads: active_vertical wins, the run's vertical is

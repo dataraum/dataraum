@@ -271,7 +271,6 @@ class TestEnrichedViewsPhaseDuckLake:
                     enrichment_columns=["name", "country"],
                 )
             ],
-            summary="stub",
             model_name="stub-model",
         )
         return fact.table_id, dim.table_id, canned
@@ -576,7 +575,6 @@ class TestEnrichedViewsPhaseDuckLake:
                     enrichment_columns=["name"],
                 )
             ],
-            summary="stub",
             model_name="stub-model",
         )
         run("run-3")
@@ -1141,7 +1139,6 @@ class TestEnrichedViewsPhaseDuckLake:
                     enrichment_columns=["region_name"],
                 )
             ],
-            summary="stub",
             model_name="stub-model",
         )
         run("run-2", with_regions=True)
@@ -1274,7 +1271,6 @@ class TestEnrichedViewsPhaseDuckLake:
                     enrichment_columns=["name", "country", "tag"],
                 )
             ],
-            summary="stub",
             model_name="stub-model",
         )
         return fact.table_id, good.table_id, fanout.table_id, canned

@@ -49,8 +49,10 @@ logger = get_logger(__name__)
 def format_served_context(
     context: GraphExecutionContext,
     source_name: str = "dataset",
+    *,
+    for_grounding: bool = True,
 ) -> str:
-    """Render the served context for the grounding prompt (``{rich_context}``).
+    """Render the served context for its two readers.
 
     Graph structure served AS STRUCTURE — the concept graph (definitions,
     part_of/disjoint/reconciles edges, groundings with their used columns), FK
@@ -58,9 +60,22 @@ def format_served_context(
     sections with no graph element yet: value sets, drivers, business
     processes, validation results (conventions ride their own prompt slot).
 
+    TWO consumers read this document, and they have different jobs (DAT-671):
+    the metric grounding agent (``graphs/agent.py``) AUTHORS an extract, while
+    ``validation_induction`` PROPOSES checks over the same graph. ``for_grounding``
+    gates the four passages that instruct the author — the ``search_values`` drill
+    hint (a tool only the grounding agent holds), the Business Concepts block's
+    "ground each concept / reuse a prior grounding" imperatives, and the
+    conformed-dimension "compose one subquery per fact" recipe. Every FACT is
+    served to both readers unchanged; only the instructions differ, because an
+    imperative aimed at one author silently becomes a rule for the other. The
+    induction passes ``for_grounding=False``.
+
     Args:
         context: GraphExecutionContext from build_execution_context()
         source_name: Human-readable name for the data source
+        for_grounding: Whether the reader is the extract-authoring agent. False
+            drops the four author-directed passages; the facts are unaffected.
 
     Returns:
         Formatted markdown metadata document
@@ -77,7 +92,7 @@ def format_served_context(
     _append_reporting_calendar(lines, context)
 
     # --- Business Concepts (the traversal core, DAT-734) ---
-    _append_concepts(lines, context)
+    _append_concepts(lines, context, for_grounding=for_grounding)
 
     # --- Tables ---
     lines.append("## Tables")
@@ -167,7 +182,7 @@ def format_served_context(
 
         # Value sets (DAT-616): complete enumeration of low-card categoricals, so the
         # agent grounds metric predicates in real values rather than guessing a filter.
-        value_sets = _build_value_sets(table)
+        value_sets = _build_value_sets(table, for_grounding=for_grounding)
         if value_sets:
             lines.append("")
             lines.append("**Value sets** (categorical columns — `value (count)`):")
@@ -212,13 +227,21 @@ def format_served_context(
         lines.append("")
         lines.append("## Conformed Dimensions")
         lines.append("")
+        # The middle sentence is the SQL-author's recipe (compose one subquery per
+        # fact); the two around it are facts about which pairs are alignable at all,
+        # which every reader needs.
+        compose = (
+            "Comparing two facts goes through a shared axis, never a direct "
+            "fact-to-fact join: compose one subquery per fact and merge them on the "
+            "shared axis below. "
+            if for_grounding
+            else ""
+        )
         lines.append(
             "Facts sharing a dimension AXIS (same dimension table + attribute) — the "
-            "alignable drill-across surfaces. Comparing two facts goes through a shared "
-            "axis, never a direct fact-to-fact join: compose one subquery per fact and "
-            "merge them on the shared axis below. Only CONFIRMED conformance is listed; "
-            "a pair absent from this list has no legal merge key, and comparing it "
-            "anyway would assert an identity nobody established."
+            f"alignable drill-across surfaces. {compose}Only CONFIRMED conformance is "
+            "listed; a pair absent from this list has no legal merge key, and comparing "
+            "it anyway would assert an identity nobody established."
         )
         for cd in context.conformed_dimensions:
             attr = f".{cd.attribute}" if cd.attribute else ""
@@ -335,12 +358,15 @@ _MONTHS = (
 def _append_reporting_calendar(lines: list[str], context: GraphExecutionContext) -> None:
     """Render the workspace's reporting calendar (DAT-887).
 
-    **Fact only — no instruction.** This document is shared: ``validation_sql`` and
-    ``validation_induction`` render the same served context, and an imperative aimed at
-    the grounding author ("do not filter the period axis") would silently become a rule
-    for authors this binding does not apply to. The instruction's one home is
+    **Fact only — no instruction.** This document has two readers — the metric
+    grounding agent and ``validation_induction`` (NOT ``validation_sql``, which
+    renders its own schema block and never sees this document) — and an imperative
+    aimed at the grounding author ("do not filter the period axis") would silently
+    become a rule for the other. The instruction's one home is
     ``graph_sql_generation.yaml``; what belongs HERE is the fiscal year's start and
-    whether it was declared or assumed, so any consumer can caveat accordingly.
+    whether it was declared or assumed, so either consumer can caveat accordingly.
+    Where an author-directed passage is unavoidable it is gated on
+    ``format_served_context``'s ``for_grounding``, never written as a shared fact.
 
     Absence is rendered as absence (the section is omitted), never as a fabricated
     calendar year.
@@ -364,7 +390,9 @@ def _append_reporting_calendar(lines: list[str], context: GraphExecutionContext)
     lines.append("")
 
 
-def _append_concepts(lines: list[str], context: GraphExecutionContext) -> None:
+def _append_concepts(
+    lines: list[str], context: GraphExecutionContext, *, for_grounding: bool = True
+) -> None:
     """Append the concept graph (DAT-734): definitions + edges + verdicts + groundings.
 
     The traversal core served as structure. Definition surface (description /
@@ -379,22 +407,40 @@ def _append_concepts(lines: list[str], context: GraphExecutionContext) -> None:
 
     Both run-observed sections — reconciliation and additivity — sit ahead of
     the groundings they qualify.
+
+    ``for_grounding=False`` drops the two imperatives in the header — "ground each
+    concept in the Value sets" and "reuse a prior grounding's columns/filters".
+    Both address whoever is AUTHORING an extract; a reader proposing validation
+    checks has no extract to ground and no grounding to reuse, so for it the
+    sentences are instructions to do something it is not doing. What a `grounded
+    by` entry IS stays served, because reading the entries is how any consumer
+    learns where a concept is measured.
     """
     if not context.concepts:
         return
 
     lines.append("## Business Concepts")
     lines.append("")
-    lines.append(
-        "Vertical vocabulary with its operating-model graph. Ground each metric concept "
-        "in specific column values from the **Value sets** below — match by meaning, "
-        "honoring `exclude` patterns; do not improvise a substring filter. A `grounded by` "
-        "entry is a PRIOR COMMITTED grounding of that concept — reuse its columns/filters "
-        "for the same concept unless the served evidence says it is wrong; a concept with "
+    header = "Vertical vocabulary with its operating-model graph. "
+    if for_grounding:
+        header += (
+            "Ground each metric concept in specific column values from the **Value sets** "
+            "below — match by meaning, honoring `exclude` patterns; do not improvise a "
+            "substring filter. A `grounded by` entry is a PRIOR COMMITTED grounding of "
+            "that concept — reuse its columns/filters for the same concept unless the "
+            "served evidence says it is wrong; a concept with "
+        )
+    else:
+        header += (
+            "A `grounded by` entry is a PRIOR COMMITTED grounding of that concept — how "
+            "and where it is currently measured. A concept with "
+        )
+    header += (
         "several groundings is measured on several relations, and `reconciles` means those "
         "computations must tie out — each entry states whether the last completed run "
         "actually checked that, and what it observed."
     )
+    lines.append(header)
     lines.append("")
     lines.append(
         "`aggregation` reports how the last promoted run judged this concept's measurement "
@@ -650,7 +696,7 @@ def _format_grounding(g: GroundingContext) -> str:
 _NEAR_CONSTANT_FRAC = 0.9
 
 
-def _build_value_sets(table: TableContext) -> list[str]:
+def _build_value_sets(table: TableContext, *, for_grounding: bool = True) -> list[str]:
     """Render the value enumeration for a table's categorical columns (DAT-621).
 
     The agent grounds a concept in the discriminator VALUES from here, never a guessed
@@ -666,6 +712,12 @@ def _build_value_sets(table: TableContext) -> list[str]:
     - degenerate (one value dominates) → flagged "near-constant", NO value-set — grounding
       on a ~constant flag (e.g. a 99%-true boolean) is silently wrong.
     Only key/measure/time roles are skipped (never partitions).
+
+    The ``search_values`` hint on the high-card branch is the ONE line here that
+    names a tool, and only the grounding agent is given that tool — so
+    ``for_grounding=False`` drops it. The non-enumeration itself is still stated:
+    a reader without the drill must see that the list is incomplete, or it will
+    read the frequency sample as the whole column.
     """
     out: list[str] = []
     for col in table.columns:
@@ -682,9 +734,15 @@ def _build_value_sets(table: TableContext) -> list[str]:
             sample = ", ".join(
                 str(tv.get("value")) for tv in col.top_values[:8] if tv.get("value") is not None
             )
+            # The separator rides the branch: without the drill sentence the
+            # semicolon would dangle straight into "Most frequent".
+            tail = (
+                "; resolve exact values with the search_values tool before filtering."
+                if for_grounding
+                else "."
+            )
             out.append(
-                f"- **{col.column_name}**: {dc} distinct values — NOT enumerated; "
-                f"resolve exact values with the search_values tool before filtering. "
+                f"- **{col.column_name}**: {dc} distinct values — NOT enumerated{tail} "
                 f"Most frequent: {sample}"
             )
             continue

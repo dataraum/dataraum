@@ -894,3 +894,88 @@ class TestColumnFlagsBenfordSuppression:
 
     def test_none_suppressed(self):
         assert self._flags(None) == []
+
+
+class TestForGroundingGate:
+    """DAT-671: the document has two readers; only the INSTRUCTIONS differ.
+
+    The metric grounding agent authors an extract; ``validation_induction``
+    proposes checks over the same graph. Four passages address the author — the
+    ``search_values`` drill hint (a tool only the grounding agent holds), the
+    Business Concepts "ground each concept / reuse a prior grounding" imperatives,
+    and the conformed-dimension subquery recipe. They gate; every FACT stays.
+    """
+
+    def _high_card_column(self) -> ColumnContext:
+        return _column(
+            column_name="account_name",
+            semantic_role="dimension",
+            distinct_count=4000,
+            top_values=[{"value": f"v{i}", "count": 10 - i} for i in range(10)],
+        )
+
+    def test_search_values_hint_is_grounding_only(self) -> None:
+        ctx = GraphExecutionContext(tables=[_table(columns=[self._high_card_column()])])
+
+        out = format_served_context(ctx, for_grounding=False)
+
+        assert "search_values" not in out
+        # The non-enumeration itself is NOT gated: a reader without the drill must
+        # still see the list is partial, or it reads the sample as the whole column.
+        assert "4000 distinct values — NOT enumerated" in out
+        assert "Most frequent: v0" in out
+
+    def test_concept_imperatives_are_grounding_only(self) -> None:
+        concept = ConceptContext(name="revenue", kind="measure", description="Sales")
+        concept.groundings = [_grounding(concept="revenue")]
+        ctx = GraphExecutionContext(concepts=[concept])
+
+        out = format_served_context(ctx, for_grounding=False)
+
+        assert "Ground each metric concept" not in out
+        assert "reuse its columns/filters" not in out
+        # The concept, its definition, and its groundings are all still served —
+        # reading them is how any consumer learns where a concept is measured.
+        assert "**revenue** (measure): Sales" in out
+        assert "grounded by:" in out
+        assert "PRIOR COMMITTED grounding" in out
+
+    def test_conformed_compose_recipe_is_grounding_only(self) -> None:
+        ctx = GraphExecutionContext(
+            conformed_dimensions=[
+                ConformedDimensionContext(
+                    table_a="journal",
+                    table_b="statement",
+                    dimension_table="accounts",
+                    attribute="account_type",
+                )
+            ]
+        )
+
+        out = format_served_context(ctx, for_grounding=False)
+
+        assert "compose one subquery per fact" not in out
+        # Which pairs are alignable — and that an absent pair has no legal merge
+        # key — is a fact both readers need.
+        assert "- journal ↔ statement share accounts.account_type" in out
+        assert "no legal merge key" in out
+
+    def test_grounding_reader_still_gets_all_four(self) -> None:
+        concept = ConceptContext(name="revenue", kind="measure", description="Sales")
+        concept.groundings = [_grounding(concept="revenue")]
+        ctx = GraphExecutionContext(
+            concepts=[concept],
+            tables=[_table(columns=[self._high_card_column()])],
+            conformed_dimensions=[
+                ConformedDimensionContext(
+                    table_a="journal", table_b="statement", dimension_table="accounts"
+                )
+            ],
+        )
+
+        out = format_served_context(ctx)
+
+        assert "resolve exact values with the search_values tool" in out
+        assert "Ground each metric concept" in out
+        assert "reuse its columns/filters" in out
+        assert "compose one subquery per fact" in out

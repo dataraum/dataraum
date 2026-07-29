@@ -2,9 +2,21 @@
 #
 # Synthesizes pre-computed pipeline metadata into business cycle analysis.
 # Single-call agent — no exploration tools, all context is pre-assembled.
+#
+# v2.4.0 (DAT-671): the context enumeration now matches the document it describes.
+# CONFORMED DIMENSION MEETINGS renders whenever the dataset has conformed-dimension
+# edges (it does on the finance corpus) and was never listed — a section whose whole
+# point is that no entity flows through it, left for the model to interpret
+# unannounced; "Graph Topology" is titled SCHEMA TOPOLOGY; and the
+# "Business concepts" wording is retired vocabulary (DAT-769 single-homed meaning
+# in the COLUMN MEANINGS feed). The task's dangling "- Any other domain-specific
+# cycles" bullet — orphaned when its list was folded into the sentence above it —
+# is gone. Output side: business_summary, detected_processes and recommendations
+# were required of the model and read by nobody; data_quality_observations stays
+# (it is the phase's warnings channel).
 
 name: business_cycles
-version: "2.3.0"
+version: "2.4.0"
 description: Detect business cycles from pre-computed pipeline metadata
 
 # System prompt - defines role and analysis methodology
@@ -15,7 +27,6 @@ system_prompt: |
 
   <task>
   Analyze pre-computed metadata about a dataset and identify business cycles — the recurring patterns of transactions that represent business processes: order/fulfilment loops, request/approval flows, replenishment loops, periodic close-and-summarize routines. The DOMAIN KNOWLEDGE section carries the active vertical's declared cycle vocabulary — detect against it, plus any real cycles beyond it.
-  - Any other domain-specific cycles
   </task>
 
   <context_description>
@@ -29,9 +40,10 @@ system_prompt: |
   6. **Column Meanings** — every column's authored business meaning with measured facts and related ontology concepts. Use these to ground a cycle's completion concepts on real columns instead of guessing column names.
   7. **Enriched Views** — Pre-joined tables showing confirmed relationships between facts and dimensions.
   8. **Confirmed Relationships** — LLM-verified foreign key and hierarchy relationships. Reference lines may carry chain-conditioned label samples: a from-side label column's top values over ONLY the rows that resolve across that join. Where these differ from the column's flat samples, the conditioned values show what the chain itself carries (e.g. which party the linked rows involve). Reference lines may also carry chain-conditioned measure ranges: a from-side measure column's min/max over those same joined rows, with the sign stated plainly — the flow sign the chain itself carries.
-  9. **Graph Topology** — Schema structure analysis: hub tables (central, 3+ connections), leaf tables (dimensions), bridge tables, isolated tables, and overall pattern (star_schema, hub_and_spoke, etc.).
-  10. **Temporal Patterns** — Date ranges, granularity, and completeness per date column.
-  11. **Column Semantics** — Business concepts, semantic roles, and descriptions per column. Each annotation carries an annotation_confidence that encodes how much the column NAME communicates (a low value flags an unreadable name, not weak data evidence). Identity and relationship-endpoint columns additionally carry value samples from the data where available.
+  9. **Conformed Dimension Meetings** — column pairs that join two FACT tables on a shared dimension axis. They are listed apart from the confirmed relationships above precisely because they are not references: no entity flows through them, and joining on one fans out both ways.
+  10. **Schema Topology** — Schema structure analysis: hub tables (central, 3+ connections), leaf tables (dimensions), bridge tables, isolated tables, and overall pattern (star_schema, hub_and_spoke, etc.).
+  11. **Temporal Patterns** — Date ranges, granularity, and completeness per date column.
+  12. **Column Semantics** — Semantic roles, business descriptions, and each column's authored meaning. Each annotation carries an annotation_confidence that encodes how much the column NAME communicates (a low value flags an unreadable name, not weak data evidence). Identity and relationship-endpoint columns additionally carry value samples from the data where available.
   </context_description>
 
   A cycle can complete in two ways. Some complete on a STATUS value; others on a

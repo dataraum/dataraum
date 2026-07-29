@@ -68,10 +68,7 @@ def _parse_with_families(summary: dict[str, Any]) -> Any:
             "cycles": [summary],
             "stages": [],
             "entity_flows": [],
-            "business_summary": "s",
-            "detected_processes": [],
             "data_quality_observations": [],
-            "recommendations": [],
         }
     )
     agent = BusinessCycleAgent.__new__(BusinessCycleAgent)
@@ -86,10 +83,7 @@ def _parse(summary: dict[str, Any]) -> Any:
             "cycles": [summary],
             "stages": [],
             "entity_flows": [],
-            "business_summary": "s",
-            "detected_processes": [],
             "data_quality_observations": [],
-            "recommendations": [],
         }
     )
     agent = BusinessCycleAgent.__new__(BusinessCycleAgent)
@@ -176,10 +170,7 @@ def test_measured_is_required_on_the_wire() -> None:
                 "cycles": [summary],
                 "stages": [],
                 "entity_flows": [],
-                "business_summary": "s",
-                "detected_processes": [],
                 "data_quality_observations": [],
-                "recommendations": [],
             }
         )
 
@@ -202,10 +193,7 @@ def test_overall_health_ignores_unmeasured_cycles() -> None:
             ],
             "stages": [],
             "entity_flows": [],
-            "business_summary": "s",
-            "detected_processes": [],
             "data_quality_observations": [],
-            "recommendations": [],
         }
     )
     agent = BusinessCycleAgent.__new__(BusinessCycleAgent)
@@ -229,10 +217,7 @@ def test_verify_cycles_is_still_applied(monkeypatch) -> None:
             "cycles": [_summary()],
             "stages": [],
             "entity_flows": [],
-            "business_summary": "s",
-            "detected_processes": [],
             "data_quality_observations": [],
-            "recommendations": [],
         }
     )
     agent = BusinessCycleAgent.__new__(BusinessCycleAgent)
@@ -267,10 +252,7 @@ def test_stage_and_flow_sentinels_normalize(monkeypatch) -> None:
                     "fact_column": "",
                 }
             ],
-            "business_summary": "s",
-            "detected_processes": [],
             "data_quality_observations": [],
-            "recommendations": [],
         }
     )
     monkeypatch.setattr(

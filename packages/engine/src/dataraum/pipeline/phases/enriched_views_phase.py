@@ -1022,13 +1022,21 @@ class EnrichedViewsPhase(BasePhase):
         # and so cannot be detected anywhere downstream.
         served_by_table = {tid: served_columns(cols) for tid, cols in columns_by_table.items()}
 
-        # Build tables with entity info
+        # Build tables with entity info.
+        #
+        # NAME-ONLY (DAT-671). ``EnrichmentAnalysisOutput`` addresses everything by
+        # NAME — ``table_name``, ``related_table``, ``column_name`` — so the model
+        # can neither use nor return an id or a physical path. ``table_id`` /
+        # ``duckdb_path`` are what the CALLER needs to turn a returned name back
+        # into a join, so they live in ``table_identity`` below, resolved after the
+        # answer instead of shipped inside the question. ``column_id`` and
+        # ``row_count`` had no reader on either side and are gone.
         fact_table_ids = {e.table_id for e in fact_entities}
         tables_data = []
+        table_identity: dict[str, dict[str, str]] = {}
         for table in typed_tables:
             columns_list = [
                 {
-                    "column_id": col.column_id,
                     "column_name": col.column_name,
                     "resolved_type": col.resolved_type,
                 }
@@ -1036,14 +1044,25 @@ class EnrichedViewsPhase(BasePhase):
             ]
             tables_data.append(
                 {
-                    "table_id": table.table_id,
                     "table_name": table.table_name,
-                    "duckdb_path": table.duckdb_path,
-                    "row_count": table.row_count,
                     "is_fact_table": table.table_id in fact_table_ids,
                     "columns": columns_list,
                 }
             )
+            # Keyed by table_name because the MODEL answers in names — which
+            # assumes names are unique across this run's typed tables. They are
+            # not guaranteed to be (two sources can each carry an "orders"), and
+            # a collision aliases silently here. Pre-existing: the old
+            # ``table_map``/``column_map`` in the agent keyed the same way. Closing
+            # it means giving the model a disambiguated name to answer with, which
+            # is a prompt-contract change, not a lookup change.
+            #
+            # An unmaterialized table has no duckdb_path; "" hits the same
+            # not-joinable guard in the caller as an unknown name does.
+            table_identity[table.table_name] = {
+                "table_id": table.table_id,
+                "duckdb_path": table.duckdb_path or "",
+            }
 
         # Build semantic annotations — SERVED (rendered into the prompt), so both the
         # id set and the name lookup read `served_by_table`. A surrogate carries no
@@ -1129,6 +1148,7 @@ class EnrichedViewsPhase(BasePhase):
 
         return {
             "tables": tables_data,
+            "table_identity": table_identity,
             "annotations": annotations_data,
             "confirmed_relationships": relationships_data,
             "existing_views": existing_views_data,

@@ -10,9 +10,18 @@
 # mechanism — a column carried across a confirmed key join. The old phrasing asked only
 # for "valuable analytical dimensions (geographic/category/reference)", which a header
 # fails by definition, so the fact's own event date was silently dropped.
+#
+# v3.0.0 (DAT-671): input and output both narrowed to what each side can use.
+# The served tables carry NAMES only — the output addresses tables and columns by
+# name, so ids, physical paths and row counts were unusable freight; the caller
+# resolves a returned name to its table_id/duckdb_path itself. On the output side
+# is_primary_fact, skip_reason and the per-column reasoning are gone — all three
+# were required of the model and read by nobody, skip_reason having been ORDERED
+# by this prompt and then discarded. The overall summary is gone for the same
+# reason: it was never persisted, so nothing downstream could ever read it.
 
 name: enrichment_analysis
-version: "2.0.0"
+version: "3.0.0"
 description: Identify related tables whose columns usefully extend the main datasets
 
 # System prompt - defines role and behavior
@@ -77,7 +86,8 @@ system_prompt: |
   - Tables with no confirmed grain-preserving relationships
   - Tables that are already maximally extended
 
-  If a table has no valuable extensions, include it with skip_reason explaining why.
+  If a table has no valuable extensions, still include it — with an empty list of
+  recommended enrichments. That empty list IS the "nothing to extend here" answer.
   </when_to_skip>
 
   Emit your recommendations in the required output structure; emitting it ends the turn.

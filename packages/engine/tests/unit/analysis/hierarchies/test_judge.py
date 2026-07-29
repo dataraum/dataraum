@@ -179,8 +179,8 @@ _ALIAS_CANDIDATES = [
     {
         "ref": "0",
         "table": "facts",
-        "a": {"name": "account_id", "distinct": 3, "samples": ["A0", "A1", "A2"]},
-        "b": {"name": "account_name", "distinct": 3, "samples": ["Cash", "Receivable", "Payable"]},
+        "a": {"name": "account_id", "samples": ["A0", "A1", "A2"]},
+        "b": {"name": "account_name", "samples": ["Cash", "Receivable", "Payable"]},
         "meanings": {"account_id": "the account entity key"},
     }
 ]
@@ -223,5 +223,16 @@ def test_alias_confidence_out_of_range_is_malformed() -> None:
 def test_alias_evidence_formatting_is_deterministic() -> None:
     text = DimensionIdentityJudge._format_alias_candidates(_ALIAS_CANDIDATES)
     assert "ref=0 table=facts" in text
-    assert "account_id — 3 distinct" in text
+    assert "a: account_id — e.g. A0, A1, A2" in text
     assert "meaning[account_id]: the account entity key" in text
+
+
+def test_alias_evidence_serves_no_cardinality() -> None:
+    """The bijection is the PREMISE, so its cardinality is never evidence (DAT-671).
+
+    Both sides of a bijection have the same distinct count by definition, and the
+    prompt tells the judge not to score the 1:1 ("it always does; that is the
+    premise"). Serving the number restated the excluded premise as a fact to weigh.
+    """
+    text = DimensionIdentityJudge._format_alias_candidates(_ALIAS_CANDIDATES)
+    assert "distinct" not in text

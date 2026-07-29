@@ -324,7 +324,14 @@ def build_cycle_detection_context(
         if ranges:
             r["conditioned_measure_ranges"] = ranges
 
-    # Build table info with columns and semantic annotations
+    # Build table info with columns and semantic annotations.
+    #
+    # Every key built here is one ``format_context_for_prompt`` RENDERS (DAT-671):
+    # this dict has exactly one consumer — the prompt — so a key it does not print
+    # is a field nobody reads. ``business_name`` / ``temporal_behavior`` (columns)
+    # and ``slice_type`` / ``interest`` / ``relevance`` (slices) were built and
+    # never printed; they are gone rather than left as a silent claim that the
+    # model weighs them.
     table_info = []
     for t in tables:
         columns = []
@@ -337,7 +344,6 @@ def build_cycle_detection_context(
             if ann is not None:
                 col_info["semantic_role"] = ann.semantic_role
                 col_info["entity_type"] = ann.entity_type
-                col_info["business_name"] = ann.business_name
                 col_info["business_description"] = ann.business_description
                 # The annotator's confidence contract: this number encodes how
                 # much the column NAME communicates, not how certain the
@@ -348,7 +354,6 @@ def build_cycle_detection_context(
             concept = concepts.get(c.column_id)
             if concept is not None:
                 col_info["meaning"] = concept.meaning
-                col_info["temporal_behavior"] = concept.temporal_behavior
             # Value samples for entity-flow candidates (gate above) — read at the
             # table's pinned generation head, the same run-scoped profile read
             # the slice value counts use (fail-closed on a missing pin).
@@ -469,13 +474,10 @@ def build_cycle_detection_context(
                 # Matches what the graph context already serves
                 # (``graphs/context_reads.py``).
                 "column_name": sd.column_name or sd.column.column_name,
-                "slice_type": sd.slice_type,
                 "values": sd.distinct_values or [],
                 "value_counts": value_counts,
                 "confidence": sd.confidence,
                 "business_context": sd.business_context,
-                "interest": sd.slice_interest,
-                "relevance": sd.slice_relevance,
                 # The axis's measured COUNT(DISTINCT), so the renderer can say
                 # how much of the distribution it is actually showing (DAT-622).
                 "value_count": sd.value_count,

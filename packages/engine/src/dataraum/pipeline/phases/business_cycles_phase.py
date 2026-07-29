@@ -64,6 +64,37 @@ _STAGE = "operating_model"
 _LOW_CONFIDENCE_FLOOR = 0.5
 
 
+def _resolve_family_duplicates(detected_by_type: dict[str, DetectedCycle]) -> None:
+    """One cycle per DIRECTED family member (DAT-856, corrected by DAT-891).
+
+    An UNDETERMINED emission claims the whole family ("one cycle, not one per
+    direction"), so it is redundant beside ANY decided sibling and the decided
+    detection wins — strictly more informative. Two DECIDED directions are
+    DIFFERENT declared members with their own canonical types and artifacts —
+    a business with both receivables and payables has both cycles — so they
+    coexist. Same-direction duplicates share a canonical_type and were already
+    collapsed by the per-canonical dedup before this runs.
+
+    Keyed decisions only, never insertion order: the DAT-891 defect kept
+    whichever member dict iteration served first (dropping the
+    higher-confidence accounts_payable emission on the eval corpus) because
+    the two-decided case matched no tie-break branch.
+    """
+    directed_by_family: dict[str, list[str]] = {}
+    for canonical_type, detected in detected_by_type.items():
+        if detected.family is not None and detected.direction != UNDETERMINED_DIRECTION:
+            directed_by_family.setdefault(detected.family, []).append(canonical_type)
+    for canonical_type, detected in list(detected_by_type.items()):
+        if detected.family in directed_by_family and detected.direction == UNDETERMINED_DIRECTION:
+            del detected_by_type[canonical_type]
+            _log.warning(
+                "cycle_duplicate_family_dropped",
+                family=detected.family,
+                kept_canonical_type=", ".join(sorted(directed_by_family[detected.family])),
+                dropped_canonical_type=canonical_type,
+            )
+
+
 @analysis_phase
 class BusinessCyclesPhase(BasePhase):
     """LLM cycle detection through the artifact lifecycle (DAT-455).
@@ -248,38 +279,7 @@ class BusinessCyclesPhase(BasePhase):
                     dropped_tables=detected.tables_involved,
                 )
 
-        # ONE cycle per declared FAMILY (DAT-856): the prompt forbids >1 (a family
-        # with an undetermined direction is one cycle, not one per direction). Two
-        # emissions in the same family resolve to DIFFERENT canonical_types (the
-        # family name for undetermined vs a directed member), so the per-canonical
-        # dedup above does not catch them — both would persist as independent rows,
-        # double-counting in health scoring and showing twice in the cockpit list
-        # (the same distortion the same-type revert above guarded against). Keep the
-        # DECIDED detection over an undetermined one (a resolved direction is
-        # strictly more informative); drop the rest loudly.
-        by_family: dict[str, str] = {}
-        for canonical_type, detected in list(detected_by_type.items()):
-            fam = detected.family
-            if fam is None:
-                continue
-            incumbent = by_family.get(fam)
-            if incumbent is None:
-                by_family[fam] = canonical_type
-                continue
-            incumbent_undetermined = detected_by_type[incumbent].direction == UNDETERMINED_DIRECTION
-            if incumbent_undetermined and detected.direction != UNDETERMINED_DIRECTION:
-                dropped, kept = incumbent, canonical_type  # challenger decided → wins
-                del detected_by_type[incumbent]
-                by_family[fam] = canonical_type
-            else:
-                dropped, kept = canonical_type, incumbent  # keep the incumbent
-                del detected_by_type[canonical_type]
-            _log.warning(
-                "cycle_duplicate_family_dropped",
-                family=fam,
-                kept_canonical_type=kept,
-                dropped_canonical_type=dropped,
-            )
+        _resolve_family_duplicates(detected_by_type)
 
         # bind → execute per declared artifact; persist the grounded cycles.
         grounded_against = base_runs.model_dump(mode="json")

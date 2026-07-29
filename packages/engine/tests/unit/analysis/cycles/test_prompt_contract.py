@@ -84,7 +84,8 @@ def test_direction_axis_output_contract_is_pinned(cycles: PromptTemplate) -> Non
     assert "set `family`" in system
     assert "honest detected-but-undirected answer" in system
     assert "never guess a label" in system
-    assert "at most ONE cycle per declared family" in system
+    assert "at most ONE cycle per DECIDED direction of a declared family" in system
+    assert "ONE `undetermined` cycle" in system
 
 
 def test_generic_prompt_carries_no_domain_vocabulary() -> None:

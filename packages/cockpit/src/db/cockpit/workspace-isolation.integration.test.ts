@@ -23,8 +23,19 @@ import {
 
 const STACK_AVAILABLE = providedByEnvironment("COCKPIT_DATABASE_URL");
 
-// Stub the cockpit env so config.ts loads for the DB-bound imports.
-applyIntegrationEnv();
+// Stub the cockpit env so config.ts loads for the DB-bound imports. The dev
+// creds are optional in config.base — so applyIntegrationEnv's required-only
+// defaults never set them — but THIS suite asserts the registry seed's
+// credential-user path, which registry.ts skips entirely without them. Same
+// defaults as the compose stack, so the row the seed writes/adopts is the one
+// a live stack would hold anyway. `||` not `??`: an empty-string env var means
+// "unset" here, exactly as config.base reads it.
+applyIntegrationEnv({
+	DATARAUM_DEV_USER_EMAIL:
+		process.env.DATARAUM_DEV_USER_EMAIL || "dev@dataraum.dev",
+	DATARAUM_DEV_USER_PASSWORD:
+		process.env.DATARAUM_DEV_USER_PASSWORD || "dataraum-dev",
+});
 
 const WS_A = process.env.DATARAUM_WORKSPACE_ID as string;
 

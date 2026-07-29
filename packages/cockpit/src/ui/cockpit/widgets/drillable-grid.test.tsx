@@ -942,7 +942,7 @@ describe("non-reconciling total (DAT-857)", () => {
 		reconciles: { time: false, categorical: true },
 	};
 
-	it("renders the drilled total as an honest dash, with the reason on the label", async () => {
+	it("prints the recomputed total with the label saying so — never a dash", async () => {
 		renderGrid(NODE_SOURCE, undefined, RATIO_AXES, {
 			footerCells: { value: 42, revenue: 800 },
 		});
@@ -956,13 +956,15 @@ describe("non-reconciling total (DAT-857)", () => {
 		await waitFor(() =>
 			expect(screen.getByTestId("mock-grid-footer")).toBeTruthy(),
 		);
-		expect(screen.getByTestId("mock-footer-value").textContent).toBe("—");
-		// A dead end with no reason reads as a bug — the label says why. Exact
-		// match: composing the mask over an ABSENT caller label must fall back
-		// to WindowedGrid's own "Total" default, never stringify undefined
-		// (found live on the closing smoke: "undefined — parts don't sum").
+		// The total is the formula over the carrier totals beside it — the same
+		// number the header shows; hiding it made the two disagree (lead ruling
+		// 2026-07-29 retired the dash mask). The label carries the not-a-row-sum
+		// note instead. Exact match: composing over an ABSENT caller label must
+		// fall back to WindowedGrid's own "Total" default, never stringify
+		// undefined (found live on the closing smoke).
+		expect(screen.getByTestId("mock-footer-value").textContent).toBe("42");
 		expect(screen.getByTestId("mock-footer-label").textContent).toBe(
-			"Total — parts don't sum",
+			"Total — value recomputed",
 		);
 	});
 
@@ -982,7 +984,7 @@ describe("non-reconciling total (DAT-857)", () => {
 		);
 		expect(screen.getByTestId("mock-footer-value").textContent).toBe("42");
 		expect(screen.getByTestId("mock-footer-label").textContent).not.toContain(
-			"parts don't sum",
+			"recomputed",
 		);
 	});
 });

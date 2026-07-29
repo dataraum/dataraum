@@ -177,45 +177,44 @@ export interface DrillAxis {
 }
 
 /**
- * Blank the drilled total where the parts do not add up to it (DAT-857).
+ * Is the drilled total a RECOMPUTE rather than a sum of the rows (DAT-857)?
  *
  * A recomputed measure — a ratio, an average, a distinct count — is correct in
- * every bucket and meaningless summed across them. The footer's `value` comes
- * from the UNRESTRICTED scalar, so printing it under a column of recomputed
- * per-bucket values invites the one false read the drill exists to prevent:
- * that the rows above it add up to it. It becomes an explicit `null`, which the
- * grid renders as the same honest `—` it already uses for an unobserved cell.
+ * every bucket and does not sum across them. Its total is still a real number:
+ * the footer's `value` is the UNRESTRICTED scalar, which for this class is the
+ * same formula re-evaluated over the carrier totals printed beside it — exactly
+ * the per-bucket mechanism applied to the all-data bucket, and the same number
+ * the metric header displays. So the total PRINTS (masking it made the footer
+ * disagree with the header over identical inputs — lead ruling 2026-07-29);
+ * this predicate only tells the grid to label it as recomputed, so nobody
+ * reads the rows above as summing to it.
  *
- * Only `value` is masked. The operand columns beside it stay real totals: the
- * time gate offers a recompute bucketing ONLY when every carrier is additive on
- * that axis, so those columns genuinely do sum to their footers.
+ * The carrier columns beside it are genuine row sums either way: the time gate
+ * offers a recompute bucketing ONLY when every carrier is additive on that
+ * axis.
  *
- * Returns the footer unchanged when nothing is drilled, when no verdict was
- * consulted, or when the drilled axes all reconcile. `undefined` in, `undefined`
- * out — the footer is suppressed entirely on an undrilled grid.
+ * False when nothing is drilled, when no verdict was consulted, or when the
+ * drilled axes all reconcile additively.
  */
-export function maskNonReconcilingTotal<V>(
-	footer: Record<string, V | null> | undefined,
+export function totalIsRecomputed(
 	steps: readonly DrillStep[],
 	axes: readonly DrillAxis[],
 	reconciles: { time: boolean; categorical: boolean } | undefined,
-): Record<string, V | null> | undefined {
-	if (footer === undefined || reconciles === undefined) return footer;
+): boolean {
+	if (reconciles === undefined) return false;
 	const sliced = steps.filter((s) => s.kind === "slice");
-	if (sliced.length === 0) return footer;
+	if (sliced.length === 0) return false;
 	const temporalColumns = new Set(
 		axes.filter((a) => a.temporal !== null).map((a) => a.column),
 	);
 	// A slice on a date column that IS bucketed is a time axis; every other
 	// slice — including a raw-date slice offered without a grain — folds rows
 	// the categorical way.
-	const reconcilesAll = sliced.every((s) =>
+	return !sliced.every((s) =>
 		temporalColumns.has(s.column) && s.grain !== undefined
 			? reconciles.time
 			: reconciles.categorical,
 	);
-	if (reconcilesAll) return footer;
-	return { ...footer, value: null };
 }
 
 export const sliceColumns = (steps: DrillStep[]): string[] => {

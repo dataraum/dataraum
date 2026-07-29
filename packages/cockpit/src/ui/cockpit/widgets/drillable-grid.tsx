@@ -73,7 +73,7 @@ import {
 	type DrillSource,
 	type DrillStep,
 	MAX_GUIDANCE_AXES,
-	maskNonReconcilingTotal,
+	totalIsRecomputed,
 } from "#/duckdb/drill";
 
 import { grainLabel, grainPresetsFrom, parseGrainToken } from "#/duckdb/grain";
@@ -786,17 +786,14 @@ export function DrillableGrid({
 	);
 
 	// The total row anchors a DRILLED view; the undrilled grid IS the scalar, so
-	// a footer there would duplicate the single row. Its `value` blanks to an
-	// honest dash when the drilled parts do not sum to it (DAT-857).
-	const footerRow =
-		steps.length > 0
-			? maskNonReconcilingTotal(
-					footerCells,
-					steps,
-					axes,
-					axesQuery.data?.reconciles,
-				)
-			: undefined;
+	// a footer there would duplicate the single row. A recomputed value (ratio,
+	// average) PRINTS its real total — it is the formula over the carrier totals
+	// beside it, the same number the header shows — and the label below says so
+	// (DAT-857; lead ruling 2026-07-29 retired the dash mask).
+	const footerRow = steps.length > 0 ? footerCells : undefined;
+	const recomputedTotal =
+		steps.length > 0 &&
+		totalIsRecomputed(steps, axes, axesQuery.data?.reconciles);
 
 	// The drill controls live in the GRID's toolbar-left slot (where the row
 	// count used to sit — iteration 3), not on their own row above it.
@@ -1060,14 +1057,13 @@ export function DrillableGrid({
 				onRowClick={onRowClick}
 				onRowHover={onRowHover}
 				footerRow={footerRow}
-				// A dashed total with no reason reads as a bug. When the mask fired,
-				// the label carries the why (the cell itself is the house `—`).
+				// The note keeps anyone from reading the rows above as summing to a
+				// recomputed value. WindowedGrid defaults an ABSENT label to "Total" —
+				// composing here happens before that default, so repeat it or an
+				// unlabeled caller renders a literal "undefined".
 				footerLabel={
-					footerRow !== undefined && footerRow !== footerCells
-						? // WindowedGrid defaults an ABSENT label to "Total" — composing
-							// here happens before that default, so repeat it or an
-							// unlabeled caller renders "undefined — parts don't sum".
-							`${footerLabel ?? "Total"} — parts don't sum`
+					recomputedTotal
+						? `${footerLabel ?? "Total"} — value recomputed`
 						: footerLabel
 				}
 				columnAccents={columnAccents}

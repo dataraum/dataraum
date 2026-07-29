@@ -11,9 +11,9 @@ import {
 	type DrillAxis,
 	type DrillStep,
 	deCompoundedColumnRenames,
-	maskNonReconcilingTotal,
 	referencedColumns,
 	sliceColumns,
+	totalIsRecomputed,
 } from "./drill";
 
 const steps: DrillStep[] = [
@@ -186,7 +186,7 @@ describe("composeTierA", () => {
 	});
 });
 
-describe("maskNonReconcilingTotal (DAT-857 — the total row is honest or it is a dash)", () => {
+describe("totalIsRecomputed (DAT-857 — the total prints; the label says recomputed)", () => {
 	const axis = (column: string, temporal: "date" | null): DrillAxis => ({
 		column,
 		sliceType: "categorical",
@@ -201,83 +201,64 @@ describe("maskNonReconcilingTotal (DAT-857 — the total row is honest or it is 
 		disabledReason: null,
 	});
 	const AXES = [axis("booked_on", "date"), axis("region", null)];
-	const FOOTER = { value: 680, revenue: 800, cost_of_goods_sold: 120 };
 
-	it("blanks a recomputed measure's total when bucketed by time — its buckets do not sum to it", () => {
-		const got = maskNonReconcilingTotal(
-			FOOTER,
-			[{ kind: "slice", column: "booked_on", grain: "1M" }],
-			AXES,
-			{ time: false, categorical: true },
-		);
-		expect(got?.value).toBeNull();
-		// The carriers DO sum — the recompute bucketing is only offered when they
-		// are additive — so their totals stay real numbers, not collateral dashes.
-		expect(got?.revenue).toBe(800);
-		expect(got?.cost_of_goods_sold).toBe(120);
+	it("flags a recomputed measure bucketed by time — its buckets do not sum to the total, which still prints", () => {
+		expect(
+			totalIsRecomputed(
+				[{ kind: "slice", column: "booked_on", grain: "1M" }],
+				AXES,
+				{ time: false, categorical: true },
+			),
+		).toBe(true);
 	});
 
-	it("keeps a real total when the drilled axis reconciles", () => {
+	it("does not flag when the drilled axis reconciles additively", () => {
 		expect(
-			maskNonReconcilingTotal(
-				FOOTER,
+			totalIsRecomputed(
 				[{ kind: "slice", column: "booked_on", grain: "1M" }],
 				AXES,
 				{ time: true, categorical: true },
-			)?.value,
-		).toBe(680);
+			),
+		).toBe(false);
 	});
 
 	it("reads a RAW date slice as categorical — ungrained, it folds rows the categorical way", () => {
 		// A stock is additive across categories but not across periods; sliced on a
-		// raw date (no grain) the parts do reconcile, so the total stands.
+		// raw date (no grain) the parts do reconcile — no recompute note.
 		expect(
-			maskNonReconcilingTotal(
-				FOOTER,
-				[{ kind: "slice", column: "booked_on" }],
-				AXES,
-				{ time: false, categorical: true },
-			)?.value,
-		).toBe(680);
+			totalIsRecomputed([{ kind: "slice", column: "booked_on" }], AXES, {
+				time: false,
+				categorical: true,
+			}),
+		).toBe(false);
 	});
 
-	it("blanks when ANY drilled axis fails to reconcile", () => {
+	it("flags when ANY drilled axis fails to reconcile", () => {
 		expect(
-			maskNonReconcilingTotal(
-				FOOTER,
+			totalIsRecomputed(
 				[
 					{ kind: "slice", column: "region" },
 					{ kind: "slice", column: "booked_on", grain: "1M" },
 				],
 				AXES,
 				{ time: false, categorical: true },
-			)?.value,
-		).toBeNull();
+			),
+		).toBe(true);
 	});
 
-	it("leaves the footer alone with no slice, no verdict, or no footer at all", () => {
+	it("does not flag with no slice or no verdict", () => {
 		const pinOnly: DrillStep[] = [
 			{ kind: "pin", column: "region", value: "eu" },
 		];
 		expect(
-			maskNonReconcilingTotal(FOOTER, pinOnly, AXES, {
-				time: false,
-				categorical: false,
-			}),
-		).toBe(FOOTER);
+			totalIsRecomputed(pinOnly, AXES, { time: false, categorical: false }),
+		).toBe(false);
 		expect(
-			maskNonReconcilingTotal(
-				FOOTER,
+			totalIsRecomputed(
 				[{ kind: "slice", column: "booked_on", grain: "1M" }],
 				AXES,
 				undefined,
 			),
-		).toBe(FOOTER);
-		expect(
-			maskNonReconcilingTotal(undefined, [], AXES, {
-				time: false,
-				categorical: false,
-			}),
-		).toBeUndefined();
+		).toBe(false);
 	});
 });

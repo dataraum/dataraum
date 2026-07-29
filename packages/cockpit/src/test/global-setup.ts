@@ -34,6 +34,7 @@ import { TEST_WORKSPACE_ID } from "./integration-env";
 import { buildJourneyLake, findCorpusDir } from "./journey-lake";
 import {
 	catalogSeedSql,
+	conceptSeedSql,
 	graphSnippetSeedSql,
 	metricArtifactSeedSql,
 } from "./seed-catalog";
@@ -92,6 +93,9 @@ export default async function setup({ provide }: TestProject) {
 		// Snippets are workspace-scoped by schema_mapping_id — it must match the
 		// boot identity the suites run under or the loader reads zero rows.
 		fixture.psql(graphSnippetSeedSql(TEST_WORKSPACE_ID));
+		// The ontology rows the graph's concept edges INNER JOIN against — seeded
+		// globally so no suite's view of the graph depends on execution order.
+		fixture.psql(conceptSeedSql());
 	} catch (err) {
 		// A fixture that fails to BUILD is a real failure, not a skip: docker is
 		// present, so this is our seeding going wrong (e.g. engine schema.sql no

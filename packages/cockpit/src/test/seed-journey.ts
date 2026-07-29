@@ -261,6 +261,21 @@ VALUES
    '${sqlQuote(partsJson(COGS_SELECT_EXPR, JOURNEY_RELATION, [COGS_PREDICATE]))}'::json,
    0, 0, ${ts}, ${ts});
 
+-- The ONTOLOGY concepts the two carriers ground. Load-bearing, not decoration:
+-- the answer path resolves its verdict target by MATCHing
+-- \`(concept)-[grounded_by]->(grounding)\` on the property graph, and BOTH
+-- \`og_grounded_by\` and \`og_has_additivity\` INNER JOIN \`concepts\` on
+-- (name, superseded_at IS NULL) — no concept row, no edge, no identity.
+--
+-- vertical '_adhoc' because this workspace has no \`workspace_settings\` row:
+-- the vertical-scoped \`concepts\` read view falls back to that placeholder
+-- (read_views.py's _vertical_scoped_view_sql), so any other vertical here would
+-- be invisible to every reader.
+INSERT INTO concepts (concept_id, vertical, name, kind, source, created_at)
+VALUES
+  ('cpt_j_revenue', '_adhoc', '${REVENUE_FIELD}', 'measure', 'seed', ${ts}),
+  ('cpt_j_cogs',    '_adhoc', '${COGS_FIELD}',    'measure', 'seed', ${ts});
+
 INSERT INTO lifecycle_artifacts (
   artifact_id, artifact_type, artifact_key, run_id, state, state_reason,
   stage, graph_definition, created_at, state_changed_at)

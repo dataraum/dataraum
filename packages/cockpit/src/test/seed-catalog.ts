@@ -178,6 +178,19 @@ export function graphSnippetSeedSql(
 			sql: `SELECT SUM(cost) FROM lake.typed.${ENRICHED_VIEW}`,
 			failures: 0,
 		},
+		{
+			// A RETAINED-FAILURE grounding (DAT-671 R2). Its own standard_field on
+			// purpose: a failed row for `revenue`/`cost` would be the NEWEST row for
+			// a field the metric path wants, and that path's "first per field
+			// decides" contract would then strip a healthy node's axes — a fixture
+			// change masquerading as a product regression. `shrinkage` belongs to no
+			// metric DAG, so only the readers that ask about it can see it.
+			id: "snip_shrinkage",
+			type: "extract",
+			field: "shrinkage",
+			sql: `SELECT SUM(shrinkage) FROM ${ENRICHED_VIEW}`,
+			failures: 3,
+		},
 	];
 
 	const values = rows
@@ -279,5 +292,32 @@ VALUES (
 -- EMPTY graph without it, so its absence looks exactly like "no metrics".
 INSERT INTO metadata_snapshot_head (head_id, target, stage, run_id, promoted_at)
 VALUES ('head_om', 'catalog', 'operating_model', '${RUN_ID}', ${ts});
+`;
+}
+
+/**
+ * The ONTOLOGY concepts the fixture's groundings resolve to (DAT-671 R2).
+ *
+ * Seeded HERE, in global setup, rather than ad hoc in the one suite that first
+ * needed them: `og_grounded_by` and `og_has_additivity` both INNER JOIN
+ * `concepts` on `(name, superseded_at IS NULL)`, so whether a concept row
+ * exists decides whether an EDGE exists — and a test-local insert makes every
+ * other suite's view of the graph depend on execution order.
+ *
+ * `_adhoc` is the vertical because the fixture workspace is unbound (no
+ * `workspace_settings` row): the vertical-scoped `concepts` read view falls
+ * back to that placeholder (read_views.py's `_vertical_scoped_view_sql`), so
+ * rows under any other vertical would be invisible to every reader.
+ */
+export function conceptSeedSql(): string {
+	return `
+SET search_path TO engine;
+
+INSERT INTO concepts (concept_id, vertical, name, kind, source, created_at)
+VALUES
+  ('cpt_revenue',   '_adhoc', 'revenue',   'measure', 'seed', ${ts}),
+  ('cpt_cost',      '_adhoc', 'cost',      'measure', 'seed', ${ts}),
+  ('cpt_shrinkage', '_adhoc', 'shrinkage', 'measure', 'seed', ${ts})
+ON CONFLICT DO NOTHING;
 `;
 }

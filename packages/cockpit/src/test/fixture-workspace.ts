@@ -206,6 +206,10 @@ export function startFixtureWorkspace(): FixtureWorkspace {
 		// column NAME with no fact scoping — two `account_id__name` rows would
 		// change what the existing tier-A suite sees.
 		applySql(containerId, SCRATCH_DB, `CREATE DATABASE ${JOURNEY_DB};`);
+		// The journey database carries the graph too (DAT-671 R2): the answer
+		// path's IDENTITY read — snippet -> concept, a GRAPH_TABLE MATCH over
+		// `og_grounded_by` — is what licenses its additivity verdict, so the
+		// journeys cannot exercise it against a database with no property graph.
 		applySql(
 			containerId,
 			JOURNEY_DB,
@@ -214,6 +218,7 @@ export function startFixtureWorkspace(): FixtureWorkspace {
 				`SET search_path TO ${RAW_SCHEMA};`,
 				rawDdl,
 				readDdl,
+				graphDdl,
 			].join("\n"),
 		);
 

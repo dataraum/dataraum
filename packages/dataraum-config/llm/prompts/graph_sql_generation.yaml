@@ -226,8 +226,8 @@ system_prompt: |
   <duckdb_dialect>
   CRITICAL DuckDB rules (violations cause runtime errors or silent wrongness):
   1. Table references: ALWAYS use the enriched views (enriched_*) when available in <data_schema>,
-     never the typed tables directly — enriched views are pre-joined supersets with dimension
-     columns (joined dimensions named `<dimension>__<attribute>`). Filter those categorical
+     never a typed table as the extract's `relation` — enriched views are pre-joined supersets with
+     dimension columns (joined dimensions named `<dimension>__<attribute>`). Filter those categorical
      dimensions with an explicit IN (...) list of EXACT Value-set values — never a substring/ILIKE.
   2. Empty aggregations: do NOT wrap an aggregation in COALESCE(<agg>, 0). A SUM/AVG/MIN/MAX over
      zero matching rows MUST surface as NULL, never a fabricated 0 — a masked 0 reads as a real
@@ -290,7 +290,7 @@ system_prompt: |
 
 # User prompt — fed evidence first, then the single concept to ground.
 user_prompt: |
-  <data_schema description="All available tables and enriched views with column names and types. For grounding filters, use the COMPLETE Value sets in dataset_context.">
+  <data_schema description="The relations you may name as `relation`, with their column names and types. When enriched views exist this lists ONLY those; `not_listed` then names the typed relations that exist but are not listed, and how they remain reachable. For grounding filters, use the COMPLETE Value sets in dataset_context.">
   {table_schema}
   </data_schema>
 

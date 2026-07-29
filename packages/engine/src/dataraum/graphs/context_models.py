@@ -363,13 +363,44 @@ class ConceptReconciliation:
 
 
 @dataclass
+class ConceptAdditivity:
+    """How one concept's measurement behaves on ONE axis (DAT-857/868).
+
+    The served projection of a ``metric_axis_additivity`` row, reached from the
+    concept through the graph's ``has_additivity`` edge (DAT-671 R4). Only
+    MEASURE targets reach here: the edge exists because a measure's
+    ``target_key`` IS the concept (``standard_field``), whereas a ``metric``
+    target keys on a formula ``graph_id`` that has no concept vertex.
+
+    ``axis_key`` is a served column name, or ``'*'`` for the CLASS row covering
+    every axis of its kind; a concrete key REFINES the class row. ``status``
+    decides how to read the rest — a ``classified`` row carries a ``verdict``
+    (plus the doctrine ``reason`` when the verdict is not ``additive``), an
+    ``abstained`` row carries only ``abstain_reason``. The vocabularies are
+    ``dataraum.graphs.additivity``'s; nothing here re-judges them.
+
+    ``bucket_grain`` is the axis's observed cadence (time axes only): the finest
+    bucket the data supports, ``None`` for no claim.
+    """
+
+    axis_kind: str  # 'time' | 'categorical'
+    axis_key: str  # a served column name, or '*' (the class row)
+    status: str  # 'classified' | 'abstained'
+    verdict: str | None = None
+    reason: str | None = None
+    abstain_reason: str | None = None
+    bucket_grain: str | None = None
+
+
+@dataclass
 class ConceptContext:
     """One vocabulary concept with its graph neighbourhood (DAT-734).
 
     The traversal core: definition (typed ``concepts`` row + ontology garnish),
     ``part_of`` subconcepts/parents (+ bounded transitive ancestry),
-    ``disjoint_with``, ``reconciles_with``, and the concept's groundings
-    (``grounded_by`` → ``uses``) — multi-grounding served first-class.
+    ``disjoint_with``, ``reconciles_with``, the concept's groundings
+    (``grounded_by`` → ``uses``) — multi-grounding served first-class — and the
+    per-axis additivity verdicts of the last promoted run (``has_additivity``).
     """
 
     name: str
@@ -383,6 +414,7 @@ class ConceptContext:
     disjoint_with: list[str] = field(default_factory=list)
     reconciles_with: list[ConceptReconciliation] = field(default_factory=list)
     groundings: list[GroundingContext] = field(default_factory=list)
+    additivity: list[ConceptAdditivity] = field(default_factory=list)
 
 
 @dataclass

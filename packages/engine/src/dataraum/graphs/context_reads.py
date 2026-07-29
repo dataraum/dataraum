@@ -3,8 +3,8 @@
 ``build_execution_context`` assembles the GraphAgent's served context by GRAPH
 TRAVERSAL over the operating-model property graph (ADR-0021): concept →
 part_of subconcepts → groundings (grounded_by) → columns (uses), with
-disjoint_with / reconciles_with / conformed-dimension / references /
-materializes_as served AS STRUCTURE. The knowledge sections with no graph
+disjoint_with / reconciles_with / has_additivity / conformed-dimension /
+references / materializes_as served AS STRUCTURE. The knowledge sections with no graph
 element yet — value sets, drivers, validation results, business cycles — are
 assembled from their typed rows alongside the traversal core (conventions ride
 their own prompt slot). ``context_format.format_served_context`` renders the
@@ -21,11 +21,13 @@ from sqlalchemy import select, text
 from sqlalchemy.orm import Session
 
 from dataraum.core.logging import get_logger
+from dataraum.graphs.additivity_db_models import AXIS_KEY_ALL
 from dataraum.graphs.context_models import (
     _NON_CATEGORICAL_ROLES,
     _VALUE_SET_COMPLETE_MAX,
     BusinessCycleContext,
     ColumnContext,
+    ConceptAdditivity,
     ConceptContext,
     ConceptReconciliation,
     ConformedDimensionContext,
@@ -983,6 +985,46 @@ def _read_grounding_rows(session: Session, read_schema: str) -> list[Any]:
     )
 
 
+def _read_additivity_rows(session: Session, read_schema: str) -> list[Any]:
+    """Concept → per-axis additivity verdict via PGQ MATCH over ``has_additivity``.
+
+    The traversal the edge was built for (DAT-857/868): "how does concept X
+    aggregate?" is one hop from the concept, so it is read as one hop rather
+    than re-joining ``current_metric_axis_additivity`` to the vocabulary here —
+    ``og_has_additivity`` already performs that resolution once, on the engine
+    side, which is the ADR-0024 pattern (the cockpit's ``concept-target.ts``
+    walks the sibling ``grounded_by`` edge for the same reason).
+
+    MEASURE targets only, by construction: the edge view filters
+    ``target_kind = 'measure'`` because a measure's ``target_key`` IS the
+    concept name (``standard_field``), while a ``metric`` target keys on a
+    formula ``graph_id`` with no concept vertex to hang an edge from.
+
+    Read through ``current_metric_axis_additivity``, so — exactly like
+    ``_read_reconciliation_rows`` — this is what the last PROMOTED
+    operating_model run observed, and the rendered document says so. The claim
+    holds on EVERY path including the in-run metrics phase: that phase assembles
+    its context before it computes and persists this run's own verdicts, and an
+    ``om_run_id`` override does not reach here (the head-scoped view is the only
+    version axis this table has). A run in flight is never readable as the
+    current head anyway (ADR-0008/0010).
+    """
+    return list(
+        session.execute(
+            text(
+                f'SELECT * FROM GRAPH_TABLE ("{read_schema}".operating_model\n'
+                "  MATCH (c IS concept_node)-[e IS has_additivity]->"
+                "(a IS additivity_verdict)\n"
+                "  COLUMNS (c.name AS concept_name, a.axis_kind AS axis_kind,\n"
+                "           a.axis_key AS axis_key, a.status AS status,\n"
+                "           a.verdict AS verdict, a.reason AS reason,\n"
+                "           a.abstain_reason AS abstain_reason,\n"
+                "           a.bucket_grain AS bucket_grain))"
+            )
+        ).all()
+    )
+
+
 def _read_use_rows(session: Session, read_schema: str) -> list[Any]:
     """Grounding → column rows via PGQ MATCH over ``uses``."""
     return list(
@@ -1167,6 +1209,7 @@ def _assemble_concept_contexts(
     provenance: dict[str, Any],
     tables: dict[str, tuple[str, str | None]],
     reconciliations: dict[tuple[str, str], Any],
+    additivity_rows: list[Any],
 ) -> list[ConceptContext]:
     """Fold the traversal reads into per-concept contexts (deterministic order).
 
@@ -1175,7 +1218,11 @@ def _assemble_concept_contexts(
       active concept — the dropped edge is WARNED, never silently invisible;
     - a healthy grounding with no ``uses`` rows (pre-v2 provenance / rename) is
       served but WARNED — the graph could not enumerate its columns;
-    - a healthy grounding with no relation (pre-parts row) is skipped + WARNED.
+    - a healthy grounding with no relation (pre-parts row) is skipped + WARNED;
+    - an additivity verdict whose concept is not in the served vocabulary is
+      dropped + WARNED (the two reads are scoped by DIFFERENT verticals — the
+      edge view rides ``workspace_settings.active_vertical``, this fold's
+      concept list rides the RUNTIME vertical the caller passed).
     """
     # uses per snippet, resolved to (column, table, role) — endpoint misses are loud.
     uses_by_snippet: dict[str, list[GroundingUseContext]] = {}
@@ -1280,6 +1327,33 @@ def _assemble_concept_contexts(
                 )
             )
 
+    # Per-axis additivity, keyed by concept. Ordered class-row-first within each
+    # axis kind, because a concrete axis REFINES the class verdict — reading the
+    # refinement before the rule it refines inverts the relationship.
+    served_names = {name for name, _kind in concept_rows}
+    additivity: dict[str, list[ConceptAdditivity]] = {}
+    for r in additivity_rows:
+        concept_name = str(r.concept_name)
+        if concept_name not in served_names:
+            logger.warning(
+                "additivity_concept_unresolved",
+                concept=concept_name,
+                axis_kind=str(r.axis_kind),
+                axis_key=str(r.axis_key),
+            )
+            continue
+        additivity.setdefault(concept_name, []).append(
+            ConceptAdditivity(
+                axis_kind=str(r.axis_kind),
+                axis_key=str(r.axis_key),
+                status=str(r.status),
+                verdict=r.verdict,
+                reason=r.reason,
+                abstain_reason=r.abstain_reason,
+                bucket_grain=r.bucket_grain,
+            )
+        )
+
     out: list[ConceptContext] = []
     for name, kind in concept_rows:
         out.append(
@@ -1294,6 +1368,10 @@ def _assemble_concept_contexts(
                 groundings=sorted(
                     groundings_by_concept.get(name, []),
                     key=lambda g: (g.failed, g.relation or "", g.snippet_id),
+                ),
+                additivity=sorted(
+                    additivity.get(name, []),
+                    key=lambda a: (a.axis_kind, a.axis_key != AXIS_KEY_ALL, a.axis_key),
                 ),
             )
         )
@@ -1330,6 +1408,7 @@ def _load_graph_reads(
         use_rows = _read_use_rows(session, read_schema)
         provenance = _read_grounding_provenance(session, read_schema)
         reconciliations = _read_reconciliation_rows(session, read_schema)
+        additivity_rows = _read_additivity_rows(session, read_schema)
         references = _read_references(session, read_schema, tables, columns, table_ids)
         conformed = _read_conformed(session, read_schema, tables)
         derived = _read_derived_from(session, read_schema, tables)
@@ -1342,6 +1421,7 @@ def _load_graph_reads(
             provenance,
             tables,
             reconciliations,
+            additivity_rows,
         )
         return _GraphReads(
             concepts=concepts,

@@ -1590,14 +1590,32 @@ class GraphAgent(LLMFeature):
     ) -> dict[str, Any]:
         """Build multi-table schema information from rich context and DuckDB.
 
-        When enriched views exist, only includes those (they are pre-joined
-        supersets of typed tables). Falls back to typed tables otherwise.
+        When enriched views exist, only those are LISTED (a grounded extract
+        reads its fact through the view — DAT-811/812: every fact has one, a
+        dim-less fact gets a passthrough ``SELECT *``). That cut used to be
+        silent, and it is not a small one: it removes every typed fact and
+        dimension table from this block AND from
+        ``validate_grounding_basis``'s allow-list, which is the same artifact
+        (see ``_describe_table``). So the enriched branch now DISCLOSES it
+        (DAT-671 R4) — what is listed, what exists but is not, and how the
+        unlisted relations are still reachable.
+
+        The disclosure rides a sibling key, never the ``tables`` list:
+        ``schema_tables_from_info`` reads ``tables`` alone, so the allow-list is
+        unchanged by construction and "served relation" keeps meaning exactly
+        what it meant. Widening the allow-list to the typed tables was
+        considered and REJECTED — ``additivity_resolver.served_relation`` (and
+        ``period_resolver`` through it) resolves enriched view names only, so a
+        typed-table grounding would abstain on additivity and lose its
+        reporting-instant binding: a silently wrong number in place of a
+        disclosed absence.
 
         Returns:
-            Dict with 'tables' list, each containing name, columns (with
-            sample_values), and row_count.
+            Dict with a 'tables' list (name, columns, row_count) and, on the
+            enriched branch, a 'not_listed' disclosure.
         """
         tables: list[dict[str, Any]] = []
+        not_listed: dict[str, Any] | None = None
 
         if context.rich_context is not None:
             if context.rich_context.enriched_views:
@@ -1606,15 +1624,61 @@ class GraphAgent(LLMFeature):
                     table_info = self._describe_table(context.duckdb_conn, ev.view_name)
                     if table_info:
                         tables.append(table_info)
+                not_listed = self._undisclosed_relations(context, tables)
             else:
-                # Fallback: typed tables when no enriched views exist
+                # Fallback: typed tables when no enriched views exist. Nothing is
+                # withheld on this branch, so there is nothing to disclose.
                 for table_ctx in context.rich_context.tables:
                     duckdb_name = table_ctx.duckdb_name or table_ctx.table_name
                     table_info = self._describe_table(context.duckdb_conn, duckdb_name)
                     if table_info:
                         tables.append(table_info)
 
-        return {"tables": tables}
+        schema_info: dict[str, Any] = {"tables": tables}
+        if not_listed is not None:
+            schema_info["not_listed"] = not_listed
+        return schema_info
+
+    @staticmethod
+    def _undisclosed_relations(
+        context: ExecutionContext,
+        listed: list[dict[str, Any]],
+    ) -> dict[str, Any] | None:
+        """What the enriched-only schema block leaves out, said plainly (DAT-671 R4).
+
+        Enumerates the typed relations that exist in the same database but are
+        not listed above. UNCAPPED: this is a metadata enumeration, so a freak
+        workspace makes the prompt long and visibly so, rather than silently
+        truncated into a false picture of the catalog.
+
+        ``None`` when the enriched views already cover every relation the
+        context carries — an empty disclosure would assert a withholding that
+        did not happen.
+        """
+        rich = context.rich_context
+        if rich is None:
+            return None
+        shown = {t["table_name"] for t in listed if t.get("table_name")}
+        withheld = sorted(
+            (table.duckdb_name or table.table_name)
+            for table in rich.tables
+            if (table.duckdb_name or table.table_name) not in shown
+        )
+        if not withheld:
+            return None
+        return {
+            "note": (
+                "Listed above: the enriched views ONLY. Every fact is served through its "
+                "enriched view (pre-joined with its dimensions), so a view name is what "
+                "`relation` must be — a grounding naming anything else is rejected. The "
+                "relations below exist in the same database and are NOT listed here: they "
+                "are not valid `relation` values, but they ARE addressable inside a WHERE "
+                "membership subquery (the blueprint pattern for a classification that "
+                "lives on a dimension table). Their columns and value sets are described "
+                "in the dataset context's Tables section."
+            ),
+            "relations": withheld,
+        }
 
     @staticmethod
     def _describe_table(

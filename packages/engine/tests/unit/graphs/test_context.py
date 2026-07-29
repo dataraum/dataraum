@@ -19,6 +19,7 @@ from dataraum.graphs.context_format import (
 from dataraum.graphs.context_models import (
     BusinessCycleContext,
     ColumnContext,
+    ConceptAdditivity,
     ConceptContext,
     ConceptReconciliation,
     ConformedDimensionContext,
@@ -365,6 +366,198 @@ class TestConceptGraph:
 
     def test_no_section_without_concepts(self) -> None:
         assert "## Business Concepts" not in format_served_context(GraphExecutionContext())
+
+
+class TestConceptAdditivity:
+    """The per-axis verdicts the extract will later be judged by (DAT-671 R4).
+
+    The GraphAgent composes the extract whose aggregate DETERMINES these
+    verdicts, and a downstream gate then refuses the breakdowns they deny — so
+    the author has to be able to see them while authoring. These pin the three
+    distinctions the wording exists to hold: judged-additive vs judged-non-
+    additive vs never-judged, the class row vs its per-column refinement, and a
+    cadence claim vs none.
+    """
+
+    @staticmethod
+    def _render(*axes: ConceptAdditivity) -> str:
+        return format_served_context(
+            GraphExecutionContext(
+                concepts=[ConceptContext(name="account_balance", additivity=list(axes))]
+            )
+        )
+
+    def test_semi_additive_time_names_what_the_measurement_does(self) -> None:
+        out = self._render(
+            ConceptAdditivity(
+                axis_kind="time",
+                axis_key="*",
+                status="classified",
+                verdict="semi_additive",
+                reason="stock",
+            )
+        )
+        assert "aggregation (last promoted run):" in out
+        assert (
+            "over time — semi_additive: sums a point-in-time balance, so adding period "
+            "buckets double-counts" in out
+        )
+
+    def test_additive_axis_carries_no_reason(self) -> None:
+        """An additive axis reconciles — there is nothing it fails to do."""
+        out = self._render(
+            ConceptAdditivity(
+                axis_kind="categorical",
+                axis_key="*",
+                status="classified",
+                verdict="additive",
+            )
+        )
+        assert "by category — additive" in out
+        assert "by category — additive:" not in out
+
+    def test_a_refined_axis_names_its_column_and_cadence(self) -> None:
+        out = self._render(
+            ConceptAdditivity(
+                axis_kind="time",
+                axis_key="posting_period",
+                status="classified",
+                verdict="semi_additive",
+                reason="stock",
+                bucket_grain="month",
+            )
+        )
+        assert 'on "posting_period" (time) — semi_additive' in out
+        assert "finest bucket the data supports: month" in out
+
+    def test_a_refinement_that_only_adds_cadence_inherits_the_explanation(self) -> None:
+        """The common shape: a per-column time row exists to state a cadence, and
+        repeating its class row's prose underneath it is duplication. The VERDICT
+        still renders on both — a consumer resolves most-specific-first and reads
+        exactly one row, so the line it lands on must carry the answer."""
+        out = self._render(
+            ConceptAdditivity(
+                axis_kind="time",
+                axis_key="*",
+                status="classified",
+                verdict="semi_additive",
+                reason="stock",
+            ),
+            ConceptAdditivity(
+                axis_kind="time",
+                axis_key="posting_period",
+                status="classified",
+                verdict="semi_additive",
+                reason="stock",
+                bucket_grain="month",
+            ),
+        )
+        assert (
+            'on "posting_period" (time) — semi_additive; finest bucket the data '
+            "supports: month" in out
+        )
+        # Explained once, on the class row it refines.
+        assert out.count("sums a point-in-time balance") == 1
+
+    def test_a_refinement_that_disagrees_carries_its_own_explanation(self) -> None:
+        """Inheriting prose is only safe when the verdict is IDENTICAL — a
+        refinement that says something different must say why itself."""
+        out = self._render(
+            ConceptAdditivity(
+                axis_kind="categorical",
+                axis_key="*",
+                status="classified",
+                verdict="additive",
+            ),
+            ConceptAdditivity(
+                axis_kind="categorical",
+                axis_key="counterparty",
+                status="classified",
+                verdict="non_additive_recompute",
+                reason="distinct_count",
+            ),
+        )
+        assert "by category — additive" in out
+        assert (
+            'on "counterparty" (categorical) — non_additive_recompute: counts distinct '
+            "values, whose per-slice sets overlap" in out
+        )
+
+    def test_two_abstentions_with_different_reasons_each_keep_theirs(self) -> None:
+        """Inheritance compares the WHOLE judgement, abstain_reason included.
+
+        For an abstained row `verdict` and `reason` are both None by the
+        `AxisAdditivity` invariant, so a comparison that omitted
+        `abstain_reason` would collapse every abstention onto one value and
+        render this refinement as a bare "not judged" — discarding a named,
+        different reason. Unreachable from today's resolver (it reuses one
+        judgement object per (target, axis_kind), and never refines an abstained
+        class row), but nothing in the schema or this renderer enforces that, so
+        the rule is pinned rather than left to a single producer's habit."""
+        out = self._render(
+            ConceptAdditivity(
+                axis_kind="time",
+                axis_key="*",
+                status="abstained",
+                abstain_reason="no_catalogue_run",
+            ),
+            ConceptAdditivity(
+                axis_kind="time",
+                axis_key="posting_period",
+                status="abstained",
+                abstain_reason="unresolved_grounding",
+            ),
+        )
+        assert "over time — not judged: the workspace had no promoted analysis run" in out
+        assert (
+            'on "posting_period" (time) — not judged: it has no healthy grounding to '
+            "classify" in out
+        )
+
+    def test_abstention_reads_as_not_judged_never_as_a_refusal(self) -> None:
+        """ "We could not tell" is not "it does not sum" — the whole point of the
+        typed abstention, and the one confusion this phrasing must not permit."""
+        out = self._render(
+            ConceptAdditivity(
+                axis_kind="time",
+                axis_key="*",
+                status="abstained",
+                abstain_reason="unknown_temporal",
+            )
+        )
+        assert (
+            "over time — not judged: it aggregates a column with no stock/flow "
+            "classification" in out
+        )
+        # No verdict is attached to the axis (the vocabulary itself is still
+        # defined in the section prose — this checks the AXIS line, not the doc).
+        assert "over time — semi_additive" not in out
+        assert "over time — non_additive_recompute" not in out
+        assert "over time — additive" not in out
+
+    def test_an_unmapped_reason_renders_raw_rather_than_vanishing(self) -> None:
+        """``graphs.additivity`` owns the vocabulary. A doctrine reason added
+        there but not phrased here must stay VISIBLE as its token — a dropped
+        clause would silently turn a named non-additivity into a bare verdict."""
+        out = self._render(
+            ConceptAdditivity(
+                axis_kind="categorical",
+                axis_key="*",
+                status="classified",
+                verdict="non_additive_recompute",
+                reason="some_future_reason",
+            )
+        )
+        assert "by category — non_additive_recompute: some_future_reason" in out
+
+    def test_a_concept_without_verdicts_renders_no_aggregation_block(self) -> None:
+        out = format_served_context(
+            GraphExecutionContext(concepts=[ConceptContext(name="account_balance")])
+        )
+        assert "aggregation (last promoted run):" not in out
+        # …but the section prose still explains what an absent entry means, so
+        # silence is readable rather than merely empty.
+        assert "no `aggregation` entry was not judged" in out
 
 
 class TestColumnTable:

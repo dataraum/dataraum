@@ -124,6 +124,70 @@ class TestTraversalCore:
         assert "sn_nul" not in served_snippets
 
 
+class TestConceptAdditivity:
+    """has_additivity read live (DAT-671 R4): the drill's gate, in the author's context.
+
+    The seed carries the shape that matters: ``revenue`` (an active measure
+    concept) with a categorical class row, a time class row, and a concrete
+    ``period`` refinement carrying an observed cadence — plus ``mk_margin`` and
+    ``mk_unknown``, which are METRIC targets keyed by ``graph_id`` and therefore
+    have no concept to hang an edge from.
+    """
+
+    def test_measure_verdicts_reach_the_concept_through_the_edge(
+        self, ctx: GraphExecutionContext
+    ) -> None:
+        rev = _concept(ctx, "revenue")
+
+        # Class row before its refinement — a concrete axis REFINES the class
+        # verdict, so reading the refinement first inverts the relationship.
+        assert [(a.axis_kind, a.axis_key) for a in rev.additivity] == [
+            ("categorical", "*"),
+            ("time", "*"),
+            ("time", "period"),
+        ]
+        categorical, time_class, time_period = rev.additivity
+        assert (categorical.status, categorical.verdict) == ("classified", "additive")
+        assert categorical.reason is None
+        assert (time_class.verdict, time_class.reason) == ("semi_additive", "stock")
+        assert time_period.bucket_grain == "month"
+
+    def test_metric_targets_never_reach_a_concept(self, ctx: GraphExecutionContext) -> None:
+        """A ``metric`` target keys on a formula ``graph_id`` with no concept
+        vertex, so ``og_has_additivity`` cannot speak for it — and this document
+        has no metric block to render one into. The absence is by construction,
+        and pinned so a later widening of the edge is a deliberate act."""
+        served = {(c.name, a.axis_key) for c in ctx.concepts for a in c.additivity}
+        assert all(name not in ("mk_margin", "mk_unknown") for name, _ in served)
+        assert all(c.additivity == [] for c in ctx.concepts if c.name != "revenue")
+
+    def test_the_verdicts_are_rendered_into_the_served_document(
+        self, ctx: GraphExecutionContext
+    ) -> None:
+        """Reaching the dataclass is not reaching the AGENT — the grounding
+        author reads the rendered document, which is the whole point of R4."""
+        from dataraum.graphs.context_format import format_served_context
+
+        out = format_served_context(ctx)
+
+        assert "aggregation (last promoted run):" in out
+        assert "by category — additive" in out
+        assert (
+            "over time — semi_additive: sums a point-in-time balance, so adding period "
+            "buckets double-counts" in out
+        )
+        # WHOLE line, not a substring: the seed's `period` row repeats its class
+        # row's verdict, so a substring check is satisfied by the un-elided line
+        # too and would pass against a broken inheritance rule. This is the only
+        # test driving the real MATCH → fold → render path, so it has to pin the
+        # rendered form exactly.
+        assert (
+            '    - on "period" (time) — semi_additive; finest bucket the data supports: month'
+            in out.splitlines()
+        )
+        assert out.count("sums a point-in-time balance") == 1
+
+
 class TestConceptEdges:
     """part_of / disjoint_with served from og_concept_edges."""
 

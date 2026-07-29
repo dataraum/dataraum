@@ -522,10 +522,11 @@ class EnrichedViewsPhase(BasePhase):
                 )
                 return PhaseResult.failed(
                     f"enriched_views could not create the view for fact table "
-                    f"'{fact_table.table_name}' ({view_name}): {e} — every fact with "
-                    f"dimension joins must expose a self-describing enriched view "
-                    f"(DAT-812), so a half-built view set is a broken run, not a "
-                    f"partial result"
+                    f"'{fact_table.table_name}' ({view_name}): {e} — EVERY fact must "
+                    f"expose a self-describing enriched view for the grounding "
+                    f"resolvers to resolve against (DAT-812; a dim-less fact gets a "
+                    f"passthrough SELECT *), so a half-built view set is a broken run, "
+                    f"not a partial result"
                 )
 
             # Belt-and-braces (DAT-801): per-join filtering above already guarantees

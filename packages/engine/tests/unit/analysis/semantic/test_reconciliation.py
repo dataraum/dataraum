@@ -416,6 +416,42 @@ class TestWhatIsAsserted:
         assert row.status == ReconciliationStatus.EVALUATED.value
         assert {row.left_snippet_id, row.right_snippet_id} == {"s-ap", "s-pur"}
 
+    def test_a_mirrored_partner_assertion_is_evaluated_once(
+        self, session: Session, conn: duckdb.DuckDBPyConnection
+    ) -> None:
+        """reconciles_with is symmetric and stored BOTH ways — one comparison."""
+        _relation(conn, "ap", [900.0])
+        _relation(conn, "purchases", [900.0])
+        _grounding(session, "s-ap", "accounts_payable", "ap")
+        _grounding(session, "s-pur", "purchases", "purchases")
+        _edge(session, "accounts_payable", "purchases")
+        _edge(session, "purchases", "accounts_payable")  # the stored mirror
+
+        outcome = _run(session, conn)
+
+        rows = _rows(session)
+        assert len(rows) == 1
+        # Recorded under the name-ordered endpoints, so the two spellings of one
+        # assertion cannot become two homes for one fact.
+        assert (rows[0].from_concept, rows[0].to_concept) == ("accounts_payable", "purchases")
+        assert outcome.evaluated == 1
+
+    def test_a_band_declared_on_either_direction_grades_the_assertion(
+        self, session: Session, conn: duckdb.DuckDBPyConnection
+    ) -> None:
+        _relation(conn, "ap", [100.0])
+        _relation(conn, "purchases", [180.0])
+        _grounding(session, "s-ap", "accounts_payable", "ap")
+        _grounding(session, "s-pur", "purchases", "purchases")
+        _edge(session, "accounts_payable", "purchases")
+        _edge(session, "purchases", "accounts_payable", tolerance=0.01)
+
+        _run(session, conn)
+
+        (row,) = _rows(session)
+        assert row.tolerance == pytest.approx(0.01)
+        assert row.verdict == ReconciliationVerdict.BEYOND_TOLERANCE.value
+
     def test_three_groundings_produce_every_pair(
         self, session: Session, conn: duckdb.DuckDBPyConnection
     ) -> None:

@@ -156,14 +156,18 @@ def evaluate_reconciliations(
     if not edges:
         return outcome
 
+    assertions = _canonical_assertions(edges)
     groundings = _groundings_by_concept(session)
     executed: dict[str, Decimal | str] = {}
     rows: list[dict[str, Any]] = []
 
-    for edge in edges:
+    for (frm, to), tolerance in sorted(assertions.items()):
         rows.extend(
-            _evaluate_edge(
-                edge,
+            _evaluate_assertion(
+                frm,
+                to,
+                tolerance=tolerance,
+                vertical=vertical,
                 groundings=groundings,
                 executed=executed,
                 duckdb_conn=duckdb_conn,
@@ -179,13 +183,38 @@ def evaluate_reconciliations(
     logger.info(
         "concept_reconciliation_evaluated",
         vertical=vertical,
-        assertions=len(edges),
+        assertions=len(assertions),
         rows=outcome.rows,
         evaluated=outcome.evaluated,
         abstained=outcome.abstained,
         breached=len(outcome.breached),
     )
     return outcome
+
+
+def _canonical_assertions(edges: list[ConceptEdge]) -> dict[tuple[str, str], float | None]:
+    """One entry per asserted concept pair, name-ordered, with its declared band.
+
+    ``reconciles_with`` is SYMMETRIC and a partner assertion is stored in BOTH
+    directions (the ``concept_edges`` contract), so reading the rows as they come
+    would evaluate one comparison twice and record it under two keys — the same
+    fact in two homes, and a doubled count in the phase's disclosure. Ordering
+    the endpoints collapses the mirror pair to the single assertion it is.
+
+    A band declared on either direction is the assertion's band; the mirror
+    rows are two spellings of one statement, so taking the declared one over a
+    NULL loses nothing. Self-loops are already canonical.
+    """
+    out: dict[tuple[str, str], float | None] = {}
+    for edge in edges:
+        key = (
+            (edge.from_concept, edge.to_concept)
+            if edge.from_concept <= edge.to_concept
+            else (edge.to_concept, edge.from_concept)
+        )
+        if key not in out or (out[key] is None and edge.tolerance is not None):
+            out[key] = edge.tolerance
+    return out
 
 
 def _groundings_by_concept(session: Session) -> dict[str, list[_Grounding]]:
@@ -227,9 +256,12 @@ def _groundings_by_concept(session: Session) -> dict[str, list[_Grounding]]:
     return by_concept
 
 
-def _evaluate_edge(
-    edge: ConceptEdge,
+def _evaluate_assertion(
+    frm: str,
+    to: str,
     *,
+    tolerance: float | None,
+    vertical: str,
     groundings: dict[str, list[_Grounding]],
     executed: dict[str, Decimal | str],
     duckdb_conn: duckdb.DuckDBPyConnection,
@@ -237,8 +269,8 @@ def _evaluate_edge(
     outcome: ReconciliationOutcome,
 ) -> list[dict[str, Any]]:
     """One assertion's rows — one per evaluated pair, or one abstention."""
-    label = _label(edge)
-    pairs = _pairs(edge, groundings)
+    label = _label(frm, to)
+    pairs = _pairs(frm, to, groundings)
 
     if not pairs:
         # The witness producer's assertion with no second SQL angle, or a
@@ -246,7 +278,9 @@ def _evaluate_edge(
         # worth recording; silence would be indistinguishable from unasserted.
         outcome.abstained += 1
         outcome.withheld[label] = "no second grounding to compare"
-        return [_abstained_row(edge, run_id, ReconciliationAbstainReason.NO_EVALUABLE_PAIR)]
+        return [
+            _abstained_row(frm, to, vertical, run_id, ReconciliationAbstainReason.NO_EVALUABLE_PAIR)
+        ]
 
     if len(pairs) > MAX_PAIRS_PER_ASSERTION:
         outcome.truncated[label] = (
@@ -256,9 +290,12 @@ def _evaluate_edge(
 
     return [
         _evaluate_pair(
-            edge,
+            frm,
+            to,
             left,
             right,
+            tolerance=tolerance,
+            vertical=vertical,
             executed=executed,
             duckdb_conn=duckdb_conn,
             run_id=run_id,
@@ -270,27 +307,30 @@ def _evaluate_edge(
 
 
 def _pairs(
-    edge: ConceptEdge, groundings: dict[str, list[_Grounding]]
+    frm: str, to: str, groundings: dict[str, list[_Grounding]]
 ) -> list[tuple[_Grounding, _Grounding]]:
     """The grounding pairs one assertion covers, in a deterministic order.
 
     The self-loop takes unordered pairs within one concept's groundings; a
-    partner edge takes the cross product of the two sides. The assertion is
+    partner assertion takes the cross product of the two sides. The assertion is
     SYMMETRIC, so each pair is emitted once, ordered by snippet id — which also
     makes the truncation bound cut the same pairs on every run.
     """
-    left_side = groundings.get(edge.from_concept, [])
-    if edge.from_concept == edge.to_concept:
+    left_side = groundings.get(frm, [])
+    if frm == to:
         return list(combinations(left_side, 2))
-    right_side = groundings.get(edge.to_concept, [])
+    right_side = groundings.get(to, [])
     return [(a, b) for a, b in product(left_side, right_side) if a.snippet_id != b.snippet_id]
 
 
 def _evaluate_pair(
-    edge: ConceptEdge,
+    frm: str,
+    to: str,
     left: _Grounding,
     right: _Grounding,
     *,
+    tolerance: float | None,
+    vertical: str,
     executed: dict[str, Decimal | str],
     duckdb_conn: duckdb.DuckDBPyConnection,
     run_id: str,
@@ -302,7 +342,7 @@ def _evaluate_pair(
     # depend on which side the enumeration happened to reach first.
     if right.snippet_id < left.snippet_id:
         left, right = right, left
-    row = _pair_row(edge, left, right, run_id)
+    row = _pair_row(frm, to, vertical, left, right, run_id)
 
     if left.aggregation != right.aggregation:
         return _abstain(row, ReconciliationAbstainReason.DIFFERENT_AGGREGATIONS, outcome, label)
@@ -323,7 +363,6 @@ def _evaluate_pair(
 
     delta = left_value - right_value
     relative = _relative_delta(left_value, right_value)
-    tolerance = edge.tolerance
 
     if tolerance is None:
         verdict = ReconciliationVerdict.NO_TOLERANCE_DECLARED
@@ -412,22 +451,20 @@ def _delta_text(delta: Decimal, relative: Decimal) -> str:
     return f"observed delta {delta:g} ({relative:.4g} relative)"
 
 
-def _label(edge: ConceptEdge) -> str:
+def _label(frm: str, to: str) -> str:
     """How one assertion is named in the phase's disclosure."""
-    if edge.from_concept == edge.to_concept:
-        return edge.from_concept
-    return f"{edge.from_concept}↔{edge.to_concept}"
+    return frm if frm == to else f"{frm}↔{to}"
 
 
 def _pair_row(
-    edge: ConceptEdge, left: _Grounding, right: _Grounding, run_id: str
+    frm: str, to: str, vertical: str, left: _Grounding, right: _Grounding, run_id: str
 ) -> dict[str, Any]:
     """The identity and provenance columns shared by every pair row."""
     return {
         "run_id": run_id,
-        "vertical": edge.vertical,
-        "from_concept": edge.from_concept,
-        "to_concept": edge.to_concept,
+        "vertical": vertical,
+        "from_concept": frm,
+        "to_concept": to,
         "pair_key": f"{left.snippet_id}|{right.snippet_id}",
         "left_snippet_id": left.snippet_id,
         "right_snippet_id": right.snippet_id,
@@ -488,14 +525,14 @@ def _abstain_for_observation(
 
 
 def _abstained_row(
-    edge: ConceptEdge, run_id: str, reason: ReconciliationAbstainReason
+    frm: str, to: str, vertical: str, run_id: str, reason: ReconciliationAbstainReason
 ) -> dict[str, Any]:
     """The assertion-level row for an assertion that formed no pair at all."""
     return {
         "run_id": run_id,
-        "vertical": edge.vertical,
-        "from_concept": edge.from_concept,
-        "to_concept": edge.to_concept,
+        "vertical": vertical,
+        "from_concept": frm,
+        "to_concept": to,
         "pair_key": PAIR_KEY_UNPAIRED,
         "status": ReconciliationStatus.ABSTAINED.value,
         "abstain_reason": reason.value,

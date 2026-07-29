@@ -911,6 +911,12 @@ def _read_reconciliation_rows(session: Session, read_schema: str) -> dict[tuple[
         if acc["status"] is None:
             acc["status"] = "abstained"
             acc["abstain_reason"] = next(iter(reasons)) if len(reasons) == 1 else None
+
+    # A partner assertion is stored as TWO mirrored edges but evaluated once,
+    # under the name-ordered endpoints. Register the mirror key so whichever
+    # direction an edge row reads from finds the one evaluation.
+    for (frm, to), acc in list(folded.items()):
+        folded.setdefault((to, frm), acc)
     return folded
 
 

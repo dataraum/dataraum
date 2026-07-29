@@ -414,39 +414,23 @@ describe.skipIf(!jx.available)(
 				expect(account?.disabledReason).toContain("already");
 			});
 
-			// RED PIN — CURRENT behaviour. DISCOVERED while writing this suite.
-			it("TODAY returns no footer total on the answer path", async () => {
+			// FLIPPED by R2 (was a red pin: the route served no `totals` on any
+			// branch, so a drilled ANSWER grid had no footer at all and the
+			// practitioner never saw the figure they started from — while
+			// `/api/drill/node` shipped one for the identical composition).
+			it("the footer prints the undrilled total (parts reconcile additively)", async () => {
 				const res = await postJson<ComposeResponse>(
 					routes.parts,
 					"/api/drill/parts",
 					slice,
 				);
-				// ESTABLISH THE SLICE FIRST. `totals` is absent from EVERY branch of
-				// this route — success, compose refusal, even a 500 — so asserting
-				// its absence on its own is vacuously true and would keep passing
-				// against a completely broken drill. This pin has no implicit safety
-				// net (the other pins go through axisFor/columnsOf, which throw on a
-				// malformed body), so the guard has to be explicit: a working slice
-				// is the PREMISE of the finding "a working slice still has no footer".
+				// ESTABLISH THE SLICE FIRST — the premise the footer claim rests on.
+				// Without it a `totals` assertion could pass against a drill that
+				// composes nothing meaningful.
 				expect(res.status).toBe(200);
 				composed(res.body);
 				expect(res.body.sql).toEqual(expect.any(String));
 
-				// Only now is the absence meaningful. `/api/drill/node` ships a
-				// `totals` statement on its open call; `/api/drill/parts` has no
-				// equivalent, and `footerCells` is supplied only by the metric
-				// overlay — so a drilled ANSWER grid has no footer at all, and the
-				// practitioner never sees the figure they started from.
-				expect(res.body.totals).toBeUndefined();
-			});
-
-			// RED PIN — TARGET behaviour.
-			it.fails("TARGET: the footer prints the undrilled total (parts reconcile additively)", async () => {
-				const res = await postJson<ComposeResponse>(
-					routes.parts,
-					"/api/drill/parts",
-					slice,
-				);
 				expect(res.body.totals?.sql).toEqual(expect.any(String));
 				expect(valueCell(await runSql(res.body.totals?.sql ?? ""))).toBe(
 					TOTAL_REVENUE,
@@ -464,23 +448,13 @@ describe.skipIf(!jx.available)(
 				steps: [{ kind: "slice", column: ENTRY_DATE_COLUMN, grain: "1M" }],
 			};
 
-			// RED PIN — CURRENT behaviour. DISCOVERED while writing this suite:
-			// the journey is not merely wrong on the answer path, it is
-			// unexpressible — the route's `z.strictObject` rejects the `grain` key
-			// outright, so "revenue by month" cannot even be REQUESTED there.
-			it("TODAY refuses a grained step with 400, naming the grain key", async () => {
-				const res = await post(routes.parts, "/api/drill/parts", monthSlice);
-				expect(res.status).toBe(400);
-				const body = (await res.json()) as { error?: string };
-				// Name the KEY, not just "some 400 happened". The route 400s on any
-				// schema violation, so a bare string assertion would be satisfied by
-				// an unrelated regression (a renamed field, a tightened bound) and the
-				// pin would still look like it was documenting the grain refusal.
-				expect(body.error).toContain("grain");
-			});
-
-			// RED PIN — TARGET behaviour.
-			it.fails("TARGET: buckets the year into twelve months that sum to the total", async () => {
+			// FLIPPED by R2 (was a red pin, and the journey was not merely wrong on
+			// the answer path but UNEXPRESSIBLE: the route's `z.strictObject`
+			// rejected the `grain` key outright, so "revenue by month" could not
+			// even be REQUESTED there. The schema is still strict — an off-grammar
+			// grain token is refused by name — it simply now accepts the key the
+			// composer has always understood).
+			it("buckets the year into twelve months that sum to the total", async () => {
 				const res = await postJson<ComposeResponse>(
 					routes.parts,
 					"/api/drill/parts",
@@ -493,6 +467,24 @@ describe.skipIf(!jx.available)(
 				expect(rows).toHaveLength(REVENUE_BY_MONTH.length);
 				const sum = toCents(rows.reduce((acc, r) => acc + Number(r.value), 0));
 				expect(sum).toBe(TOTAL_REVENUE);
+			});
+
+			// The strictness that survived the widening: a grain token outside the
+			// closed grammar is REFUSED BY NAME, never stripped into a raw grouping
+			// under a chip that claims a bucket width.
+			it("refuses an off-grammar grain token by name", async () => {
+				const { body } = await postJson<ComposeResponse>(
+					routes.parts,
+					"/api/drill/parts",
+					{
+						...monthSlice,
+						steps: [
+							{ kind: "slice", column: ENTRY_DATE_COLUMN, grain: "1fort" },
+						],
+					},
+				);
+				expect(body.ok).toBe(false);
+				expect(body.reason).toContain("1fort");
 			});
 
 			// The engine-side arithmetic the journey depends on is independently

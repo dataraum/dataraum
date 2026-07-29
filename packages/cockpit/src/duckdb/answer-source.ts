@@ -36,6 +36,7 @@ import type { DuckDBConnection } from "@duckdb/node-api";
 import { errorLine } from "./drill-sql";
 import { parseFormulaExpression } from "./metric-formula";
 import {
+	bareRelationName,
 	type ComposedNodeQuery,
 	composeNodeQuery,
 	composeNodeTotals,
@@ -91,45 +92,6 @@ export interface DeclaredSource {
 	relation: string;
 	valueExpr: string;
 	filters: string[];
-}
-
-/**
- * Reduce a declared relation to the BARE name the rest of the drill speaks.
- *
- * The answer sub-agent is told to address tables as `lake.<layer>.<name>`, and
- * it must keep doing so — its `final_sql` genuinely needs the qualified form,
- * and switching conventions midway through one output is the kind of rule a
- * model drops silently. So the qualified form is correct on the wire and wrong
- * everywhere it lands, and this is where the two meet:
- *
- *   - `Query.from("lake.typed.orders")` (mosaic-sql) quotes the WHOLE string as
- *     one identifier — `FROM "lake.typed.orders"` — which is a Catalog Error,
- *     so a qualified declaration could never bind and the proof could never
- *     pass. The feature was inert in production while every test was green,
- *     because the tests used bare names.
- *   - `current_enriched_views.view_name` is bare, so the axes resolver's
- *     `viewByName` lookup missed too — and reported the miss as "reads
- *     relations outside the current analysis", blaming a stale snippet for a
- *     format mismatch.
- *
- * Reducing to the last segment is the same normalization `canonicalizeForReuse`
- * applies for snippet matching, and it is safe for the same reason: engine
- * scope is `USE lake.typed`, where the enriched views live, so a bare name
- * resolves to exactly what the qualified one named. If it does not, the
- * composition fails to bind and the answer falls back to tier A — never a
- * silently different table.
- *
- * Refused rather than reduced: a quoted identifier (already-escaped text this
- * has no business rewriting) and more than three segments (not an address this
- * convention produces — guessing at it would be inventing a table).
- */
-export function bareRelationName(relation: string): string | null {
-	const trimmed = relation.trim();
-	if (trimmed === "") return null;
-	if (/["'`]/.test(trimmed)) return null;
-	const parts = trimmed.split(".");
-	if (parts.length > 3 || parts.some((p) => p.trim() === "")) return null;
-	return parts[parts.length - 1].trim();
 }
 
 /**
@@ -285,10 +247,19 @@ export function answerNodeSteps(source: AnswerDrillSource): NodeStep[] | null {
 	];
 }
 
-/** Compose an answer's parts-at-source statement under a drill (pure). */
+/**
+ * Compose an answer's parts-at-source statement under a drill (pure).
+ *
+ * `sumsAcrossDrilledAxes` is the engine's served verdict, threaded exactly as
+ * `/api/drill/node` threads it (DAT-671 R2): it licenses the signed-contribution
+ * shortcut, and defaults to `false`, which composes via the carrier spine —
+ * correct for any shape, so an unclassified answer simply takes the general
+ * path rather than a degraded one.
+ */
 export function composeAnswerSource(
 	source: AnswerDrillSource,
 	drill: NodeDrill = { slices: [], pins: [] },
+	sumsAcrossDrilledAxes = false,
 ): ComposedNodeQuery | { refusal: string } {
 	const steps = answerNodeSteps(source);
 	if (steps === null) {
@@ -297,7 +268,7 @@ export function composeAnswerSource(
 				"this answer's declared source doesn't form a composable calculation",
 		};
 	}
-	return composeNodeQuery(steps, undefined, drill);
+	return composeNodeQuery(steps, undefined, drill, sumsAcrossDrilledAxes);
 }
 
 /**

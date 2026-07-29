@@ -38,10 +38,10 @@ import {
 	type AnswerDrillSource,
 	acceptWireSources,
 	answerSourceScalarSql,
-	bareRelationName,
 	narrowDeclaredSource,
 	runAnswerSourceProof,
 } from "./answer-source";
+import { bareRelationName } from "./parts";
 import { declaredValueExprRefusal } from "./sql-ast";
 
 let instance: DuckDBInstance;

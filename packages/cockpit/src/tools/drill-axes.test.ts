@@ -109,6 +109,8 @@ import {
 	applyTemporalKinds,
 	axesFromSliceRows,
 	buildTargetAdditivity,
+	coarsestGrain,
+	composedVerdict,
 	decideTimeAxis,
 	demoteWithheldDateAxes,
 	describeTimeWithhold,
@@ -118,6 +120,7 @@ import {
 	markAlreadyInResult,
 	measureFieldsFromDag,
 	orderAxesByDrivers,
+	resolveAxisVerdict,
 	resolveDrillAxes,
 	temporalKindsFromColumns,
 	unionSubstrateAxes,
@@ -1528,5 +1531,107 @@ describe("demoteWithheldDateAxes (DAT-857)", () => {
 			axis("region"),
 		];
 		expect(demoteWithheldDateAxes(input)).toBe(input);
+	});
+});
+
+describe("the COMPOSED answer target (DAT-671 R2)", () => {
+	// Built through the same constructor the DB read uses, so these cannot drift
+	// from the key format.
+	const carrier = (verdict: string, bucketGrain: string | null = null) =>
+		buildTargetAdditivity([
+			{
+				axisKind: "time",
+				axisKey: "*",
+				status: "classified",
+				verdict,
+				reason: null,
+				abstainReason: null,
+				bucketGrain,
+			},
+			{
+				axisKind: "categorical",
+				axisKey: "*",
+				status: "classified",
+				verdict,
+				reason: null,
+				abstainReason: null,
+				bucketGrain: null,
+			},
+		]);
+
+	describe("coarsestGrain", () => {
+		// COARSEST, not finest: a formula re-evaluated per bucket is only as fine
+		// as its least frequent input. Bucketing monthly data by day would print a
+		// value in one bucket and a dash in the other thirty.
+		it("takes the coarsest rung across the carriers", () => {
+			expect(coarsestGrain(["day", "month"])).toBe("month");
+			expect(coarsestGrain(["quarter", "month", "day"])).toBe("quarter");
+			expect(coarsestGrain(["year"])).toBe("year");
+		});
+
+		it("makes NO claim when any carrier makes none", () => {
+			// Not out-votable: one carrier with no observed cadence means the
+			// composition has no floor to state, and the menu offers every preset.
+			expect(coarsestGrain(["month", null])).toBeNull();
+			expect(coarsestGrain([])).toBeNull();
+		});
+
+		it("treats a token outside the mirrored ladder as no claim", () => {
+			// The ladder mirrors additivity_db_models.BUCKET_GRAINS. If the engine
+			// adds a rung, inventing a position for it here would claim a cadence
+			// nobody served — so an unknown token degrades to "no claim", loudly
+			// enough to notice and never wrong.
+			expect(coarsestGrain(["fortnight"])).toBeNull();
+			expect(coarsestGrain(["month", "fortnight"])).toBeNull();
+		});
+	});
+
+	describe("composedVerdict", () => {
+		it("treats the combination as a RECOMPUTE, floored at the coarsest carrier", () => {
+			const composed = composedVerdict(
+				new Map([
+					["revenue", carrier("additive", "month")],
+					["cogs", carrier("additive", "day")],
+				]),
+			);
+			// The verdict the answer's own arithmetic implies — the same one a ratio
+			// metric carries, so decideTimeAxis decides it through one rule.
+			expect(
+				decideTimeAxis("entry_date", {
+					target: composed,
+					carriers: new Map([
+						["revenue", carrier("additive", "month")],
+						["cogs", carrier("additive", "day")],
+					]),
+				}),
+			).toEqual({ offer: true, bucketGrain: "month" });
+		});
+
+		it("never claims additivity — a composed total is always recomputed", () => {
+			// The conservative direction, deliberately: the arithmetic MIGHT be a
+			// plain difference whose parts sum, and understating that costs a label.
+			// Overstating it would present a ratio's buckets as if they added up.
+			const composed = composedVerdict(
+				new Map([["revenue", carrier("additive", "month")]]),
+			);
+			for (const axisKind of ["time", "categorical"]) {
+				expect(resolveAxisVerdict(composed, axisKind, "*")?.verdict).toBe(
+					"non_additive_recompute",
+				);
+			}
+		});
+
+		it("withholds when a carrier does not sum — naming it", () => {
+			const carriers = new Map([
+				["revenue", carrier("additive", "month")],
+				["closing_balance", carrier("semi_additive", "month")],
+			]);
+			const got = decideTimeAxis("entry_date", {
+				target: composedVerdict(carriers),
+				carriers,
+			});
+			expect(got.offer).toBe(false);
+			if (got.offer === false) expect(got.reason).toContain("closing_balance");
+		});
 	});
 });

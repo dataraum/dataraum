@@ -104,11 +104,65 @@ export interface SnippetParts {
 	where: string[];
 }
 
+/**
+ * Reduce a relation to the BARE name every composer and catalog lookup speaks —
+ * THE one home for that reduction (DAT-671; moved here in R2 so both ingest
+ * boundaries can reach it without a cycle).
+ *
+ * Two spellings arrive and both must land on one:
+ *
+ *   - the answer sub-agent is told to address tables as `lake.<layer>.<name>`,
+ *     and it must keep doing so — its `final_sql` genuinely needs the qualified
+ *     form, and switching conventions midway through one output is the kind of
+ *     rule a model drops silently;
+ *   - the engine's persisted `parts.from` is bare BY CONTRACT
+ *     (`validate_grounding_basis` rejects a relation that is not one of the
+ *     served schema's bare view names), so the node path has always been handed
+ *     the reduced form for free — which is exactly why it never grew a
+ *     reduction of its own, and why a qualified relation reaching it dies as an
+ *     unexplained Catalog Error rather than as a named refusal.
+ *
+ * Why reduction and not qualification: `Query.from("lake.typed.orders")`
+ * (mosaic-sql) quotes the WHOLE string as one identifier — `FROM
+ * "lake.typed.orders"` — which is a Catalog Error, so a qualified declaration
+ * could never bind and its proof could never pass. The feature was inert in
+ * production while every test was green, because the tests used bare names.
+ * `current_enriched_views.view_name` is bare too, so the axes resolver's
+ * `viewByName` lookup missed as well — and reported the miss as "reads
+ * relations outside the current analysis", blaming a stale snippet for a format
+ * mismatch.
+ *
+ * Reducing to the last segment is the same normalization `canonicalizeForReuse`
+ * applies for snippet matching, and it is safe for the same reason: engine
+ * scope is `USE lake.typed`, where the enriched views live, so a bare name
+ * resolves to exactly what the qualified one named. If it does not, the
+ * composition fails to bind and the answer falls back to tier A — never a
+ * silently different table.
+ *
+ * Refused (null) rather than reduced: a quoted identifier (already-escaped text
+ * this has no business rewriting) and more than three segments (not an address
+ * this convention produces — guessing at it would be inventing a table).
+ */
+export function bareRelationName(relation: string): string | null {
+	const trimmed = relation.trim();
+	if (trimmed === "") return null;
+	if (/["'`]/.test(trimmed)) return null;
+	const parts = trimmed.split(".");
+	if (parts.length > 3 || parts.some((p) => p.trim() === "")) return null;
+	return parts[parts.length - 1].trim();
+}
+
 /** Narrow a persisted `sql_snippets.parts` value to the single-value extract
  *  shape. Anything else — no/multiple select items, a non-`value` alias, more
  *  than one relation, a non-string predicate — is null: the snippet predates
  *  parts-at-source or isn't a graph extract, and the composer refuses by
- *  step name instead of guessing. */
+ *  step name instead of guessing.
+ *
+ *  The relation is REDUCED here (DAT-671 R2), so the persisted boundary and the
+ *  declared one share the one reduction rather than the node path relying on an
+ *  engine-side invariant it cannot enforce. An unreducible spelling is kept
+ *  verbatim: it is genuinely unrecognizable, and the composer's own bind
+ *  failure is then the honest report. */
 export function narrowSnippetParts(raw: unknown): SnippetParts | null {
 	if (typeof raw !== "object" || raw === null || Array.isArray(raw)) {
 		return null;
@@ -121,10 +175,12 @@ export function narrowSnippetParts(raw: unknown): SnippetParts | null {
 	if (typeof expr !== "string" || expr.trim() === "") return null;
 	if (alias !== "value") return null;
 	if (!Array.isArray(p.from) || p.from.length > 1) return null;
-	const relation: unknown = p.from.length === 1 ? p.from[0] : null;
-	if (relation !== null && (typeof relation !== "string" || relation === "")) {
+	const declared: unknown = p.from.length === 1 ? p.from[0] : null;
+	if (declared !== null && (typeof declared !== "string" || declared === "")) {
 		return null;
 	}
+	const relation =
+		declared === null ? null : (bareRelationName(declared) ?? declared);
 	if (!Array.isArray(p.where)) return null;
 	const where: string[] = [];
 	for (const w of p.where) {

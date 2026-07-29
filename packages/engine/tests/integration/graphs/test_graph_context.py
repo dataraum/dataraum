@@ -341,6 +341,9 @@ class TestStructuralEdges:
         # DAT-866: the enriched-only axis is served at all — the exact case the old
         # column-list lookup silently dropped.
         assert axes["account_id__open_date"].detected_granularity == "year"
+        # `orphaned__date` rides the set assertion only: it exists to prove the
+        # edge survives a dangling dim reference, and its properties are pinned
+        # where that behaviour lives (tests/integration/storage/test_property_graph.py).
 
     def test_time_axes_reach_the_served_document(self, ctx: GraphExecutionContext) -> None:
         """The graph-served axes have to reach the PROMPT — EVENT axes only, with

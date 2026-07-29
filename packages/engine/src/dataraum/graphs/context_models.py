@@ -68,17 +68,13 @@ class ColumnContext:
     numeric_min: float | None = None
     numeric_max: float | None = None
 
-    # Temporal metrics
+    # Staleness feeds the `stale_data` quality flag below. The observed WINDOW
+    # (granularity / min / max / span / worst gap) is NOT here: it is a property
+    # of a declared time AXIS, served whole on TimeAxisContext off the graph's
+    # temporal_coverage edge (DAT-671 R6). It lived on both for a while, read
+    # from this copy by the renderer that now reads the axis — two homes for one
+    # measurement, one of them write-only.
     is_stale: bool | None = None
-    detected_granularity: str | None = None
-
-    # Temporal bounds (from TemporalColumnProfile)
-    min_timestamp: str | None = None
-    max_timestamp: str | None = None
-    # Coverage window + worst discontinuity — promoted from the temporal profile
-    # (DAT-783) so the agent knows a time axis's span and whether it's gappy.
-    span_days: float | None = None
-    largest_gap_days: float | None = None
 
     # Derived column info from correlation analysis
     is_derived: bool = False

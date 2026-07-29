@@ -15,7 +15,6 @@ from __future__ import annotations
 
 import hashlib
 import json
-from collections.abc import Mapping, Sequence
 from dataclasses import dataclass, field
 from datetime import UTC, datetime
 from decimal import Decimal
@@ -525,8 +524,6 @@ class GraphAgent(LLMFeature):
         graph: TransformationGraph,
         cached_snippets: dict[str, dict[str, Any]],
         resolved_params: dict[str, Any],
-        group_by: Sequence[str] = (),
-        step_grain: Mapping[str, Sequence[tuple[str, str]]] | None = None,
     ) -> GeneratedCode | None:
         """Compose a metric's SQL PER-METRIC from the DAG — no cross-metric reuse (DAT-646).
 
@@ -546,17 +543,12 @@ class GraphAgent(LLMFeature):
         CTE. Returns ``None`` when an extract leaf is absent (its dep ungroundable — the
         caller honest-fails) or a step is malformed.
 
-        ``group_by`` names the shared axis identities the FORMULA merges its carriers
-        on. ``step_grain`` is the CROSS-FACT refinement (DAT-809): per EXTRACT step,
-        the ``(local_column, axis_alias)`` pairs realizing those axes on THAT step's
-        own relation, because two facts spell one conformed dimension differently.
-        ``None`` keeps the single-relation reading — every carrier groups by the axis
-        name itself — which is exactly what unit grain has always done. When it IS
-        supplied, an EXTRACT step absent from it cannot carry the axis and the metric
-        honest-fails rather than composing a partial merge.
+        Composes the WORKSPACE SCALAR. ``group_by`` / ``step_grain`` arguments used to
+        compose the same DAG per entity for the metric_unit_grain substrate; that
+        substrate was deleted unread in DAT-671 R6 along with its only caller, so the
+        per-entity path went with it rather than surviving as unreachable parameters
+        every caller left at their defaults (ADR-0024 d3).
         """
-        from dataraum.graphs.formula_composer import same_name_keys
-
         output_step = graph.get_output_step()
         if output_step is None:
             return None
@@ -568,43 +560,15 @@ class GraphAgent(LLMFeature):
         # a cache-composed metric still surfaces its weakest input's confidence to the
         # phase gate instead of looking confidently green.
         assumptions: list[GraphAssumptionOutput] = []
-        # Which EXTRACT leaves actually rendered at unit grain (DAT-671 B1). A FORMULA
-        # needs this to tell an entity-keyed operand (join on the key) from an
-        # entity-independent one (a CONSTANT — still a scalar subquery).
-        grouped_steps: set[str] = set()
         for step_id in ordered:
             step = graph.steps.get(step_id)
             if step is None:
                 return None
-            grain_keys: Sequence[tuple[str, str]] = same_name_keys(*group_by)
-            if step_grain is not None and step.step_type == StepType.EXTRACT:
-                resolved_grain = step_grain.get(step_id)
-                if resolved_grain is None:
-                    # Cross-fact: the axis resolver did not name a local column for
-                    # this carrier, so it cannot join the merge. Composing the rest
-                    # would silently answer a narrower question than was asked.
-                    return None
-                grain_keys = resolved_grain
-            sql = self._compose_step_sql(
-                step,
-                step_id,
-                cached_snippets,
-                resolved_params,
-                group_by=group_by,
-                grain_keys=grain_keys,
-                grouped_steps=frozenset(grouped_steps),
-            )
+            sql = self._compose_step_sql(step, step_id, cached_snippets, resolved_params)
             if sql is None:
                 # Missing extract snippet / unresolvable constant / malformed
                 # formula — the metric honest-fails (caller surfaces the reason).
-                # At unit grain this ALSO covers a leaf that cannot carry the axis
-                # (no parts to re-render, or a relation without that column): the
-                # metric has no per-entity value, and saying so is the honest
-                # outcome — never a quiet fall back to the workspace scalar, which
-                # a consumer could not distinguish from a real breakdown.
                 return None
-            if group_by and step.step_type == StepType.EXTRACT:
-                grouped_steps.add(step_id)
             description = step_id
             if step.step_type == StepType.EXTRACT:
                 snippet = cached_snippets.get(step_id) or {}
@@ -660,10 +624,6 @@ class GraphAgent(LLMFeature):
         step_key: str,
         cached_snippets: dict[str, dict[str, Any]],
         resolved_params: dict[str, Any],
-        *,
-        group_by: Sequence[str] = (),
-        grain_keys: Sequence[tuple[str, str]] = (),
-        grouped_steps: frozenset[str] = frozenset(),
     ) -> str | None:
         """One step's CTE SQL: extract = cached snippet, constant/formula = composed.
 
@@ -677,7 +637,6 @@ class GraphAgent(LLMFeature):
         """
         from dataraum.graphs.formula_composer import (
             compose_constant_sql,
-            compose_extract_sql,
             compose_formula_sql,
         )
 
@@ -686,42 +645,15 @@ class GraphAgent(LLMFeature):
                 snippet = cached_snippets.get(step_key)
                 if snippet is None:
                     return None
-                if not group_by:
-                    rendered = snippet.get("sql")
-                    return rendered if isinstance(rendered, str) else None
-                # Unit grain re-renders from the PARTS, never by editing the stored
-                # scalar string — parts-at-source (DAT-671): the parts are the
-                # artifact and `sql` is only their one-time render. A snippet with
-                # no parts predates that cut and cannot be regrouped; a fall-loud
-                # grounding (no relation) has nothing to group BY. Both are honest
-                # holes, and the caller turns them into a refused breakdown.
-                parts = snippet.get("parts")
-                if not isinstance(parts, dict):
-                    return None
-                select = parts.get("select") or []
-                relations = parts.get("from") or []
-                if len(select) != 1 or len(relations) != 1:
-                    return None
-                expr = select[0].get("expr")
-                if not isinstance(expr, str) or not expr.strip():
-                    return None
-                where = [w for w in (parts.get("where") or []) if isinstance(w, str)]
-                return compose_extract_sql(expr, str(relations[0]), where, grain_keys)
+                rendered = snippet.get("sql")
+                return rendered if isinstance(rendered, str) else None
             if step.step_type == StepType.CONSTANT:
                 value = resolved_params.get(step.parameter) if step.parameter else None
-                # A constant is entity-independent — the same number for every
-                # entity — so it renders identically at either grain and joins in
-                # as a scalar subquery.
                 return compose_constant_sql(value) if value is not None else None
             if step.step_type == StepType.FORMULA:
                 if not step.expression:
                     return None
-                return compose_formula_sql(
-                    step.expression,
-                    set(step.depends_on),
-                    group_by=group_by,
-                    grouped_steps=grouped_steps,
-                )
+                return compose_formula_sql(step.expression, set(step.depends_on))
         except ValueError:
             # Malformed expression / non-numeric constant — the composer raises;
             # the step is not composable.

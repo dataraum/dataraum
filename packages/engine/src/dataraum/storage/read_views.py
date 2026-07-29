@@ -103,9 +103,6 @@ _CATALOG_GRAIN: dict[str, str] = {
     "validation_results": "operating_model",
     "detected_business_cycles": "operating_model",
     "metric_axis_additivity": "operating_model",  # operating_model metrics phase (DAT-857/868)
-    # The per-entity breakdown the same phase composes once a verdict permits it
-    # (DAT-671 B1) — same head as the verdict that gated it, so a consumer can
-    # never read a breakdown whose verdict is not current.
     # The evaluated reconciles_with tie-out (DAT-739) — same phase, same head as
     # the groundings it re-executed, so a consumer can never read a tie-out
     # computed from a grounding set that is no longer current.

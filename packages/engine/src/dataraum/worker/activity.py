@@ -233,11 +233,20 @@ def run_phase(
 
         result = phase.run(ctx)
 
-        # A FAILED phase persists nothing: roll back its partial writes so
+        # A FAILED phase persists no METADATA: roll back its partial writes so
         # session_scope's commit-on-clean-exit is a no-op. This is what makes a
         # transient-failure activity retry safe — the retry (same run_id) starts
         # from a clean slate instead of clashing with attempt 1's committed rows
         # (a within-run UNIQUE) or relying on every writer to delete-by-run_id.
+        #
+        # Scoped to the Postgres session on purpose. DuckDB DDL a phase already
+        # executed this attempt (enriched-view CREATEs, materializations) has no
+        # transaction around it and is NOT undone — a phase that fails partway
+        # leaves those objects behind. That converges rather than corrupting: the
+        # DDL is CREATE OR REPLACE (idempotent on retry), and DAT-506's
+        # publish-by-CHECKPOINT means anything uncheckpointed is invisible to the
+        # cockpit's READ_ONLY attach until a run completes. A phase that mixes
+        # mid-run DuckDB DDL with a later FAILED return must keep both true.
         if result.status == PhaseStatus.FAILED:
             session.rollback()
 
@@ -454,11 +463,20 @@ def run_session_phase(
 
         result = phase.run(ctx)
 
-        # A FAILED phase persists nothing: roll back its partial writes so
+        # A FAILED phase persists no METADATA: roll back its partial writes so
         # session_scope's commit-on-clean-exit is a no-op. This is what makes a
         # transient-failure activity retry safe — the retry (same run_id) starts
         # from a clean slate instead of clashing with attempt 1's committed rows
         # (a within-run UNIQUE) or relying on every writer to delete-by-run_id.
+        #
+        # Scoped to the Postgres session on purpose. DuckDB DDL a phase already
+        # executed this attempt (enriched-view CREATEs, materializations) has no
+        # transaction around it and is NOT undone — a phase that fails partway
+        # leaves those objects behind. That converges rather than corrupting: the
+        # DDL is CREATE OR REPLACE (idempotent on retry), and DAT-506's
+        # publish-by-CHECKPOINT means anything uncheckpointed is invisible to the
+        # cockpit's READ_ONLY attach until a run completes. A phase that mixes
+        # mid-run DuckDB DDL with a later FAILED return must keep both true.
         if result.status == PhaseStatus.FAILED:
             session.rollback()
 

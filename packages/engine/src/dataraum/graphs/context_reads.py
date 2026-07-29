@@ -653,17 +653,6 @@ def build_execution_context(
                     numeric_min=numeric_min,
                     numeric_max=numeric_max,
                     is_stale=temp_profile.is_stale if temp_profile else None,
-                    detected_granularity=temp_profile.detected_granularity
-                    if temp_profile
-                    else None,
-                    min_timestamp=str(temp_profile.min_timestamp)
-                    if temp_profile and temp_profile.min_timestamp
-                    else None,
-                    max_timestamp=str(temp_profile.max_timestamp)
-                    if temp_profile and temp_profile.max_timestamp
-                    else None,
-                    span_days=temp_profile.span_days if temp_profile else None,
-                    largest_gap_days=temp_profile.largest_gap_days if temp_profile else None,
                     is_derived=is_derived,
                     derived_formula=derived_columns.get(col.column_id),
                     flags=flags,

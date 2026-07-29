@@ -216,21 +216,24 @@ VALUES
 -- \`measure|${REVENUE_FIELD}|time|*\` existing is what makes J1's red pin a real
 -- finding rather than a missing fixture: the verdict IS here, and the answer
 -- path withholds the grain anyway because it never reads it.
+-- \`vertical\` must equal the seeded concepts' vertical ('_adhoc'): the R6
+-- vertical guard makes og_has_additivity join on the full (vertical, name)
+-- pair, so a mismatched vertical silently unbinds every verdict below.
 INSERT INTO metric_axis_additivity (
-  additivity_id, run_id, target_kind, target_key, axis_kind, axis_key,
+  additivity_id, run_id, vertical, target_kind, target_key, axis_kind, axis_key,
   status, verdict, reason, abstain_reason, bucket_grain, created_at)
 VALUES
-  ('adv_j_rev_time',  '${JOURNEY_RUN_ID}', 'measure', '${REVENUE_FIELD}', 'time', '*',
+  ('adv_j_rev_time',  '${JOURNEY_RUN_ID}', '_adhoc', 'measure', '${REVENUE_FIELD}', 'time', '*',
    'classified', 'additive', NULL, NULL, 'month', ${ts}),
-  ('adv_j_rev_cat',   '${JOURNEY_RUN_ID}', 'measure', '${REVENUE_FIELD}', 'categorical', '*',
+  ('adv_j_rev_cat',   '${JOURNEY_RUN_ID}', '_adhoc', 'measure', '${REVENUE_FIELD}', 'categorical', '*',
    'classified', 'additive', NULL, NULL, NULL, ${ts}),
-  ('adv_j_cogs_time', '${JOURNEY_RUN_ID}', 'measure', '${COGS_FIELD}', 'time', '*',
+  ('adv_j_cogs_time', '${JOURNEY_RUN_ID}', '_adhoc', 'measure', '${COGS_FIELD}', 'time', '*',
    'classified', 'additive', NULL, NULL, 'month', ${ts}),
-  ('adv_j_cogs_cat',  '${JOURNEY_RUN_ID}', 'measure', '${COGS_FIELD}', 'categorical', '*',
+  ('adv_j_cogs_cat',  '${JOURNEY_RUN_ID}', '_adhoc', 'measure', '${COGS_FIELD}', 'categorical', '*',
    'classified', 'additive', NULL, NULL, NULL, ${ts}),
-  ('adv_j_gm_time',   '${JOURNEY_RUN_ID}', 'metric', '${GROSS_MARGIN_METRIC}', 'time', '*',
+  ('adv_j_gm_time',   '${JOURNEY_RUN_ID}', '_adhoc', 'metric', '${GROSS_MARGIN_METRIC}', 'time', '*',
    'classified', 'non_additive_recompute', 'ratio', NULL, 'month', ${ts}),
-  ('adv_j_gm_cat',    '${JOURNEY_RUN_ID}', 'metric', '${GROSS_MARGIN_METRIC}', 'categorical', '*',
+  ('adv_j_gm_cat',    '${JOURNEY_RUN_ID}', '_adhoc', 'metric', '${GROSS_MARGIN_METRIC}', 'categorical', '*',
    'classified', 'non_additive_recompute', 'ratio', NULL, NULL, ${ts});
 
 -- The two carrier extracts, carrying persisted clause PARTS (DAT-838 shape).

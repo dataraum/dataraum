@@ -435,17 +435,20 @@ ON CONFLICT DO NOTHING;
 -- a classified verdict AND on a typed abstention — "not judged" must never read
 -- as "no". og_has_additivity is target_kind='measure' only; the metric-target
 -- rows below prove the concept block does not pick them up.
+-- \`vertical\` must equal the seeded concepts' vertical ('_adhoc'): the R6
+-- vertical guard makes og_has_additivity join on the full (vertical, name)
+-- pair, so a mismatched vertical silently unbinds every verdict below.
 INSERT INTO metric_axis_additivity (
-  additivity_id, run_id, target_kind, target_key, axis_kind, axis_key,
+  additivity_id, run_id, vertical, target_kind, target_key, axis_kind, axis_key,
   status, verdict, reason, abstain_reason, bucket_grain, created_at)
 VALUES
-  ('adv_f_rev_time', '${RUN_ID}', 'measure', 'revenue', 'time', '*',
+  ('adv_f_rev_time', '${RUN_ID}', '_adhoc', 'measure', 'revenue', 'time', '*',
    'classified', 'additive', NULL, NULL, 'month', ${ts}),
-  ('adv_f_rev_cat',  '${RUN_ID}', 'measure', 'revenue', 'categorical', '*',
+  ('adv_f_rev_cat',  '${RUN_ID}', '_adhoc', 'measure', 'revenue', 'categorical', '*',
    'abstained', NULL, NULL, 'unknown_aggregate', NULL, ${ts}),
-  ('adv_f_cost_time','${RUN_ID}', 'measure', 'cost', 'time', '*',
+  ('adv_f_cost_time','${RUN_ID}', '_adhoc', 'measure', 'cost', 'time', '*',
    'classified', 'semi_additive', 'stock', NULL, 'month', ${ts}),
-  ('adv_f_gm_time',  '${RUN_ID}', 'metric', '${DERIVED_METRIC}', 'time', '*',
+  ('adv_f_gm_time',  '${RUN_ID}', '_adhoc', 'metric', '${DERIVED_METRIC}', 'time', '*',
    'classified', 'non_additive_recompute', 'ratio', NULL, 'month', ${ts})
 ON CONFLICT DO NOTHING;
 

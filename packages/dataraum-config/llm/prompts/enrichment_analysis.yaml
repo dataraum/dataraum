@@ -1,7 +1,7 @@
 # Enrichment Analysis Prompt
 #
 # Identifies related tables whose columns usefully extend a fact table.
-# Uses a Pydantic tool for structured output.
+# Emits the structured output schema directly (constrained decoding; forced tool use retired by DAT-807).
 #
 # DAT-801: the selection question is NEUTRAL — "what related data usefully extends
 # this fact?" — not "which valuable analytical dimension?". A fact's grain-preserving

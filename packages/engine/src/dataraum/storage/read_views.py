@@ -107,6 +107,10 @@ _CATALOG_GRAIN: dict[str, str] = {
     # (DAT-671 B1) — same head as the verdict that gated it, so a consumer can
     # never read a breakdown whose verdict is not current.
     "metric_unit_grain": "operating_model",
+    # The evaluated reconciles_with tie-out (DAT-739) — same phase, same head as
+    # the groundings it re-executed, so a consumer can never read a tie-out
+    # computed from a grounding set that is no longer current.
+    "concept_reconciliation": "operating_model",
 }
 
 # Written by THREE detect paths: add_source seals per (table:{id}, GENERATION),

@@ -197,7 +197,12 @@ class TestConceptGraph:
             "WHERE account_type IN ('asset','liability')" in out
         )
         assert "balance_sheet @ enriched_journal: SUM(amount)" in out
-        assert "reconciles: across its own groundings (tolerance 0.01) — must tie out" in out
+        # Asserted but never executed — the served text says so rather than
+        # letting silence read as agreement (DAT-739).
+        assert (
+            "reconciles: across its own groundings (tolerance 0.01) "
+            "— must tie out (not yet evaluated)" in out
+        )
         assert "uses: amount (measure), account_type (filter)" in out
 
     def test_definition_edges_and_hierarchy(self) -> None:
@@ -244,6 +249,119 @@ class TestConceptGraph:
         )
         out = format_served_context(GraphExecutionContext(concepts=[concept]))
         assert "reconciles with: deferred_revenue" in out
+
+    def test_evaluated_tie_out_is_served_as_a_measurement(self) -> None:
+        """A delta with no declared band is reported, and explicitly not graded."""
+        concept = ConceptContext(
+            name="accounts_payable",
+            reconciles_with=[
+                ConceptReconciliation(
+                    partner="accounts_payable",
+                    status="evaluated",
+                    verdict="no_tolerance_declared",
+                    observed_delta=-920000.0,
+                    relative_delta=0.294,
+                    pairs=1,
+                    evaluated_pairs=1,
+                )
+            ],
+        )
+        out = format_served_context(GraphExecutionContext(concepts=[concept]))
+        assert "evaluated: observed delta -920000 (0.294 relative)" in out
+        assert "no tolerance is declared, so this is a measurement, not a failure" in out
+
+    def test_an_exact_tie_out_is_served_as_agreement(self) -> None:
+        concept = ConceptContext(
+            name="accounts_payable",
+            reconciles_with=[
+                ConceptReconciliation(
+                    partner="accounts_payable",
+                    status="evaluated",
+                    verdict="no_tolerance_declared",
+                    observed_delta=0.0,
+                    relative_delta=0.0,
+                    pairs=1,
+                    evaluated_pairs=1,
+                )
+            ],
+        )
+        out = format_served_context(GraphExecutionContext(concepts=[concept]))
+        assert "evaluated: the groundings tie out exactly" in out
+
+    def test_a_breached_band_is_served_as_exceeding_it(self) -> None:
+        concept = ConceptContext(
+            name="accounts_payable",
+            reconciles_with=[
+                ConceptReconciliation(
+                    partner="accounts_payable",
+                    tolerance=0.01,
+                    status="evaluated",
+                    verdict="beyond_tolerance",
+                    observed_delta=-920000.0,
+                    relative_delta=0.294,
+                    pairs=1,
+                    evaluated_pairs=1,
+                )
+            ],
+        )
+        out = format_served_context(GraphExecutionContext(concepts=[concept]))
+        assert "evaluated: 0.294 relative divergence exceeds the tolerance" in out
+
+    def test_a_non_comparable_assertion_says_why(self) -> None:
+        """Different fiscal instants: not compared, and the reason is served."""
+        concept = ConceptContext(
+            name="cash",
+            reconciles_with=[
+                ConceptReconciliation(
+                    partner="cash",
+                    status="abstained",
+                    abstain_reason="different_reporting_instants",
+                    pairs=1,
+                )
+            ],
+        )
+        out = format_served_context(GraphExecutionContext(concepts=[concept]))
+        assert (
+            "must tie out; not compared because the groundings are bound to "
+            "different reporting instants" in out
+        )
+
+    def test_a_partial_evaluation_never_reads_as_a_whole_one(self) -> None:
+        """3 of 5 pairs uncompared must not render as plain agreement (DAT-739)."""
+        concept = ConceptContext(
+            name="accounts_payable",
+            reconciles_with=[
+                ConceptReconciliation(
+                    partner="accounts_payable",
+                    status="evaluated",
+                    verdict="no_tolerance_declared",
+                    observed_delta=0.0,
+                    relative_delta=0.0,
+                    pairs=5,
+                    evaluated_pairs=2,
+                )
+            ],
+        )
+        out = format_served_context(GraphExecutionContext(concepts=[concept]))
+        assert "the groundings tie out exactly" in out
+        # …but never as verification of the whole assertion.
+        assert "3 of 5 pairs not comparable" in out
+
+    def test_the_witness_only_assertion_says_it_has_no_second_angle(self) -> None:
+        """DAT-739's own honest bound, served rather than left silent."""
+        concept = ConceptContext(
+            name="revenue",
+            reconciles_with=[
+                ConceptReconciliation(
+                    partner="revenue",
+                    status="abstained",
+                    abstain_reason="no_evaluable_pair",
+                    pairs=1,
+                )
+            ],
+        )
+        out = format_served_context(GraphExecutionContext(concepts=[concept]))
+        assert "not compared because only one grounding exists to measure" in out
 
     def test_no_section_without_concepts(self) -> None:
         assert "## Business Concepts" not in format_served_context(GraphExecutionContext())

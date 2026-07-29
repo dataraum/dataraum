@@ -27,7 +27,7 @@ import yaml
 from pydantic import ValidationError
 from sqlalchemy.orm import Session
 
-from dataraum.analysis.served_columns import describe_served
+from dataraum.analysis.served_columns import describe_served, quote_relation
 from dataraum.core.logging import get_logger
 from dataraum.core.models.base import Result
 from dataraum.llm.config import LLMConfig
@@ -1648,7 +1648,13 @@ class GraphAgent(LLMFeature):
                 for name, col_type in describe_served(duckdb_conn, table_name)
             ]
 
-            count_result = duckdb_conn.execute(f'SELECT COUNT(*) FROM "{table_name}"').fetchone()
+            # Same addressing as the DESCRIBE above — a naive f'"{name}"' here would
+            # clear DESCRIBE and then die on a name containing `"`, and the bare
+            # `except` below would turn that into a silently MISSING table: gone from
+            # the prompt's schema block AND from the validator's allow-list at once.
+            count_result = duckdb_conn.execute(
+                f"SELECT COUNT(*) FROM {quote_relation(table_name)}"
+            ).fetchone()
             row_count = count_result[0] if count_result else 0
 
             return {

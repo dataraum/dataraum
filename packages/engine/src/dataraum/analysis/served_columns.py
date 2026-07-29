@@ -44,10 +44,22 @@ this codebase does not do. One consequence has to be designed around rather than
 patched: the enriched-view builder RENAMES joined dimension columns to
 ``{fact_fk}__{col}``, so a dimension-side surrogate would land as
 ``account_id___sk__account__business_id`` and escape the predicate. Detection
-after the fact therefore cannot close that case. It is closed at the source
-instead — the enrichment agent is never offered a surrogate as a candidate
-(``enriched_views_phase._build_context_data``), so the renamed form is never
-created. If that filter is ever dropped, this becomes an undetectable leak.
+after the fact therefore cannot close that case, so it is closed on the way IN,
+at two points in ``enriched_views_phase``:
+
+1. the enrichment agent is never OFFERED a surrogate as a candidate
+   (``_build_context_data``) — prevention, but only as strong as the model
+   staying inside the list it was shown; and
+2. every surviving join's ``include_columns`` is filtered before the view SQL
+   and the persisted spec are built — enforcement, and the one that also covers
+   the INHERIT path, which replays a prior view's ``exposed_dimension_joins``
+   verbatim with no run filter.
+
+So a warm workspace carrying a pre-fix surrogate pick self-heals at its next
+enrichment run rather than re-creating the undetectable renamed form forever.
+Drop either and the leak returns; drop (2) and it returns undetectably.
+
+The cockpit mirrors this seam in ``packages/cockpit/src/tools/surrogate.ts``.
 """
 
 from __future__ import annotations
@@ -85,6 +97,19 @@ def served_columns(columns: Iterable[Column]) -> list[Column]:
     return [c for c in columns if not is_surrogate_column(c.column_name)]
 
 
+def quote_relation(relation: str) -> str:
+    """A bare relation name as a quoted DuckDB identifier, doubling embedded ``"``.
+
+    Catalog names descend from source CSV headers under the VARCHAR-first load, so
+    a ``"`` inside an identifier is reachable. Paired with :func:`describe_served`
+    so a caller issuing a SECOND statement against the same relation (a row count,
+    a sample) addresses it identically — a mismatch there is not a syntax error but
+    a silent one: the naive form clears DESCRIBE and then dies on the sibling
+    statement, and callers of this pair swallow that into "relation unavailable".
+    """
+    return '"' + relation.replace('"', '""') + '"'
+
+
 def describe_served(
     duckdb_conn: duckdb.DuckDBPyConnection,
     relation: str,
@@ -109,10 +134,7 @@ def describe_served(
             missing relation as skippable catch it themselves — this helper does
             not swallow it, so absence falls loud by default.
     """
-    # Embedded quotes are doubled: catalog names descend from source CSV headers
-    # under the VARCHAR-first load, so a `"` in an identifier is reachable.
-    quoted = '"' + relation.replace('"', '""') + '"'
-    rows = duckdb_conn.execute(f"DESCRIBE {quoted}").fetchall()
+    rows = duckdb_conn.execute(f"DESCRIBE {quote_relation(relation)}").fetchall()
     return [(str(r[0]), str(r[1])) for r in rows if not is_surrogate_column(str(r[0]))]
 
 
@@ -139,4 +161,9 @@ def enriched_dimension_columns(session: Session, view_table_id: str) -> list[Col
     )
 
 
-__all__ = ["describe_served", "enriched_dimension_columns", "served_columns"]
+__all__ = [
+    "describe_served",
+    "enriched_dimension_columns",
+    "quote_relation",
+    "served_columns",
+]

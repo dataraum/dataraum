@@ -291,7 +291,9 @@ def build_cycle_detection_context(
         # per relationship × measure column, the measure selection being this
         # builder's pinned annotations (semantic_role == "measure").
         ranges: list[dict[str, Any]] = []
-        for measure_col in sorted(from_tbl.columns, key=lambda c: c.column_position):
+        for measure_col in sorted(
+            served_columns(from_tbl.columns), key=lambda c: c.column_position
+        ):
             ann = annotations.get(measure_col.column_id)
             if ann is None or ann.semantic_role != "measure":
                 continue
@@ -560,7 +562,12 @@ def build_cycle_detection_context(
     # 9. Summary statistics
     context["summary"] = {
         "total_tables": len(tables),
-        "total_columns": sum(len(t.columns) for t in tables),
+        # Served, not catalogued — and deliberately NOT the DAT-622 treatment below.
+        # That case labels a catalogued-vs-shown gap because a curated-out slice is a
+        # real column of the user's dataset. A mint-owned surrogate is not a column of
+        # the dataset at all, so counting it here would inflate the "Columns: N" line
+        # this renders into — the same prompt whose per-table column lists exclude it.
+        "total_columns": sum(len(served_columns(t.columns)) for t in tables),
         "total_relationships": len(rel_list),
         "conformed_meetings_found": len(conformed_list),
         # The CATALOGUED total, not the served count (DAT-622): reporting the

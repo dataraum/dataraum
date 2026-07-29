@@ -11,6 +11,7 @@ from dataraum.analysis.relationships.surrogate import SURROGATE_PREFIX, is_surro
 from dataraum.analysis.served_columns import (
     describe_served,
     enriched_dimension_columns,
+    quote_relation,
     served_columns,
 )
 from dataraum.storage import Column, Source, Table
@@ -125,3 +126,23 @@ def test_surrogate_predicate_does_not_match_the_renamed_dimension_form():
 
     assert not is_surrogate_column(renamed)
     assert is_surrogate_column(SURROGATE_COL)
+
+
+def test_describe_served_handles_an_embedded_quote():
+    """A `"` in a relation name is reachable, so quoting must double it.
+
+    Catalog names descend from source CSV headers under the VARCHAR-first load. The
+    naive f'"{name}"' form produces a syntax error, and every caller of this helper
+    treats a raise as "relation unavailable" — so the failure mode is not an error
+    surfacing but a table silently vanishing from the served schema.
+    """
+    conn = duckdb.connect()
+    weird = 'led"ger'
+    conn.execute(f"CREATE TABLE {quote_relation(weird)} AS SELECT 1 AS entry_id")
+
+    assert [name for name, _ in describe_served(conn, weird)] == ["entry_id"]
+
+
+def test_quote_relation_doubles_embedded_quotes():
+    assert quote_relation('led"ger') == '"led""ger"'
+    assert quote_relation("ledger") == '"ledger"'

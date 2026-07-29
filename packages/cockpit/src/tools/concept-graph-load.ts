@@ -31,46 +31,63 @@ import { metadataDb } from "../db/metadata/client";
 import {
 	conceptEdges,
 	concepts,
+	currentConceptReconciliation,
 	currentGroundings,
 } from "../db/metadata/schema";
 import { buildConceptGraph, type ConceptGraph } from "./concept-graph";
 
 export async function loadConceptGraph(): Promise<ConceptGraph> {
-	const [conceptRows, edgeRows, groundingRows] = await Promise.all([
-		metadataDb
-			.select({
-				conceptId: concepts.conceptId,
-				name: concepts.name,
-				kind: concepts.kind,
-				description: concepts.description,
-				indicators: concepts.indicators,
-				excludePatterns: concepts.excludePatterns,
-				supersededAt: concepts.supersededAt,
-			})
-			.from(concepts),
-		metadataDb
-			.select({
-				edgeId: conceptEdges.edgeId,
-				predicate: conceptEdges.predicate,
-				fromConcept: conceptEdges.fromConcept,
-				toConcept: conceptEdges.toConcept,
-				tolerance: conceptEdges.tolerance,
-				supersededAt: conceptEdges.supersededAt,
-			})
-			.from(conceptEdges),
-		metadataDb
-			.select({
-				snippetId: currentGroundings.snippetId,
-				concept: currentGroundings.concept,
-				statement: currentGroundings.statement,
-				relation: currentGroundings.relation,
-				selectExpr: currentGroundings.selectExpr,
-				wherePredicates: currentGroundings.wherePredicates,
-				failed: currentGroundings.failed,
-				provenance: currentGroundings.provenance,
-			})
-			.from(currentGroundings),
-	]);
+	const [conceptRows, edgeRows, groundingRows, reconciliationRows] =
+		await Promise.all([
+			metadataDb
+				.select({
+					conceptId: concepts.conceptId,
+					name: concepts.name,
+					kind: concepts.kind,
+					description: concepts.description,
+					indicators: concepts.indicators,
+					excludePatterns: concepts.excludePatterns,
+					supersededAt: concepts.supersededAt,
+				})
+				.from(concepts),
+			metadataDb
+				.select({
+					edgeId: conceptEdges.edgeId,
+					predicate: conceptEdges.predicate,
+					fromConcept: conceptEdges.fromConcept,
+					toConcept: conceptEdges.toConcept,
+					tolerance: conceptEdges.tolerance,
+					supersededAt: conceptEdges.supersededAt,
+				})
+				.from(conceptEdges),
+			metadataDb
+				.select({
+					snippetId: currentGroundings.snippetId,
+					concept: currentGroundings.concept,
+					statement: currentGroundings.statement,
+					relation: currentGroundings.relation,
+					selectExpr: currentGroundings.selectExpr,
+					wherePredicates: currentGroundings.wherePredicates,
+					failed: currentGroundings.failed,
+					provenance: currentGroundings.provenance,
+				})
+				.from(currentGroundings),
+			// The last promoted run's per-pair tie-out rows (DAT-739). No ORDER BY
+			// here: `foldReconciliations` sorts itself so the builder is
+			// deterministic for ANY caller — physical row order is not a tie-break.
+			metadataDb
+				.select({
+					fromConcept: currentConceptReconciliation.fromConcept,
+					toConcept: currentConceptReconciliation.toConcept,
+					pairKey: currentConceptReconciliation.pairKey,
+					status: currentConceptReconciliation.status,
+					verdict: currentConceptReconciliation.verdict,
+					abstainReason: currentConceptReconciliation.abstainReason,
+					delta: currentConceptReconciliation.delta,
+					relativeDelta: currentConceptReconciliation.relativeDelta,
+				})
+				.from(currentConceptReconciliation),
+		]);
 
 	return buildConceptGraph({
 		concepts: conceptRows.map((c) => ({
@@ -99,6 +116,16 @@ export async function loadConceptGraph(): Promise<ConceptGraph> {
 			wherePredicates: g.wherePredicates ?? null,
 			failed: g.failed ?? false,
 			provenance: g.provenance,
+		})),
+		reconciliations: reconciliationRows.map((r) => ({
+			fromConcept: r.fromConcept ?? "",
+			toConcept: r.toConcept ?? "",
+			pairKey: r.pairKey ?? "",
+			status: r.status ?? "",
+			verdict: r.verdict ?? null,
+			abstainReason: r.abstainReason ?? null,
+			delta: r.delta ?? null,
+			relativeDelta: r.relativeDelta ?? null,
 		})),
 	});
 }

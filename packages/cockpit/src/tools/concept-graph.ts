@@ -106,6 +106,7 @@ export interface ConceptGraphInput {
 	concepts: ConceptRow[];
 	edges: ConceptEdgeRow[];
 	groundings: GroundingRow[];
+	reconciliations: ReconciliationRow[];
 }
 
 // --- Graph model -------------------------------------------------------------
@@ -116,10 +117,41 @@ export interface ConceptGraphInput {
  *  reconciles against a witnessed aggregation-lineage rollup: "this concept's
  *  own computations must tie out." A distinct partner is a seed/declared
  *  cross-concept assertion (e.g. a balance-sheet total reconciling against a
- *  trial-balance total). */
+ *  trial-balance total).
+ *
+ *  The fields below the assertion carry what the last PROMOTED run OBSERVED
+ *  when it executed both sides (DAT-739), folded from its per-pair rows —
+ *  mirrors the engine's `ConceptReconciliation` context model exactly.
+ *  `status === null` means never evaluated, which is a different statement
+ *  from "evaluated and found consistent" and must be rendered as one.
+ *  `observedDelta` NEVER implies a failure on its own: with no declared
+ *  `tolerance` there is no band to have missed. */
 export interface ConceptReconciliation {
 	partner: string;
 	tolerance: number | null;
+	/** `'evaluated'` | `'abstained'` | `null` (never evaluated). */
+	status: string | null;
+	verdict: string | null;
+	/** Set only when NO pair was evaluated and every abstention agreed. */
+	abstainReason: string | null;
+	observedDelta: number | null;
+	relativeDelta: number | null;
+	pairs: number;
+	evaluatedPairs: number;
+}
+
+/** One raw `current_concept_reconciliation` row (the last promoted run's
+ *  per-pair tie-out evaluation, DAT-739). Numeric columns arrive as strings
+ *  from the driver (drizzle `numeric`) — the fold converts. */
+export interface ReconciliationRow {
+	fromConcept: string;
+	toConcept: string;
+	pairKey: string;
+	status: string;
+	verdict: string | null;
+	abstainReason: string | null;
+	delta: string | number | null;
+	relativeDelta: string | number | null;
 }
 
 /** One healthy or failed prior grounding of a concept. A HEALTHY grounding
@@ -278,6 +310,87 @@ function compareGroundings(a: ConceptGrounding, b: ConceptGrounding): number {
  *    without it, DB physical-row-order drift would silently bust the whole
  *    cached prefix.
  */
+/** The observed half of a `ConceptReconciliation` before an edge claims it. */
+type ReconciliationFold = Omit<ConceptReconciliation, "partner" | "tolerance">;
+
+// NUL as pair-key separator: Postgres text can never contain \0, so any
+// concept name round-trips unambiguously (a space or dash could not promise
+// that).
+const reconciliationFoldKey = (frm: string, to: string): string =>
+	`${frm}\u0000${to}`;
+
+const asNumber = (v: string | number | null): number | null =>
+	v === null ? null : Number(v);
+
+/** Fold the per-pair rows into one observation per `(concept, partner)` —
+ *  mirrors the engine's `context_reads.py::_read_reconciliation_rows` exactly:
+ *  an assertion covering several grounding pairs reports how many were
+ *  comparable and the WIDEST relative divergence among them (strict `>`, ties
+ *  first-seen — which is why the sort below matters: physical row order is not
+ *  a tie-break); when nothing was comparable, the shared abstention reason is
+ *  carried only if every pair agreed on it. A partner assertion is stored once
+ *  under name-ordered endpoints but read from BOTH directions' edge rows, so
+ *  the mirror key is registered last — dropping that line re-introduces the
+ *  bug where one endpoint renders "not yet evaluated" for an assertion that
+ *  WAS evaluated. The engine sorts in SQL; this fold sorts here so the builder
+ *  stays deterministic for any caller. */
+function foldReconciliations(
+	rows: ReconciliationRow[],
+): Map<string, ReconciliationFold> {
+	const sorted = [...rows].sort(
+		(a, b) =>
+			a.fromConcept.localeCompare(b.fromConcept) ||
+			a.toConcept.localeCompare(b.toConcept) ||
+			a.pairKey.localeCompare(b.pairKey),
+	);
+	const foldKey = reconciliationFoldKey;
+	const folded = new Map<string, ReconciliationFold>();
+	const reasons = new Map<string, Set<string | null>>();
+	for (const r of sorted) {
+		const key = foldKey(r.fromConcept, r.toConcept);
+		let acc = folded.get(key);
+		if (!acc) {
+			acc = {
+				status: null,
+				verdict: null,
+				abstainReason: null,
+				observedDelta: null,
+				relativeDelta: null,
+				pairs: 0,
+				evaluatedPairs: 0,
+			};
+			folded.set(key, acc);
+			reasons.set(key, new Set());
+		}
+		acc.pairs += 1;
+		if (r.status !== "evaluated") {
+			reasons.get(key)?.add(r.abstainReason);
+			continue;
+		}
+		acc.evaluatedPairs += 1;
+		acc.status = "evaluated";
+		const current = asNumber(r.relativeDelta) ?? 0;
+		if (acc.relativeDelta === null || current > acc.relativeDelta) {
+			acc.relativeDelta = current;
+			acc.observedDelta = asNumber(r.delta);
+			acc.verdict = r.verdict;
+		}
+	}
+	for (const [key, acc] of folded) {
+		if (acc.status === null) {
+			acc.status = "abstained";
+			const rs = reasons.get(key) ?? new Set();
+			acc.abstainReason = rs.size === 1 ? [...rs][0] : null;
+		}
+	}
+	for (const [key, acc] of [...folded.entries()]) {
+		const [frm, to] = key.split("\u0000");
+		const mirror = foldKey(to, frm);
+		if (!folded.has(mirror)) folded.set(mirror, acc);
+	}
+	return folded;
+}
+
 export function buildConceptGraph(input: ConceptGraphInput): ConceptGraph {
 	const activeConcepts = input.concepts.filter((c) => c.supersededAt === null);
 	const byName = new Map(activeConcepts.map((c) => [c.name, c]));
@@ -294,6 +407,7 @@ export function buildConceptGraph(input: ConceptGraphInput): ConceptGraph {
 	const partOfChildren = new Map<string, string[]>();
 	const disjointWith = new Map<string, string[]>();
 	const reconcilesWith = new Map<string, ConceptReconciliation[]>();
+	const reconciliationFolds = foldReconciliations(input.reconciliations);
 
 	const pushInto = (m: Map<string, string[]>, key: string, value: string) => {
 		const list = m.get(key);
@@ -312,8 +426,24 @@ export function buildConceptGraph(input: ConceptGraphInput): ConceptGraph {
 				pushInto(disjointWith, e.fromConcept, e.toConcept);
 				break;
 			case "reconciles_with": {
+				// The evaluated state rides the assertion it belongs to. Absent =
+				// never evaluated, which the renderer must not report as agreement
+				// (mirrors context_reads.py's assembly attach).
+				const observed = reconciliationFolds.get(
+					reconciliationFoldKey(e.fromConcept, e.toConcept),
+				);
 				const list = reconcilesWith.get(e.fromConcept) ?? [];
-				list.push({ partner: e.toConcept, tolerance: e.tolerance });
+				list.push({
+					partner: e.toConcept,
+					tolerance: e.tolerance,
+					status: observed?.status ?? null,
+					verdict: observed?.verdict ?? null,
+					abstainReason: observed?.abstainReason ?? null,
+					observedDelta: observed?.observedDelta ?? null,
+					relativeDelta: observed?.relativeDelta ?? null,
+					pairs: observed?.pairs ?? 0,
+					evaluatedPairs: observed?.evaluatedPairs ?? 0,
+				});
 				reconcilesWith.set(e.fromConcept, list);
 				break;
 			}
@@ -425,6 +555,76 @@ function formatGrounding(g: ConceptGrounding): string {
  * intent (ground the concept in real column values, don't improvise a
  * substring filter), different concrete pointer — not an oversight.
  */
+
+/** Python `%.Ng` mirror — the engine renders every reconciliation number with
+ *  `:g`/`:.3g`, so this render must agree digit-for-digit or the two documented
+ *  parity blocks drift on the very numbers they exist to report. Python's rule:
+ *  exponential when `exp < -4` or `exp >= precision`, trailing zeros stripped,
+ *  exponent at least two digits. */
+export function pyG(x: number, precision = 6): string {
+	if (x === 0) return "0";
+	if (!Number.isFinite(x)) return String(x);
+	const exp = Math.floor(Math.log10(Math.abs(x)));
+	if (exp < -4 || exp >= precision) {
+		const [mantRaw, eRaw] = x.toExponential(precision - 1).split("e");
+		const mant = mantRaw.includes(".")
+			? mantRaw.replace(/\.?0+$/, "")
+			: mantRaw;
+		const sign = eRaw.startsWith("-") ? "-" : "+";
+		const digits = eRaw.replace(/[+-]/, "").padStart(2, "0");
+		return `${mant}e${sign}${digits}`;
+	}
+	let out = x.toFixed(Math.max(0, precision - 1 - exp));
+	if (out.includes(".")) out = out.replace(/\.?0+$/, "");
+	return out;
+}
+
+/** Why a tie-out was not computed — mirrors `context_format.py`'s
+ *  `_ABSTAIN_PHRASING` key-for-key. */
+const ABSTAIN_PHRASING: Record<string, string> = {
+	no_evaluable_pair: "only one grounding exists to measure",
+	different_reporting_instants:
+		"the groundings are bound to different reporting instants",
+	different_aggregations: "the groundings aggregate differently",
+	unresolved_grounding: "a grounding has no executable form",
+	execution_failed: "a grounding failed to execute",
+	no_value: "a grounding measured no support",
+	non_numeric_value: "a grounding returned a value that is not a quantity",
+};
+
+/** What the last promoted run observed for one assertion — mirrors the
+ *  engine's `_reconciliation_state` branch-for-branch. The distinction this
+ *  wording holds: an assertion nobody has evaluated is NOT an assertion that
+ *  held, and a delta observed with no declared tolerance is a MEASUREMENT,
+ *  never a graded failure. A partial evaluation must never read as a whole
+ *  one, so the un-compared remainder rides every verdict. */
+function reconciliationState(rec: ConceptReconciliation): string {
+	if (rec.status === null) return "must tie out (not yet evaluated)";
+	if (rec.status === "abstained") {
+		const reason =
+			(rec.abstainReason !== null
+				? ABSTAIN_PHRASING[rec.abstainReason]
+				: undefined) ?? "no comparable pair was found";
+		return `must tie out; not compared because ${reason}`;
+	}
+	let scope =
+		rec.evaluatedPairs > 1 ? ` (widest of ${rec.evaluatedPairs} pairs)` : "";
+	const uncompared = rec.pairs - rec.evaluatedPairs;
+	if (uncompared > 0)
+		scope += `; ${uncompared} of ${rec.pairs} pairs not comparable`;
+	const relative = pyG(rec.relativeDelta ?? 0, 3);
+	if (rec.verdict === "beyond_tolerance")
+		return `evaluated: ${relative} relative divergence exceeds the tolerance${scope}`;
+	if (rec.verdict === "within_tolerance")
+		return `evaluated: ties out within tolerance, ${relative} relative${scope}`;
+	if (!rec.observedDelta)
+		return `evaluated: the groundings tie out exactly${scope}`;
+	return (
+		`evaluated: observed delta ${pyG(rec.observedDelta)} (${relative} relative)${scope}` +
+		" — no tolerance is declared, so this is a measurement, not a failure"
+	);
+}
+
 export function formatConceptContext(graph: ConceptGraph): string {
 	if (graph.nodes.length === 0) return "";
 
@@ -437,7 +637,8 @@ export function formatConceptContext(graph: ConceptGraph): string {
 			"that concept — reuse its relation/expression for the same concept unless " +
 			"the served evidence says it is wrong; a concept with several groundings is " +
 			"measured on several relations, and `reconciles` means those computations " +
-			"must tie out.",
+			"must tie out — each entry states whether the last completed run " +
+			"actually checked that, and what it observed.",
 		"",
 	];
 
@@ -462,12 +663,13 @@ export function formatConceptContext(graph: ConceptGraph): string {
 		if (c.disjointWith.length > 0)
 			lines.push(`  - disjoint with: ${c.disjointWith.join(", ")}`);
 		for (const rec of c.reconcilesWith) {
-			const tol = rec.tolerance !== null ? ` (tolerance ${rec.tolerance})` : "";
-			lines.push(
+			const tol =
+				rec.tolerance !== null ? ` (tolerance ${pyG(rec.tolerance)})` : "";
+			const subject =
 				rec.partner === c.name
-					? `  - reconciles: across its own groundings${tol} — must tie out`
-					: `  - reconciles with: ${rec.partner}${tol}`,
-			);
+					? "reconciles: across its own groundings"
+					: `reconciles with: ${rec.partner}`;
+			lines.push(`  - ${subject}${tol} — ${reconciliationState(rec)}`);
 		}
 
 		// Match the engine's skip (context_reads.py's grounding_relation_missing):

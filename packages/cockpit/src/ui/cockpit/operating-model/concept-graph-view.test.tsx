@@ -135,7 +135,19 @@ describe("ConceptGraphView (DAT-737)", () => {
 					partOfParents: ["current_assets"],
 					partOfAncestry: ["assets"],
 					disjointWith: ["liability"],
-					reconcilesWith: [{ partner: "cash", tolerance: null }],
+					reconcilesWith: [
+						{
+							partner: "cash",
+							tolerance: null,
+							status: null,
+							verdict: null,
+							abstainReason: null,
+							observedDelta: null,
+							relativeDelta: null,
+							pairs: 0,
+							evaluatedPairs: 0,
+						},
+					],
 					groundings: [
 						{
 							snippetId: "s1",

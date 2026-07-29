@@ -172,6 +172,35 @@ export const currentColumns = pgView("current_columns", {
 	sql`SELECT column_id, table_id, column_name, original_name, column_position, raw_type, resolved_type, origin, source_column_id FROM engine.columns c WHERE (EXISTS ( SELECT 1 FROM engine.tables t JOIN engine.metadata_snapshot_head h ON h.target::text = ('table:'::text || t.table_id::text) AND h.stage::text = 'generation'::text WHERE t.table_id::text = c.table_id::text AND t.layer::text = 'typed'::text))`,
 );
 
+export const currentConceptReconciliation = pgView(
+	"current_concept_reconciliation",
+	{
+		reconciliationId: varchar("reconciliation_id"),
+		runId: varchar("run_id"),
+		vertical: varchar(),
+		fromConcept: varchar("from_concept"),
+		toConcept: varchar("to_concept"),
+		pairKey: varchar("pair_key"),
+		leftSnippetId: varchar("left_snippet_id"),
+		rightSnippetId: varchar("right_snippet_id"),
+		leftRelation: varchar("left_relation"),
+		rightRelation: varchar("right_relation"),
+		leftAsOf: varchar("left_as_of"),
+		rightAsOf: varchar("right_as_of"),
+		leftValue: numeric("left_value"),
+		rightValue: numeric("right_value"),
+		delta: numeric(),
+		relativeDelta: numeric("relative_delta"),
+		tolerance: doublePrecision(),
+		status: varchar(),
+		verdict: varchar(),
+		abstainReason: varchar("abstain_reason"),
+		createdAt: timestamp("created_at", { withTimezone: true }),
+	},
+).as(
+	sql`SELECT reconciliation_id, run_id, vertical, from_concept, to_concept, pair_key, left_snippet_id, right_snippet_id, left_relation, right_relation, left_as_of, right_as_of, left_value, right_value, delta, relative_delta, tolerance, status, verdict, abstain_reason, created_at FROM engine.concept_reconciliation r WHERE (EXISTS ( SELECT 1 FROM engine.metadata_snapshot_head h WHERE h.target::text = 'catalog'::text AND h.stage::text = 'operating_model'::text AND h.run_id::text = r.run_id::text))`,
+);
+
 export const currentDerivedColumns = pgView("current_derived_columns", {
 	derivedId: varchar("derived_id"),
 	runId: varchar("run_id"),

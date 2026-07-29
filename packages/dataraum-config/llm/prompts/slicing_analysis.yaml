@@ -9,9 +9,20 @@
 # ordering, so asking the model to weigh them was asking it to re-derive by
 # eye a number the pipeline computes exactly — and an ordinal it emitted could
 # not be compared across tables or against a numeric axis anyway.
+#
+# v5.1.0 (DAT-671): criterion 3 no longer asks the model to weigh row count —
+# that substance is the measured coverage factor score_axis already applies
+# (the DAT-879 class: don't ask the model to re-derive by eye what the
+# pipeline computes exactly); the table-count half stays, since nothing
+# measures it and the model reads it from the schema. tables_json also
+# dropped total_count/null_count/null_ratio/cardinality_ratio per column
+# (input drift the prompt already forbade judging on) and kept
+# distinct_count as the sample-vs-total disclosure for the capped top_values
+# list; the <schema_and_statistics> description corrected to match what
+# tables_json actually carries.
 
 name: slicing_analysis
-version: "5.0.0"
+version: "5.1.0"
 description: Judge which cataloged dimensions are business breakdown axes
 
 # System prompt - defines role and behavior
@@ -64,8 +75,8 @@ system_prompt: |
      returned. If two columns in the same table encode the same split (e.g. country_code +
      country_name), return one and leave the other out.
      Shared FK dimensions across tables are fine — each table's slices contain different data.
-  3. Analytical Leverage: Partitions the MOST rows or the MOST tables (e.g. a shared
-     foreign-key dimension that appears in 3 tables beats a column unique to 1 table).
+  3. Analytical Leverage: Partitions the MOST tables (e.g. a shared foreign-key
+     dimension that appears in 3 tables beats a column unique to 1 table).
   4. Insight Potential: May help explain data quality issues in related columns or give
      additional context about the data and business processes.
 
@@ -131,10 +142,10 @@ user_prompt: |
   </task>
 
   <schema_and_statistics>
-  Each table includes column names, types, distinct value counts, top values,
-  null rates, and semantic annotations where available. Every listed column is
-  already a cataloged dimension — you judge its business meaning, you do not
-  select which columns are cataloged.
+  Each table includes column names, types, up to 10 sample values with a
+  distinct-value count, and semantic annotations where available. Every listed
+  column is already a cataloged dimension — you judge its business meaning,
+  you do not select which columns are cataloged.
 
   Columns with "is_enriched_dimension": true come from joined dimension tables
   (format: "fk_column__dimension_column"). Treat them on equal footing with

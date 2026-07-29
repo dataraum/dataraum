@@ -839,7 +839,6 @@ def _get_value_counts_for_column(
 def format_context_for_prompt(
     context: dict[str, Any],
     *,
-    max_sample_values: int = 10,
     max_sample_value_chars: int = 100,
 ) -> str:
     """Format the context dictionary as a readable string for the LLM prompt.
@@ -857,23 +856,22 @@ def format_context_for_prompt(
 
     Args:
         context: Context dictionary from build_cycle_detection_context
-        max_sample_values: ``privacy.max_sample_values`` — the DISPLAY cap
-            applied to a slice's ``value_counts``/``values`` here (DAT-671).
-            This is deliberately a RENDER-time cap, not a cap on ``context``
-            itself: ``context["slice_definitions"][*]["value_counts"]``
-            (and ``["values"]``, the unranked fallback — same underlying
-            ``SliceDefinition.distinct_values``, DAT-671 review fold-in)
-            stay the FULL stored set because ``verify.py``'s DAT-630
-            membership floor reads them directly (see
-            ``_get_value_counts_for_column``'s docstring) — capping it
-            upstream would make an honest value outside the top-K read as
-            unserved and wrongly reject a cycle. Defaults to the shipped
-            ``privacy.max_sample_values`` so existing callers that pre-date
-            this cap keep behaving identically.
         max_sample_value_chars: ``privacy.max_sample_value_chars`` — the
-            per-value length cap applied alongside the count cap above (via
+            per-value length cap applied to a slice's ``value_counts``/
+            ``values`` (via
             :func:`~dataraum.analysis.semantic.utils.truncate_sample_value`).
-            Defaults to the shipped ``privacy.max_sample_value_chars``.
+            LENGTH only — there is deliberately no COUNT cap here (DAT-671
+            review, second pass): both lists are MEMBERSHIP the model must
+            cite verbatim (the business_cycles prompt instructs it to "map
+            cycle stages from the distinct values" / "compute completion
+            rates from status value counts"), and ``verify.py``'s DAT-630
+            membership floor rejects any citation outside the served set —
+            a frequency-ordered top-K would amputate the citable space (a
+            rare terminal state falls outside a top-10 by frequency; the
+            TAIL of a wide counterparty column can BE the direction
+            evidence). Both are served WHOLE, up to the profiler's stored
+            top-K (200). Defaults to the shipped
+            ``privacy.max_sample_value_chars``.
 
     Returns:
         Formatted string suitable for LLM prompt
@@ -978,12 +976,20 @@ def format_context_for_prompt(
             # never the column total — labelling it "total" (as this line did)
             # told the model it was seeing the whole distribution (DAT-622).
             # State the shown-vs-distinct split whenever the two differ.
-            # DISPLAY-capped to ``max_sample_values``/``max_sample_value_chars``
-            # (DAT-671): the stored ``value_counts`` stays uncapped in
-            # ``context`` for verify.py's membership floor (see
-            # ``_get_value_counts_for_column``'s docstring) — only what
-            # reaches the PROMPT TEXT is bounded here.
-            value_counts = sd.get("value_counts", [])[:max_sample_values]
+            #
+            # NOT count-capped (DAT-671 review, second pass): this list is
+            # MEMBERSHIP the model must cite verbatim — the business_cycles
+            # prompt instructs it to "map cycle stages from the distinct
+            # values" / "compute completion rates from status value counts",
+            # and ``verify.py``'s DAT-630 membership floor rejects any
+            # citation outside the served set. A frequency-ordered top-10
+            # would amputate the citable space: a rare terminal state (a
+            # 3.6% ``cancelled``) falls outside a top-10 and becomes
+            # unciteable, and the TAIL of a wide counterparty column can BE
+            # the direction evidence. Served whole, up to the profiler's
+            # stored top-K (200) — only each value's LENGTH is bounded
+            # (``max_sample_value_chars``), never the membership count.
+            value_counts = sd.get("value_counts", [])
             if value_counts:
                 shown_rows = sum(vc["count"] for vc in value_counts)
                 distinct = sd.get("value_count")
@@ -1003,17 +1009,24 @@ def format_context_for_prompt(
             elif sd.get("values"):
                 # The unranked-path fallback (DAT-725: no LLM judgment ran, so
                 # no value_counts was built) — same underlying
-                # SliceDefinition.distinct_values, which the persist-time
-                # fallback can populate with the profiler's FULL top_values
-                # (up to 200, DAT-671 review fold-in: this branch used to
-                # bypass BOTH caps above, live-reproduced serving all 50 of a
-                # 50-value column at max_sample_values=3). Same count + char
-                # treatment as the value_counts branch.
-                capped_values = [
-                    truncate_sample_value(v, max_chars=max_sample_value_chars)
-                    for v in sd["values"][:max_sample_values]
+                # SliceDefinition.distinct_values and the same MEMBERSHIP
+                # contract as the value_counts branch above: served WHOLE
+                # (up to the profiler's stored top-K, 200), never count-capped
+                # — only each value's length is bounded. Discloses "N of M
+                # distinct" so a truncated-at-storage list (profiler stored
+                # fewer than the true distinct count) reads the same as the
+                # value_counts branch's shown-vs-distinct split, which this
+                # fallback lacked before (DAT-671 review, second pass).
+                values = [
+                    truncate_sample_value(v, max_chars=max_sample_value_chars) for v in sd["values"]
                 ]
-                lines.append(f"  Values: {', '.join(capped_values)}")
+                distinct = sd.get("value_count")
+                count_note = (
+                    f" ({len(values):,} of {distinct:,} distinct)"
+                    if distinct is not None and distinct > len(values)
+                    else ""
+                )
+                lines.append(f"  Values{count_note}: {', '.join(values)}")
             lines.append("")
 
     # Derived (numeric) relationships — completion signals a status column can't carry

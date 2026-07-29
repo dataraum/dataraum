@@ -1349,20 +1349,21 @@ def test_format_context_renders_structural_slice_without_confidence() -> None:
     assert "### facts.status (confidence: 90%)" in rendered
 
 
-def test_format_context_display_caps_slice_value_counts_without_touching_context(
+def test_format_context_serves_slice_value_counts_whole_never_count_capped(
     session,
 ) -> None:
-    """DAT-671: the RENDER gets the display cap; the stored context does not.
-
-    ``verify.py``'s DAT-630 membership floor reads
-    ``context["slice_definitions"][*]["value_counts"]`` directly (never
-    through this renderer), so it must keep seeing the FULL served set even
-    though the prompt TEXT only shows the top few — capping the stored list
-    itself would make a genuine value outside the display window read as
-    unserved and wrongly reject an honest cycle.
+    """DAT-671 review, second pass: value_counts is MEMBERSHIP the model must
+    cite verbatim (the business_cycles prompt: "map cycle stages from the
+    distinct values" / "compute completion rates from status value counts"),
+    and ``verify.py``'s DAT-630 membership floor rejects any citation outside
+    the served set. A frequency-ordered count cap would amputate the citable
+    space — a rare terminal state (e.g. a 3.6% ``cancelled``) can fall outside
+    a top-N by frequency and become unciteable. Served WHOLE (up to the
+    profiler's stored top-K); only each value's LENGTH is bounded.
     """
-    full_value_counts = [
-        {"value": f"v{i:02d}", "count": 10 - i, "percentage": 10.0} for i in range(5)
+    long_value = "x" * 500
+    full_value_counts = [{"value": long_value, "count": 1, "percentage": 0.1}] + [
+        {"value": f"v{i:02d}", "count": 50 - i, "percentage": 2.0} for i in range(49)
     ]
     context = {
         "tables": [{"table_name": "facts", "row_count": 100, "columns": []}],
@@ -1373,33 +1374,34 @@ def test_format_context_display_caps_slice_value_counts_without_touching_context
                 "slice_type": "categorical",
                 "values": [],
                 "value_counts": full_value_counts,
-                "value_count": 20,  # distinct exceeds even the FULL stored set
+                "value_count": 60,  # distinct exceeds even the stored top-K
                 "confidence": None,
                 "business_context": None,
             }
         ],
     }
 
-    rendered = format_context_for_prompt(context, max_sample_values=3)
+    rendered = format_context_for_prompt(context, max_sample_value_chars=100)
 
-    # Only the top 3 of the 5 stored values reach the rendered text.
-    assert "v00" in rendered and "v01" in rendered and "v02" in rendered
-    assert "v03" not in rendered and "v04" not in rendered
-    assert "3 most frequent of 20 distinct" in rendered
-    # The dict handed in is untouched — verify.py must still see all 5.
-    assert len(context["slice_definitions"][0]["value_counts"]) == 5
+    # Every one of the 50 stored values reaches the rendered text — no count cap.
+    assert "v00" in rendered and "v48" in rendered
+    assert "50 most frequent of 60 distinct" in rendered
+    # LENGTH cap still applies: the 500-char value is truncated, not served whole.
+    assert "x" * 100 + "..." in rendered
+    assert "x" * 500 not in rendered
+    # The dict handed in is untouched (defensive: this renderer never mutates).
+    assert len(context["slice_definitions"][0]["value_counts"]) == 50
 
 
-def test_format_context_display_caps_the_unranked_values_fallback_too(session) -> None:
-    """DAT-671 review fold-in (CRITICAL): the ``elif sd.get("values")`` fallback
-    used to bypass BOTH caps — reproduced live: max_sample_values=3 rendered
-    all 50 values of an unranked slice. ``sd["values"]`` reads the same
-    ``SliceDefinition.distinct_values`` the unranked persist-time fallback can
-    populate with the profiler's FULL top_values (up to 200) — this fires
-    whenever ``value_counts`` is empty (missing semantic_runs pin, or no typed
-    profile — ``_get_value_counts_for_column`` fails closed to ``[]``), a real
-    operating path, not a corner case. Must get the identical count + per-value
-    char treatment as the value_counts branch above it, not a silent bypass.
+def test_format_context_serves_the_unranked_values_fallback_whole_with_disclosure(
+    session,
+) -> None:
+    """DAT-671 review, second pass: the ``elif sd.get("values")`` fallback gets
+    the SAME membership treatment as value_counts above it — served WHOLE,
+    length-capped only — plus the "N of M distinct" disclosure it lacked
+    before, so a profiler-storage-truncated list (fewer stored than truly
+    distinct) reads the same shown-vs-distinct split as the value_counts
+    branch instead of looking like the complete set.
     """
     long_value = "x" * 500
     many_values = [long_value] + [f"v{i:02d}" for i in range(49)]
@@ -1412,22 +1414,22 @@ def test_format_context_display_caps_the_unranked_values_fallback_too(session) -
                 "slice_type": "categorical",
                 "values": many_values,
                 "value_counts": [],  # the unranked path: no judged value_counts
-                "value_count": None,
+                "value_count": 200,  # profiler's stored 50 is fewer than the true distinct count
                 "confidence": None,
                 "business_context": None,
             }
         ],
     }
 
-    rendered = format_context_for_prompt(context, max_sample_values=3, max_sample_value_chars=100)
+    rendered = format_context_for_prompt(context, max_sample_value_chars=100)
 
-    values_line = next(line for line in rendered.splitlines() if line.startswith("  Values:"))
-    shown = [v.strip() for v in values_line.removeprefix("  Values:").split(",")]
-    # COUNT cap: only 3 of the 50 values render.
-    assert len(shown) == 3
-    assert "v48" not in rendered
-    # LENGTH cap: the 500-char value is truncated, not served whole.
-    assert shown[0] == "x" * 100 + "..."
-    # The dict handed in is untouched — the unranked path may feed other
-    # readers (e.g. a future membership check) the FULL 50.
+    values_line = next(line for line in rendered.splitlines() if line.startswith("  Values"))
+    # Every one of the 50 stored values reaches the rendered text — no count cap.
+    assert "v48" in values_line
+    # The new disclosure: this fallback used to say nothing about the gap.
+    assert "(50 of 200 distinct)" in values_line
+    # LENGTH cap still applies.
+    assert "x" * 100 + "..." in values_line
+    assert "x" * 500 not in values_line
+    # The dict handed in is untouched.
     assert len(context["slice_definitions"][0]["values"]) == 50

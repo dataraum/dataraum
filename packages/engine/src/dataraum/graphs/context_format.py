@@ -124,30 +124,31 @@ def format_served_context(
         # Event-time axes (DAT-565): the answer agent picks the lens per question,
         # so render each with its granularity/range and one-line note. EVENT-role
         # only (DAT-780) — an attribute date (role='attribute') is a normal column
-        # in the table below, never presented here as a trend/time lens.
-        for tc in table.time_columns:
-            name = tc.get("column")
-            if not name or tc.get("role") != "event":
+        # in the table below, never presented here as a trend/time lens. Every field
+        # rides ONE relation (the graph's temporal_coverage edge, ADR-0024 d1): the
+        # role JSON and the observed profile are resolved there, not cross-referenced
+        # against the column list here — which used to drop any axis living only on
+        # the enriched layer (DAT-866).
+        for axis in table.time_axes:
+            if axis.role != "event":
                 continue
-            time_col = next((c for c in table.columns if c.column_name == name), None)
-            label = f"by {tc['aspect']}" if tc.get("aspect") else None
-            time_info = f"**Time column**: {name}" + (f" ({label})" if label else "")
-            if time_col:
-                time_parts = []
-                if time_col.detected_granularity:
-                    time_parts.append(time_col.detected_granularity)
-                if time_col.min_timestamp and time_col.max_timestamp:
-                    time_parts.append(f"{time_col.min_timestamp} to {time_col.max_timestamp}")
-                if time_col.span_days is not None:
-                    time_parts.append(f"{time_col.span_days:.0f}d span")
-                # Flag a discontinuous axis: a large worst-gap warns the agent the
-                # series isn't a clean continuum for period-over-period work.
-                if time_col.largest_gap_days:
-                    time_parts.append(f"largest gap {time_col.largest_gap_days:.0f}d")
-                if time_parts:
-                    time_info += f" — {', '.join(time_parts)}"
-            if tc.get("note"):
-                time_info += f". {tc['note']}"
+            label = f"by {axis.aspect}" if axis.aspect else None
+            time_info = f"**Time column**: {axis.column_name}" + (f" ({label})" if label else "")
+            time_parts = []
+            if axis.detected_granularity:
+                time_parts.append(axis.detected_granularity)
+            if axis.min_timestamp and axis.max_timestamp:
+                time_parts.append(f"{axis.min_timestamp} to {axis.max_timestamp}")
+            if axis.span_days is not None:
+                time_parts.append(f"{axis.span_days:.0f}d span")
+            # Flag a discontinuous axis: a large worst-gap warns the agent the
+            # series isn't a clean continuum for period-over-period work.
+            if axis.largest_gap_days:
+                time_parts.append(f"largest gap {axis.largest_gap_days:.0f}d")
+            if time_parts:
+                time_info += f" — {', '.join(time_parts)}"
+            if axis.note:
+                time_info += f". {axis.note}"
             meta_parts.append(time_info.rstrip(".") + ".")
         # Recurring identities (DAT-565): would-be foreign keys / cluster keys —
         # the agent uses these for "per <entity>" grouping when writing queries.

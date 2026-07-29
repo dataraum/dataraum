@@ -234,6 +234,7 @@ CREATE TABLE metadata_snapshot_head (
 CREATE TABLE metric_axis_additivity (
 	additivity_id VARCHAR NOT NULL, 
 	run_id VARCHAR NOT NULL, 
+	vertical VARCHAR NOT NULL, 
 	target_kind VARCHAR NOT NULL, 
 	target_key VARCHAR NOT NULL, 
 	axis_kind VARCHAR NOT NULL, 
@@ -260,6 +261,8 @@ CREATE TABLE metric_axis_additivity (
 CREATE INDEX ix_metric_axis_additivity_run_id ON metric_axis_additivity (run_id);
 
 CREATE INDEX ix_metric_axis_additivity_target_key ON metric_axis_additivity (target_key);
+
+CREATE INDEX ix_metric_axis_additivity_vertical ON metric_axis_additivity (vertical);
 
 CREATE TABLE metric_derives_from (
 	edge_id VARCHAR NOT NULL, 

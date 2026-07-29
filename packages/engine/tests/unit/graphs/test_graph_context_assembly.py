@@ -42,6 +42,10 @@ def _grounding_row(**overrides: Any) -> SimpleNamespace:
         "aggregation": "sum",
         "description": "d",
         "failed": False,
+        # og_grounding vertex properties (DAT-671 R6): the failure keys ride the
+        # grounded_by MATCH, not a second read of the provenance JSON.
+        "failure_mode": None,
+        "failure_reason": None,
     }
     base.update(overrides)
     return _row(**base)
@@ -74,17 +78,19 @@ def test_healthy_grounding_without_relation_skipped_loud() -> None:
 
 
 def test_failed_grounding_served_with_failure_keys() -> None:
-    rows = [_grounding_row(failed=True, relation=None, snippet_id="sn_f")]
-    prov = {
-        "sn_f": _row(
-            concept="revenue",
+    """The failure keys are ``og_grounding`` vertex PROPERTIES — they arrive on the
+    grounded_by MATCH row itself, no companion provenance read."""
+    rows = [
+        _grounding_row(
             failed=True,
+            relation=None,
+            snippet_id="sn_f",
             failure_mode="execution_failed",
             failure_reason="boom",
         )
-    }
+    ]
     out = _assemble_concept_contexts(
-        [("revenue", "measure")], [], {}, rows, [], prov, _TABLES, {}, []
+        [("revenue", "measure")], [], {}, rows, [], {"sn_f": "revenue"}, _TABLES, {}, []
     )
     g = out[0].groundings[0]
     assert g.failed is True
@@ -146,15 +152,13 @@ def test_where_predicates_non_list_json_degrades_loud_not_crash() -> None:
         assert g.select_expr == 'SUM("amount")'  # grounding itself still served
 
 
-def test_unresolved_concept_provenance_row_dropped_not_crashed() -> None:
-    """A current_groundings row whose concept names no active Concept has no
+def test_unresolved_concept_vertex_dropped_not_crashed() -> None:
+    """An ``og_grounding`` vertex whose concept names no active Concept has no
     grounded_by MATCH row — it must drop loud (log) and never surface, and the
     fold must not crash on it."""
-    prov = {
-        "sn_orphan": _row(concept="expenses", failed=False, failure_mode=None, failure_reason=None)
-    }
+    vertices = {"sn_1": "revenue", "sn_orphan": "expenses"}
     out = _assemble_concept_contexts(
-        [("revenue", "measure")], [], {}, [_grounding_row()], [], prov, _TABLES, {}, []
+        [("revenue", "measure")], [], {}, [_grounding_row()], [], vertices, _TABLES, {}, []
     )
     served = {g.snippet_id for c in out for g in c.groundings}
     assert "sn_orphan" not in served

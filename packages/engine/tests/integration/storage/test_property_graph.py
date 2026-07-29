@@ -798,11 +798,28 @@ def _units_and_additivity_stmts() -> list[str]:
     ]:
         stmts.append(
             "INSERT INTO metric_axis_additivity "
-            "(additivity_id, run_id, target_kind, target_key, axis_kind, axis_key, "
+            "(additivity_id, run_id, vertical, target_kind, target_key, axis_kind, axis_key, "
             " status, verdict, reason, abstain_reason, bucket_grain, created_at) "
-            f"VALUES ('{aid}', '{RUN}', '{kind}', '{key}', '{axis_kind}', '{axis_key}', "
-            f"'{status}', {verdict}, {reason}, {abstain}, {grain}, '{TS}')"
+            f"VALUES ('{aid}', '{RUN}', 'finance', '{kind}', '{key}', '{axis_kind}', "
+            f"'{axis_key}', '{status}', {verdict}, {reason}, {abstain}, {grain}, '{TS}')"
         )
+    # A verdict naming an ACTIVE finance concept ('accounts_payable') but computed
+    # under a DIFFERENT vertical — the post-vertical-change pre-promote window, where
+    # the promoted operating_model head (the verdict axis) and
+    # workspace_settings.active_vertical (the vocabulary axis) disagree. On the name
+    # alone this bound finance's accounts_payable concept and served a foreign
+    # vocabulary's verdict; the (vertical, name) join must give it no edge at all.
+    # NB the row necessarily sits under a target_key finance has no verdict for: one
+    # run has one vertical, and uq_metric_axis_additivity_target
+    # ((kind, key, axis_kind, axis_key, run_id)) makes two verticals per run
+    # impossible — which is exactly why `vertical` is provenance, not identity.
+    stmts.append(
+        "INSERT INTO metric_axis_additivity "
+        "(additivity_id, run_id, vertical, target_kind, target_key, axis_kind, axis_key, "
+        " status, verdict, reason, abstain_reason, bucket_grain, created_at) "
+        f"VALUES ('ma_ap_stale', '{RUN}', 'retail', 'measure', 'accounts_payable', "
+        f"'time', '*', 'classified', 'additive', NULL, NULL, NULL, '{TS}')"
+    )
     return stmts
 
 
@@ -2285,6 +2302,21 @@ def test_additivity_verdict_vertices_carry_the_per_axis_verdict(graph_engine: En
         ),
         # mk_unknown: an abstention is a row that SAYS SO, not an absence.
         ("metric", "mk_unknown", "time", "*", "abstained", None, None, "unknown_temporal", None),
+        # The other-vertical 'accounts_payable' verdict IS a vertex — og_additivity
+        # is deliberately not vertical-scoped (a metric target has no vertex to scope
+        # against, and scoping here would dangle the edges og_has_additivity keeps).
+        # Its scoping happens where it is RESOLVED — see the has_additivity test.
+        (
+            "measure",
+            "accounts_payable",
+            "time",
+            "*",
+            "classified",
+            "additive",
+            None,
+            None,
+            None,
+        ),
     }
 
 
@@ -2293,7 +2325,13 @@ def test_has_additivity_links_a_measure_concept_to_its_verdict(graph_engine: Eng
     over time?" resolves concept → verdict for a MEASURE. Only the measure verdict links
     (its target_key 'revenue' names an active concept); the metric verdict (mk_margin, a
     formula graph_id) names no concept and is reachable only by property on the vertex —
-    the graph never dangles (the og_grounded_by INNER-join discipline)."""
+    the graph never dangles (the og_grounded_by INNER-join discipline).
+
+    DAT-671 R6: the join resolves the FULL concept identity ``(vertical, name)``. The
+    seed carries a verdict for 'accounts_payable' — an ACTIVE finance concept — under
+    vertical='retail', the post-vertical-change pre-promote window where the promoted
+    verdicts and the active vocabulary disagree. It must produce NO edge; on the name
+    alone it hung a foreign vocabulary's verdict off finance's concept."""
     sql = (
         f"SELECT cname, axk, vd, rsn FROM GRAPH_TABLE ({_graph_ref()} "
         "MATCH (c IS concept_node)-[e IS has_additivity]->(a IS additivity_verdict) "
@@ -2304,6 +2342,8 @@ def test_has_additivity_links_a_measure_concept_to_its_verdict(graph_engine: Eng
         rows = {(r.cname, r.axk, r.vd, r.rsn) for r in conn.execute(text(sql))}
     # revenue is the only measure verdict; mk_margin (metric) never surfaces here.
     # Both its class row and its refining `period` axis row hang off the concept.
+    # accounts_payable is absent: its only verdict is the 'retail' one, and a
+    # foreign vocabulary's judgement must reach no concept here.
     assert rows == {
         ("revenue", "*", "semi_additive", "stock"),
         ("revenue", "period", "semi_additive", "stock"),

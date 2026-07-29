@@ -55,6 +55,17 @@ from dataraum.graphs.additivity import (
 from dataraum.storage import Base
 
 #: ``axis_key`` value meaning "every axis of this kind" — see the module note.
+#:
+#: HAND-MIRRORED cross-package (the worker/contracts.py discipline). The sentinel
+#: is a SERVED VALUE: the cockpit reads these rows straight off
+#: ``current_metric_axis_additivity`` and must recognise the class row to resolve
+#: most-specific-first, so it keeps its own copy in
+#: ``packages/cockpit/src/tools/concept-graph.ts`` (exported ``AXIS_KEY_ALL``) and
+#: ``packages/cockpit/src/tools/drill-axes.ts``. A drift here silently turns every
+#: class-level verdict into an unrecognised concrete axis — the drill would then
+#: find no verdict for an axis it has one for. Pinned from this side by
+#: ``tests/unit/graphs/test_hand_mirrored_constants.py``, from the cockpit side by
+#: ``concept-graph-load.integration.test.ts`` against real engine-served rows.
 AXIS_KEY_ALL = "*"
 
 #: Bucket grains a time axis can be served at, coarsest-last. Mirrors the
@@ -138,6 +149,16 @@ class MetricAxisAdditivity(Base):
     )
     # Snapshot version axis (DAT-413): the operating_model run that computed this.
     run_id: Mapped[str] = mapped_column(String, nullable=False, index=True)
+    #: The vocabulary this verdict was computed against. NOT part of the identity
+    #: (one run has one vertical, so ``run_id`` already pins it) — it is the row's
+    #: PROVENANCE, and it exists because ``target_key`` is only HALF of a concept's
+    #: stable ``(vertical, name)`` identity. ``og_has_additivity`` joins on the full
+    #: pair, so a verdict computed under the previous vertical cannot bind to a
+    #: same-named concept of the newly-framed one in the window between a vertical
+    #: change and the next operating_model promotion. Mirrors its own twin,
+    #: :class:`~dataraum.analysis.semantic.reconciliation_db_models.ConceptReconciliation`,
+    #: written by the same phase in the same run.
+    vertical: Mapped[str] = mapped_column(String, nullable=False, index=True)
     target_kind: Mapped[str] = mapped_column(String, nullable=False)  # 'metric' | 'measure'
     target_key: Mapped[str] = mapped_column(String, nullable=False, index=True)
     axis_kind: Mapped[str] = mapped_column(String, nullable=False)  # 'time' | 'categorical'

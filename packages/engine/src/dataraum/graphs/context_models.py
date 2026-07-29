@@ -92,6 +92,30 @@ class ColumnContext:
 
 
 @dataclass
+class TimeAxisContext:
+    """One DECLARED time axis of a relation, served from ``temporal_coverage``.
+
+    ONE home for "what are this relation's time axes and how good are they": the
+    element view already resolves the authored role JSON
+    (``table_entities.time_columns``) against the persisted temporal profile,
+    including the DAT-866 layered name resolution that finds an anchor existing
+    only on the enriched view. Everything here is observed or authored — an
+    unmeasurable window stays ``None``, never fabricated.
+    """
+
+    column_name: str
+    role: str | None = None  # 'event' (a trend lens) | 'attribute' (a plain date)
+    aspect: str | None = None  # the authored label, e.g. 'ship' / 'booking'
+    note: str | None = None  # the author's one-line meaning of the axis
+    is_anchor: bool = False  # the DECLARED anchor (not the resolved anchor axis)
+    detected_granularity: str | None = None
+    min_timestamp: str | None = None
+    max_timestamp: str | None = None
+    span_days: float | None = None
+    largest_gap_days: float | None = None
+
+
+@dataclass
 class TableContext:
     """Context for a single table."""
 
@@ -108,8 +132,10 @@ class TableContext:
     # From TableEntity
     table_description: str | None = None
     grain_columns: list[str] = field(default_factory=list)
-    # DAT-565: all event-time axes — [{"column", "aspect", "note"}, ...].
-    time_columns: list[dict[str, Any]] = field(default_factory=list)
+    # DAT-565: all declared time axes, served from the graph's temporal_coverage
+    # edge (never the raw TableEntity JSON — that loses the enriched-layer anchors
+    # and carries no observed window).
+    time_axes: list[TimeAxisContext] = field(default_factory=list)
     # DAT-565: recurring identities (would-be FKs) — [{"column", "note"}, ...].
     identity_columns: list[dict[str, Any]] = field(default_factory=list)
 
@@ -552,5 +578,6 @@ __all__ = [
     "RelationshipContext",
     "SliceContext",
     "TableContext",
+    "TimeAxisContext",
     "ValidationContext",
 ]

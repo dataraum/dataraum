@@ -16,9 +16,26 @@ Post-creation: grain is the view's CONTRACT (a fan-out view silently corrupts
 every downstream number). Because the view is a one-hop STAR (every dimension
 LEFT JOINs the fact, never another dimension), each join's fan-out is
 independent — so a grain violation drops the OFFENDING join and rebuilds from
-the survivors (DAT-801), never the fact's whole view. A belt-and-braces
-whole-view COUNT then asserts the composed grain; if it ever fails, the
-star-independence assumption broke and the view is dropped.
+the survivors (DAT-801). That per-join filter is the ONE disclosed
+partial-degradation path in this phase: real-world dirty data legitimately
+fans out a single neighbour, the drop is logged loud, and the fact keeps a
+narrower — still grain-correct — view.
+
+Everything else here fails the RUN. Two per-fact paths used to warn-and-continue,
+each shipping a silently incomplete catalog:
+
+* the view CREATE raising — the fact then has no enriched view at all, and the
+  grounding resolvers (DAT-812) have no self-describing surface to resolve
+  against;
+* the belt-and-braces whole-view COUNT disagreeing with the fact row count
+  after per-join filtering — that can only mean the star-independence
+  assumption above broke, i.e. the reasoning the per-join filter rests on is
+  wrong.
+
+Neither is dirty data; both are broken invariants, and a phase that survives
+them hands downstream a half-resolvable catalog that looks complete. They now
+return ``PhaseResult.failed`` naming the fact table and the broken invariant,
+so Temporal surfaces/retries the run instead.
 """
 
 from __future__ import annotations
@@ -356,7 +373,6 @@ class EnrichedViewsPhase(BasePhase):
         judged = llm_recommendations is not None
 
         views_created = 0
-        views_dropped = 0
         joins_dropped = 0
 
         for fact_entity in fact_entities:
@@ -489,17 +505,35 @@ class EnrichedViewsPhase(BasePhase):
                     else None
                 )
 
-            # Create view in DuckDB
+            # Create view in DuckDB. A raise here is not dirty data — the SQL is
+            # composed from this run's own catalog against tables it just resolved —
+            # so the fact would silently end up with NO enriched view while the phase
+            # reported success, and every metric grounded on it would degrade to the
+            # flagged default (the DAT-812 invariant below, per fact instead of
+            # globally). Fail the run naming the fact.
             try:
                 ctx.duckdb_conn.execute(view_sql)
             except Exception as e:
-                logger.warning("view_creation_failed", view_name=view_name, error=str(e))
-                continue
+                logger.error(
+                    "view_creation_failed",
+                    view_name=view_name,
+                    fact_table=fact_table.table_name,
+                    error=str(e),
+                )
+                return PhaseResult.failed(
+                    f"enriched_views could not create the view for fact table "
+                    f"'{fact_table.table_name}' ({view_name}): {e} — every fact with "
+                    f"dimension joins must expose a self-describing enriched view "
+                    f"(DAT-812), so a half-built view set is a broken run, not a "
+                    f"partial result"
+                )
 
             # Belt-and-braces (DAT-801): per-join filtering above already guarantees
-            # the grain, so this whole-view COUNT should never fail. If it does, the
-            # star-independence assumption broke — do NOT silently ship a fan-out view
-            # (grain is the view's CONTRACT). Log LOUD and drop the view.
+            # the grain, so this whole-view COUNT can only fail if the star-
+            # independence assumption the filter rests on broke. That is a defect in
+            # the reasoning, not dirty data — the per-join filter is the disclosed
+            # degradation path, this is not. Drop the fan-out view (grain is the
+            # view's CONTRACT — never ship one) and fail the run.
             is_grain_verified = self._verify_grain(
                 ctx.duckdb_conn,
                 view_target=view_fqn,
@@ -518,8 +552,15 @@ class EnrichedViewsPhase(BasePhase):
                     ctx.duckdb_conn.execute(f"DROP VIEW IF EXISTS {view_fqn}")
                 except Exception:
                     pass
-                views_dropped += 1
-                continue
+                return PhaseResult.failed(
+                    f"enriched_views: the composed view for fact table "
+                    f"'{fact_table.table_name}' ({view_name}) does not preserve the "
+                    f"fact grain (expected {fact_table.row_count} rows) even though "
+                    f"all {len(fqn_joins)} surviving join(s) passed the per-join "
+                    f"grain probe — the one-hop-star independence invariant the "
+                    f"per-join filter rests on is broken (DAT-801); the fan-out view "
+                    f"was dropped rather than shipped"
+                )
 
             # Build evidence with LLM reasoning if available
             evidence: dict[str, Any] = {}
@@ -635,6 +676,10 @@ class EnrichedViewsPhase(BasePhase):
                 }
                 for j, pair in joins_with_ids
             ]
+            # Always True here — a False verdict now fails the run above. The column
+            # stays as the persisted assertion readers filter on (engine phases +
+            # the cockpit's drill/list-tables tools), and it still carries "verified"
+            # honestly for a fact whose row_count was unmeasurable.
             view_record.is_grain_verified = is_grain_verified
             view_record.evidence = evidence if evidence else None
             view_record.view_table_id = view_table.table_id if view_table else None
@@ -665,18 +710,20 @@ class EnrichedViewsPhase(BasePhase):
         # bare typed name the resolvers can't resolve and degrade to the flagged default.
         # That is a broken run, not a clean empty result: fail loud so Temporal
         # surfaces/retries it rather than shipping a half-resolvable catalog.
+        # Creation and grain failures already returned above, so reaching here with
+        # zero views means every fact entity was skipped for want of a materialized
+        # typed table.
         if views_created == 0:
             return PhaseResult.failed(
                 f"enriched_views registered 0 views for {len(fact_entities)} fact "
-                f"table(s) ({views_dropped} dropped on grain verification) — the "
-                f"self-describing-view invariant the grounding resolvers depend on is "
-                f"broken (DAT-812)"
+                f"table(s) — no fact entity resolved to a materialized typed table, so "
+                f"the self-describing-view invariant the grounding resolvers depend on "
+                f"is broken (DAT-812)"
             )
 
         return PhaseResult.success(
             outputs={
                 "enriched_views": views_created,
-                "views_dropped": views_dropped,
                 "joins_dropped": joins_dropped,
                 "fact_tables": len(fact_entities),
             },

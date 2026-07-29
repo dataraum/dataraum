@@ -239,6 +239,7 @@ def _verdict_stub(rows: list[tuple[str, str, AxisVerdict | None, str | None]]):
             session.add(
                 MetricAxisAdditivity(
                     run_id=run_id,
+                    vertical="financial_reporting",
                     target_kind=target_kind,
                     target_key=target_key,
                     axis_kind=AxisKind.CATEGORICAL.value,

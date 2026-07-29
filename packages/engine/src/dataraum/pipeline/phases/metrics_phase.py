@@ -371,6 +371,7 @@ class MetricsPhase(BasePhase):
             graphs=graphs,
             declared_keys=set(declared_defs),
             workspace_id=schema_mapping_id,
+            vertical=vertical,
             run_id=run_id,
             catalogue_run_id=catalogue_run_id,
         )
@@ -571,6 +572,7 @@ def _persist_additivity_verdicts(
     graphs: dict[str, TransformationGraph],
     declared_keys: set[str],
     workspace_id: str,
+    vertical: str,
     run_id: str,
     catalogue_run_id: str | None,
 ) -> None:
@@ -659,7 +661,7 @@ def _persist_additivity_verdicts(
             collected.extend(_class_rows(graph_id, AbstainReason.UNRESOLVED_GROUNDING))
             continue
 
-    rows = [_verdict_row(run_id, v) for v in _dedupe_verdicts(collected)]
+    rows = [_verdict_row(run_id, vertical, v) for v in _dedupe_verdicts(collected)]
     if not rows:
         _log.info("metric_additivity_persisted", count=0, declared=len(declared_keys))
         return
@@ -728,10 +730,16 @@ def _claims_less(row: VerdictRow, prior: VerdictRow) -> bool:
     return _VERDICT_CLAIM_RANK.get(row_verdict, 3) < _VERDICT_CLAIM_RANK.get(prior_verdict, 3)
 
 
-def _verdict_row(run_id: str, v: VerdictRow) -> dict[str, object]:
-    """One ``metric_axis_additivity`` row from a resolved verdict."""
+def _verdict_row(run_id: str, vertical: str, v: VerdictRow) -> dict[str, object]:
+    """One ``metric_axis_additivity`` row from a resolved verdict.
+
+    ``vertical`` rides as provenance, not identity: a ``target_key`` is only half
+    of a concept's stable ``(vertical, name)`` key, and ``og_has_additivity`` joins
+    on the full pair.
+    """
     return {
         "run_id": run_id,
+        "vertical": vertical,
         "target_kind": v.target_kind,
         "target_key": v.target_key,
         "axis_kind": v.axis_kind,

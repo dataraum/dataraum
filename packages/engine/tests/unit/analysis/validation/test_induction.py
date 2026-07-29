@@ -372,7 +372,7 @@ def _agent(provider: _FakeProvider) -> ValidationInductionAgent:
     config.features.validation_induction.effort = "low"
     config.limits.max_output_tokens_per_request = 8000
     renderer = MagicMock()
-    renderer.render_split.return_value = ("system", "user", 0.0)
+    renderer.render_split.return_value = ("system", "user")
     return ValidationInductionAgent(config=config, provider=provider, prompt_renderer=renderer)
 
 

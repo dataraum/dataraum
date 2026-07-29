@@ -34,6 +34,33 @@ if TYPE_CHECKING:
 logger = get_logger(__name__)
 
 
+def _capped_tables_for_prompt(tables: list[dict[str, Any]], *, limit: int) -> list[dict[str, Any]]:
+    """A prompt-safe copy of the table/column inventory, value samples capped.
+
+    ``context_data["tables"]`` (built by ``slicing_phase._build_context_data``)
+    is the SAME structure the phase's deterministic post-processing reads
+    AFTER this call returns: ``score_axis``'s ``bucket_counts`` and the
+    ``distinct_values`` persistence fallback both read each column's
+    ``top_values`` in full (up to the profiler's stored top-K) to compute a
+    real relevance score and the persisted evidence for an un-ranked column.
+    Capping that shared structure in place would silently shrink those
+    (a semantics change, not a prompt bound) — so only THIS copy, serialized
+    into the prompt, is bounded to ``privacy.max_sample_values`` (DAT-671).
+    Each value's count/percentage rides along unchanged; only the list
+    LENGTH is cut.
+    """
+    return [
+        {
+            **table,
+            "columns": [
+                {**col, "top_values": (col.get("top_values") or [])[:limit]}
+                for col in table.get("columns", [])
+            ],
+        }
+        for table in tables
+    ]
+
+
 class SlicingAgent(LLMFeature):
     """LLM-powered slicing analysis agent.
 
@@ -92,8 +119,15 @@ class SlicingAgent(LLMFeature):
         # Build context for prompt
         constraints = context_data.get("constraints", {})
         tables = context_data.get("tables", [])
+        # DAT-671: tables_json is prompt content — cap each column's served
+        # top_values here, NOT on context_data["tables"] itself (see
+        # _capped_tables_for_prompt's docstring for why the shared structure
+        # must stay uncapped).
+        capped_tables = _capped_tables_for_prompt(
+            tables, limit=self.config.privacy.max_sample_values
+        )
         context = {
-            "tables_json": json.dumps(tables, indent=2),
+            "tables_json": json.dumps(capped_tables, indent=2),
             "num_tables": len(tables),
             "table_names": ", ".join(t["table_name"] for t in tables),
             "max_recommendations": constraints.get("max_recommendations", 6),
@@ -101,9 +135,7 @@ class SlicingAgent(LLMFeature):
 
         # Render prompt with system/user split
         try:
-            system_prompt, user_prompt, temperature = self.renderer.render_split(
-                "slicing_analysis", context
-            )
+            system_prompt, user_prompt = self.renderer.render_split("slicing_analysis", context)
         except Exception as e:
             return Result.fail(f"Failed to render prompt: {e}")
 
@@ -120,7 +152,6 @@ class SlicingAgent(LLMFeature):
             label="slicing_analysis",
             effort=feature_config.effort,
             max_tokens=self.config.limits.max_output_tokens_per_request,
-            temperature=temperature,
             model=model,
         )
 

@@ -31,11 +31,8 @@ def cycles() -> PromptTemplate:
 
 
 def test_renders_with_the_declared_input() -> None:
-    system, user, temperature = PromptRenderer().render_split(
-        "business_cycles", {"context": "metadata"}
-    )
+    system, user = PromptRenderer().render_split("business_cycles", {"context": "metadata"})
     assert system and user
-    assert temperature == 0.0
 
 
 def test_names_the_chain_conditioned_evidence(cycles: PromptTemplate) -> None:

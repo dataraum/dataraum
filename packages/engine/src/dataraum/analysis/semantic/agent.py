@@ -137,7 +137,11 @@ class SemanticAgent(LLMFeature):
 
         # Capped at the configured prompt budget (DAT-890) — same cut as the
         # per-column agent: this prompt was 72% raw sample bytes.
-        samples = prompt_samples(profiles, limit=self.config.privacy.max_sample_values)
+        samples = prompt_samples(
+            profiles,
+            limit=self.config.privacy.max_sample_values,
+            max_chars=self.config.privacy.max_sample_value_chars,
+        )
         tables_json = self._build_tables_json(profiles, samples)
 
         ontology_def = load_workspace_concepts(session, ontology)
@@ -177,9 +181,7 @@ class SemanticAgent(LLMFeature):
         }
 
         try:
-            system_prompt, user_prompt, temperature = self.renderer.render_split(
-                "semantic_per_table", context
-            )
+            system_prompt, user_prompt = self.renderer.render_split("semantic_per_table", context)
         except Exception as e:
             return Result.fail(f"Failed to render semantic_per_table prompt: {e}")
 
@@ -191,7 +193,6 @@ class SemanticAgent(LLMFeature):
             label="semantic_per_table",
             effort=feature_config.effort,
             max_tokens=self.config.limits.max_output_tokens_per_request,
-            temperature=temperature,
             model=model,
         )
 
@@ -680,21 +681,6 @@ class SemanticAgent(LLMFeature):
 
         return "\n".join(lines)
 
-    @staticmethod
-    def _truncate_sample(value: Any, max_length: int = 100) -> Any:
-        """Truncate a sample value if it exceeds max_length.
-
-        Args:
-            value: Sample value (any type)
-            max_length: Maximum string length before truncation
-
-        Returns:
-            Original value or truncated string
-        """
-        if isinstance(value, str) and len(value) > max_length:
-            return value[:max_length] + "..."
-        return value
-
     def _build_tables_json(
         self, profiles: list[ColumnProfile], samples: dict[tuple[str, str], list[Any]]
     ) -> list[dict[str, Any]]:
@@ -725,9 +711,7 @@ class SemanticAgent(LLMFeature):
                 "column_name": column_name,
                 "distinct_count": profile.distinct_count,
                 "cardinality_ratio": round(profile.cardinality_ratio, 4),  # Helps identify keys
-                "sample_values": [
-                    self._truncate_sample(v) for v in samples.get((table_name, column_name), [])
-                ],
+                "sample_values": samples.get((table_name, column_name), []),
             }
 
             # Include original column name when it differs from normalized name

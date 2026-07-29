@@ -1092,9 +1092,7 @@ class GraphAgent(LLMFeature):
 
         # Render prompt with system/user split.
         try:
-            system_prompt, user_prompt, temperature = self.renderer.render_split(
-                prompt_name, prompt_context
-            )
+            system_prompt, user_prompt = self.renderer.render_split(prompt_name, prompt_context)
         except Exception as e:
             return Result.fail(f"Failed to render prompt: {e}")
 
@@ -1164,7 +1162,6 @@ class GraphAgent(LLMFeature):
                     label=prompt_name,
                     effort=feature_config.effort if feature_config else None,
                     max_tokens=self.config.limits.max_output_tokens_per_request,
-                    temperature=temperature,
                     model=model,
                 )
             ).unwrap()

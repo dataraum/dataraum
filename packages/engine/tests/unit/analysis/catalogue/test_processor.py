@@ -117,7 +117,7 @@ class TestPersistColumnConcepts:
 
         result = persist_column_concepts(
             session, concepts, [table.table_id], annotated_by="m", run_id=baseline_run_id()
-        )
+        ).unwrap()
         session.flush()
 
         assert result.resolved == 2
@@ -182,7 +182,7 @@ class TestPersistColumnConcepts:
             [table.table_id],
             annotated_by="m",
             run_id=baseline_run_id(),
-        )
+        ).unwrap()
         session.flush()
 
         assert result.with_meaning == 0
@@ -196,13 +196,21 @@ class TestPersistColumnConcepts:
 
         Two entries for one (table, column) share the (column_id, run_id) upsert
         key — without dedup Postgres raises CardinalityViolation. Last wins.
+
+        Deliberately a FOLD, not a typed failure (unlike the stricter
+        ``persist_column_annotations`` rule, DAT-671): ``_retry_missing_coverage``
+        (DAT-725) relies on this exact fold to make its bounded retry's filled-in
+        entry win over the first pass's blank one for the same column — see
+        ``test_retry_never_overwrites_the_first_emission`` and
+        ``test_blank_meaning_counts_as_missing_and_is_refilled`` below, and the
+        docstring on ``persist_column_concepts``.
         """
         table = _table_with_columns(session, "orders", ["total"])
         concepts = [_cc("orders", "total", "gross"), _cc("orders", "total", "net")]
 
         result = persist_column_concepts(
             session, concepts, [table.table_id], annotated_by="m", run_id=baseline_run_id()
-        )
+        ).unwrap()
         session.flush()
 
         assert result.resolved == 1  # collapsed
@@ -214,7 +222,8 @@ class TestPersistColumnConcepts:
     def test_unresolvable_concept_dropped_and_counted(self, session) -> None:
         """DAT-768 path #2: a concept whose (table, column) name resolves to no
         column is dropped and the breakdown surfaces it — never indistinguishable
-        from an empty emission."""
+        from an empty emission. DAT-671: the drop also rides the returned
+        ``Result.warnings`` — no longer DEBUG-only."""
         table = _table_with_columns(session, "orders", ["total"])
 
         result = persist_column_concepts(
@@ -226,9 +235,12 @@ class TestPersistColumnConcepts:
         )
         session.flush()
 
-        assert result.emitted == 1
-        assert result.resolved == 0
-        assert result.dropped_unresolved == 1
+        assert len(result.warnings) == 1
+        assert "orders.ghost" in result.warnings[0]
+        counts = result.unwrap()
+        assert counts.emitted == 1
+        assert counts.resolved == 0
+        assert counts.dropped_unresolved == 1
         assert list(session.execute(select(ColumnConceptDB)).scalars()) == []
 
 

@@ -208,7 +208,7 @@ def _agent_over_status_data(*, where: list[str], filters_status: bool) -> GraphA
     mock_config.limits.cache_ttl_seconds = 3600
     mock_config.features.graph_sql_generation = None
     mock_renderer = MagicMock()
-    mock_renderer.render_split.return_value = ("System prompt", "Test prompt", 0.0)
+    mock_renderer.render_split.return_value = ("System prompt", "Test prompt")
     agent = GraphAgent(config=mock_config, provider=MagicMock(), prompt_renderer=mock_renderer)
     agent.provider.get_model_for_tier.return_value = "test-model"
     response = _grounding_response(
@@ -394,7 +394,7 @@ class TestGraphAgentIntegration:
         mock_config.features.graph_sql_generation = None
 
         mock_renderer = MagicMock()
-        mock_renderer.render_split.return_value = ("System prompt", "Test prompt", 0.0)
+        mock_renderer.render_split.return_value = ("System prompt", "Test prompt")
 
         agent = GraphAgent(
             config=mock_config,
@@ -499,7 +499,7 @@ def _agent_with_parts(
     mock_config.limits.cache_ttl_seconds = 3600
     mock_config.features.graph_sql_generation = None
     mock_renderer = MagicMock()
-    mock_renderer.render_split.return_value = ("System prompt", "Test prompt", 0.0)
+    mock_renderer.render_split.return_value = ("System prompt", "Test prompt")
 
     agent = GraphAgent(config=mock_config, provider=MagicMock(), prompt_renderer=mock_renderer)
     agent.provider.get_model_for_tier.return_value = "test-model"
@@ -1037,7 +1037,7 @@ class TestGraphAgentSnippets:
         mock_config.features.graph_sql_generation = None
 
         mock_renderer = MagicMock()
-        mock_renderer.render_split.return_value = ("System prompt", "Test prompt", 0.0)
+        mock_renderer.render_split.return_value = ("System prompt", "Test prompt")
 
         agent = GraphAgent(
             config=mock_config,
@@ -1093,7 +1093,7 @@ class TestGraphAgentSnippets:
         mock_config.limits.cache_ttl_seconds = 3600
 
         mock_renderer = MagicMock()
-        mock_renderer.render_split.return_value = ("System prompt", "Test prompt", 0.0)
+        mock_renderer.render_split.return_value = ("System prompt", "Test prompt")
 
         # Pre-populate snippet library with a matching snippet
         library = SnippetLibrary(session, workspace_id=baseline_run_id())
@@ -1147,7 +1147,7 @@ class TestGraphAgentSnippets:
         mock_config.limits.cache_ttl_seconds = 3600
 
         mock_renderer = MagicMock()
-        mock_renderer.render_split.return_value = ("System prompt", "Test prompt", 0.0)
+        mock_renderer.render_split.return_value = ("System prompt", "Test prompt")
 
         # Pre-populate snippet
         library = SnippetLibrary(session, workspace_id=baseline_run_id())

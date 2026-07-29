@@ -56,7 +56,7 @@ def _agent_with(
 
 def _mocks() -> tuple[MagicMock, MagicMock]:
     renderer = MagicMock()
-    renderer.render_split.return_value = ("system", "user", 0.0)
+    renderer.render_split.return_value = ("system", "user")
     provider = MagicMock()
     provider.get_model_for_tier.side_effect = lambda tier: f"model-{tier}"
     # No tool_calls → _generate_sql returns Result.fail AFTER prompt selection, which

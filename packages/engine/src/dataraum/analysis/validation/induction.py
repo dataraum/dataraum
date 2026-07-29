@@ -580,7 +580,7 @@ class ValidationInductionAgent(LLMFeature):
 
         context = {"served_graph": served_graph, "conventions": conventions or "None"}
         try:
-            system_prompt, user_prompt, temperature = self.renderer.render_split(
+            system_prompt, user_prompt = self.renderer.render_split(
                 INDUCTION_TEMPLATE_NAME, context
             )
         except Exception as e:  # noqa: BLE001 - render failure is a hard, non-retryable stop
@@ -594,7 +594,6 @@ class ValidationInductionAgent(LLMFeature):
             label=INDUCTION_TEMPLATE_NAME,
             effort=feature_config.effort,
             max_tokens=self.config.limits.max_output_tokens_per_request,
-            temperature=temperature,
             model=model,
         )
         # converse raises a typed ProviderError on transient failure — it rides to the

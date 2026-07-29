@@ -15,7 +15,6 @@
 name: dimension_alias
 version: "1.0.0"
 description: Within-view alias identity — true relabeling vs coincidental bijection (DAT-762)
-temperature: 0.1
 
 system_prompt: |
   <role>

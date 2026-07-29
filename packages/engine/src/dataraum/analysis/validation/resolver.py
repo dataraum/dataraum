@@ -46,6 +46,7 @@ def get_multi_table_schema_for_llm(
     duckdb_conn: duckdb.DuckDBPyConnection | None = None,
     *,
     base_runs: BaseRunMap,
+    max_sample_values: int = 10,
 ) -> dict[str, Any]:
     """Get schemas for multiple tables with semantic annotations and relationships.
 
@@ -61,6 +62,16 @@ def get_multi_table_schema_for_llm(
         base_runs: The run's pinned upstream heads. An absent pin
             (``relationship_run_id is None`` / table missing from
             ``semantic_runs``) reads EMPTY — fail-closed, never cross-run.
+        max_sample_values: ``privacy.max_sample_values`` — caps each column's
+            served ``distinct_values`` list (DAT-671 prompt-content bounds
+            policy). This function's ENTIRE output feeds only the validation
+            prompt (``format_multi_table_schema_for_prompt``, the sole
+            consumer), so capping here is safe — unlike the cycles builder's
+            slice value_counts, nothing else reads this copy. Defaults to the
+            shipped ``privacy.max_sample_values`` so callers that pre-date
+            this cap keep behaving identically; the real call site
+            (``validation_phase.py``) passes the loaded config value
+            explicitly.
 
     Returns:
         Dict with:
@@ -229,11 +240,13 @@ def get_multi_table_schema_for_llm(
     )
     slices = curated.served
 
-    # Build column_id → distinct_values lookup
+    # Build column_id → distinct_values lookup, capped per column (DAT-671:
+    # the persisted list can carry up to the profiler's stored top-K when no
+    # LLM ranking judged it — see slicing_phase.py's distinct_values fallback).
     column_slices: dict[str, list[str]] = {}
     for sl in slices:
         if sl.distinct_values:
-            column_slices[sl.column_id] = sl.distinct_values
+            column_slices[sl.column_id] = sl.distinct_values[:max_sample_values]
 
     # Attach slice values to table schemas
     for table in tables:
@@ -532,8 +545,10 @@ def format_multi_table_schema_for_prompt(schema: dict[str, Any]) -> str:
                     col_line += f' temporal_behavior="{sem["temporal_behavior"]}"'
                 if sem.get("stored_sign"):
                     col_line += f' stored_sign="{sem["stored_sign"]}"'
+                # Authored metadata prose (DAT-671 prompt-content bounds
+                # policy): not capped — the prior [:500] cut was deleted here.
                 if sem.get("business_description"):
-                    desc = _attr(sem["business_description"][:500])
+                    desc = _attr(sem["business_description"])
                     col_line += f' description="{desc}"'
 
             # Time-column semantics (DAT-870): the catalogue's reading of what

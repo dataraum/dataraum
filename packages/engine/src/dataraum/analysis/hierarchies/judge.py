@@ -207,7 +207,7 @@ class DimensionIdentityJudge(LLMFeature):
         tier = feature.model_tier if feature else "balanced"
         effort = feature.effort if feature else None
         try:
-            system_prompt, user_prompt, temperature = self.renderer.render_split(template, context)
+            system_prompt, user_prompt = self.renderer.render_split(template, context)
         except Exception as e:  # noqa: BLE001 — template errors are config errors
             return Result.fail(f"Failed to render {template} prompt: {e}")
 
@@ -219,7 +219,6 @@ class DimensionIdentityJudge(LLMFeature):
             label=template,
             effort=effort,
             max_tokens=self.config.limits.max_output_tokens_per_request,
-            temperature=temperature,
             model=model,
         )
         response = self.provider.converse(request).unwrap()

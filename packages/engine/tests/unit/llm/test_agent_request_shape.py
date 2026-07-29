@@ -53,7 +53,7 @@ def _provider(config: LLMConfig) -> MagicMock:
 
 def _renderer() -> MagicMock:
     renderer = MagicMock()
-    renderer.render_split.return_value = ("system", "user", 0.0)
+    renderer.render_split.return_value = ("system", "user")
     return renderer
 
 
@@ -184,7 +184,9 @@ def test_business_cycles(config: LLMConfig, monkeypatch: pytest.MonkeyPatch) -> 
         "dataraum.analysis.cycles.agent.build_cycle_detection_context",
         lambda *a, **k: {"tables": [], "summary": {}},
     )
-    monkeypatch.setattr("dataraum.analysis.cycles.agent.format_context_for_prompt", lambda c: "CTX")
+    monkeypatch.setattr(
+        "dataraum.analysis.cycles.agent.format_context_for_prompt", lambda c, **k: "CTX"
+    )
     provider = _provider(config)
     agent = BusinessCycleAgent(config, provider, _renderer())
 

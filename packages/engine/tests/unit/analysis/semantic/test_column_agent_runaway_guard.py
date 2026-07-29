@@ -98,7 +98,7 @@ def _config() -> MagicMock:
 
 def _agent(provider: MagicMock, renderer: MagicMock | None = None) -> ColumnAnnotationAgent:
     renderer = renderer or MagicMock()
-    renderer.render_split.return_value = ("system prompt", "user prompt", 0.0)
+    renderer.render_split.return_value = ("system prompt", "user prompt")
     return ColumnAnnotationAgent(config=_config(), provider=provider, prompt_renderer=renderer)
 
 

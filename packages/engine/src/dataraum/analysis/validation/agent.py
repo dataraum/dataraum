@@ -450,7 +450,7 @@ class ValidationAgent(LLMFeature):
 
         # Render prompt using template
         try:
-            system_prompt, user_prompt, temperature = self.renderer.render_split(
+            system_prompt, user_prompt = self.renderer.render_split(
                 SQL_GENERATION_TEMPLATE_NAME, context
             )
         except Exception as e:
@@ -469,7 +469,6 @@ class ValidationAgent(LLMFeature):
             label="validation_sql",
             effort=feature_config.effort,
             max_tokens=self.config.limits.max_output_tokens_per_request,
-            temperature=temperature,
             model=model,
         )
 

@@ -15,9 +15,6 @@ name: enrichment_analysis
 version: "2.0.0"
 description: Identify related tables whose columns usefully extend the main datasets
 
-# Temperature (0.0 = deterministic, 1.0 = creative)
-temperature: 0.0
-
 # System prompt - defines role and behavior
 system_prompt: |
   You are a senior data analyst specializing in dimensional modeling and data enrichment.

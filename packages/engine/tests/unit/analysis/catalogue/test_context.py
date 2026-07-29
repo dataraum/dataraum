@@ -147,6 +147,7 @@ def _build(session, tables: list[Table], **kw) -> dict[str, str]:
         session_table_ids=table_ids,
         run_id=kw.get("run_id", baseline_run_id()),
         sample_limit=kw.get("sample_limit", 10),
+        sample_char_limit=kw.get("sample_char_limit", 100),
     )
 
 

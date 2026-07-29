@@ -14,9 +14,6 @@ name: slicing_analysis
 version: "5.0.0"
 description: Judge which cataloged dimensions are business breakdown axes
 
-# Temperature (0.0 = deterministic, 1.0 = creative)
-temperature: 0.0
-
 # System prompt - defines role and behavior
 system_prompt: |
   <role>

@@ -2,16 +2,19 @@
 
 Pins, for every LLM label the engine ships, the EXACT kwargs the provider
 chokepoint hands to the Anthropic client — ``model``, ``max_tokens``,
-``output_config.effort``, ``thinking``, ``temperature`` — read from the REAL
-``llm/config.yaml`` rather than a fixture, so a config edit that silently moves
-an agent's configuration fails here instead of in an eval run.
+``output_config.effort``, ``thinking`` — read from the REAL ``llm/config.yaml``
+rather than a fixture, so a config edit that silently moves an agent's
+configuration fails here instead of in an eval run. No label ever sends a
+sampling param: ``ConversationRequest`` carries no ``temperature`` field
+(DAT-889) — the model family this tier runs on exposes no sampling knobs and
+never honoured it.
 
 Why this exists: the DAT-807 mechanism swap (forced ``tool_choice`` →
 ``output_config.format``) had to be a pure mechanism change. The eval compares
 one post-change run against the on-disk baseline, so ANY drift in model, token
-budget, effort, thinking, or temperature would confound the comparison. The
-last test states that invariant directly: the only structured-output-related
-difference in the request is ``output_config.format``.
+budget, effort, or thinking would confound the comparison. The last test
+states that invariant directly: the only structured-output-related difference
+in the request is ``output_config.format``.
 
 These are the CONFIGURED values, not aspirations — update the table only
 together with a deliberate config change.
@@ -137,7 +140,6 @@ def _request_for(label: str, config: LLMConfig, *, with_schema: bool) -> Convers
         max_tokens=config.limits.max_output_tokens_per_request,
         effort=expected["effort"],
         thinking=expected["thinking"],
-        temperature=0.0,
         label=label,
         output_schema=_SCHEMA if with_schema else None,
     )
@@ -173,8 +175,8 @@ def test_request_kwargs_are_pinned_per_label(
     assert kwargs["max_tokens"] == config.limits.max_output_tokens_per_request
     assert kwargs["output_config"]["effort"] == expected["effort"]
     assert kwargs["output_config"]["format"]["type"] == "json_schema"
-    # Sonnet 5-class models reject a non-default temperature (400); the whole
-    # engine tier runs on one, so temperature must never be sent.
+    # No request ever carries a sampling param — ConversationRequest has no
+    # temperature field (DAT-889).
     assert "temperature" not in kwargs
     # Thinking is decided EXPLICITLY per request, never by the model default —
     # the defaults differ across the family.
@@ -191,8 +193,8 @@ def test_only_structured_output_difference_is_output_config_format(
 
     Two requests identical except for ``output_schema`` must produce kwargs that
     differ ONLY by ``output_config["format"]``. If anything else moves — model,
-    max_tokens, effort, thinking, temperature, tools, tool_choice — the mechanism
-    swap stopped being a mechanism swap and the eval comparison is confounded.
+    max_tokens, effort, thinking, tools, tool_choice — the mechanism swap
+    stopped being a mechanism swap and the eval comparison is confounded.
     """
     provider = _provider(config)
     with_schema = _capture(monkeypatch, provider, _request_for(label, config, with_schema=True))

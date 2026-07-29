@@ -99,9 +99,7 @@ class EnrichmentAgent(LLMFeature):
 
         # Render prompt with system/user split
         try:
-            system_prompt, user_prompt, temperature = self.renderer.render_split(
-                "enrichment_analysis", context
-            )
+            system_prompt, user_prompt = self.renderer.render_split("enrichment_analysis", context)
         except Exception as e:
             return Result.fail(f"Failed to render prompt: {e}")
 
@@ -117,7 +115,6 @@ class EnrichmentAgent(LLMFeature):
             label="enrichment_analysis",
             effort=feature_config.effort,
             max_tokens=self.config.limits.max_output_tokens_per_request,
-            temperature=temperature,
             model=model,
         )
 

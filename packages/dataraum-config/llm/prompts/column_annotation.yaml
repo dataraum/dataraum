@@ -10,9 +10,6 @@ name: column_annotation
 version: "2.0.0"
 description: Per-column object-grain semantic annotation
 
-# Temperature (0.0 = deterministic)
-temperature: 0.0
-
 # System prompt - defines role and behavior
 system_prompt: |
   You are a data analyst annotating database columns with semantic metadata.

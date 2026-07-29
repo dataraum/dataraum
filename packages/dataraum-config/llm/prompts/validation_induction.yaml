@@ -20,7 +20,6 @@ description: >
   only against a dimension-role enumerator — a served reference qualifies its
   target only when that target is itself dimension-role, so a self-referential
   edge on an activity table never establishes an existence universe (DAT-876)
-temperature: 0.0
 
 system_prompt: |
   You are a data-quality analyst. Given the served operating-model graph — the

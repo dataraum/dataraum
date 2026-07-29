@@ -119,6 +119,8 @@ def two_tables_two_runs(session):
 
 def _build(session, table_ids, *, base_runs: BaseRunMap, **kwargs):
     """Build the cycle context against an ephemeral DuckDB (row counts → None)."""
+    kwargs.setdefault("max_sample_values", 10)
+    kwargs.setdefault("max_sample_value_chars", 100)
     return build_cycle_detection_context(
         session,
         duckdb.connect(),
@@ -944,6 +946,8 @@ def test_conditioned_labels_serve_the_discriminating_distribution(
         table_ids,
         vertical="finance",
         base_runs=BaseRunMap(relationship_run_id="run-current"),
+        max_sample_values=10,
+        max_sample_value_chars=100,
     )
 
     (rel,) = ctx["relationships"]
@@ -1022,6 +1026,8 @@ def test_conditioned_labels_fail_soft_on_missing_typed_table(session) -> None:
         [a.table_id, b.table_id],
         vertical="finance",
         base_runs=BaseRunMap(relationship_run_id="run-current"),
+        max_sample_values=10,
+        max_sample_value_chars=100,
     )
     (rel,) = ctx["relationships"]
     assert "conditioned_label_samples" not in rel
@@ -1131,6 +1137,8 @@ def test_conditioned_measure_ranges_serve_the_conditioned_sign(
         base_runs=BaseRunMap(
             relationship_run_id="run-current", semantic_runs={bank_table_id: "gen-run"}
         ),
+        max_sample_values=10,
+        max_sample_value_chars=100,
     )
 
     (rel,) = ctx["relationships"]
@@ -1217,6 +1225,8 @@ def test_conditioned_measure_ranges_nan_serves_nothing(session) -> None:
         base_runs=BaseRunMap(
             relationship_run_id="run-current", semantic_runs={bank.table_id: "gen-run"}
         ),
+        max_sample_values=10,
+        max_sample_value_chars=100,
     )
     (rel,) = ctx["relationships"]
     assert "conditioned_measure_ranges" not in rel
@@ -1337,3 +1347,44 @@ def test_format_context_renders_structural_slice_without_confidence() -> None:
     assert "### facts.region" in rendered
     assert "### facts.region (confidence:" not in rendered
     assert "### facts.status (confidence: 90%)" in rendered
+
+
+def test_format_context_display_caps_slice_value_counts_without_touching_context(
+    session,
+) -> None:
+    """DAT-671: the RENDER gets the display cap; the stored context does not.
+
+    ``verify.py``'s DAT-630 membership floor reads
+    ``context["slice_definitions"][*]["value_counts"]`` directly (never
+    through this renderer), so it must keep seeing the FULL served set even
+    though the prompt TEXT only shows the top few — capping the stored list
+    itself would make a genuine value outside the display window read as
+    unserved and wrongly reject an honest cycle.
+    """
+    full_value_counts = [
+        {"value": f"v{i:02d}", "count": 10 - i, "percentage": 10.0} for i in range(5)
+    ]
+    context = {
+        "tables": [{"table_name": "facts", "row_count": 100, "columns": []}],
+        "slice_definitions": [
+            {
+                "table_name": "facts",
+                "column_name": "status",
+                "slice_type": "categorical",
+                "values": [],
+                "value_counts": full_value_counts,
+                "value_count": 20,  # distinct exceeds even the FULL stored set
+                "confidence": None,
+                "business_context": None,
+            }
+        ],
+    }
+
+    rendered = format_context_for_prompt(context, max_sample_values=3)
+
+    # Only the top 3 of the 5 stored values reach the rendered text.
+    assert "v00" in rendered and "v01" in rendered and "v02" in rendered
+    assert "v03" not in rendered and "v04" not in rendered
+    assert "3 most frequent of 20 distinct" in rendered
+    # The dict handed in is untouched — verify.py must still see all 5.
+    assert len(context["slice_definitions"][0]["value_counts"]) == 5

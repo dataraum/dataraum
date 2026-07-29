@@ -28,6 +28,7 @@ from dataraum.llm.config import load_llm_config
 
 _STORED = 200  # phases/statistics.yaml: top_k_values
 _BUDGET = 10  # llm/config.yaml: privacy.max_sample_values
+_CHAR_BUDGET = 100  # LLMPrivacy.max_sample_value_chars default
 
 
 def _profile(table: str, column: str, *, stored: int = _STORED) -> ColumnProfile:
@@ -51,7 +52,7 @@ def test_shipped_config_declares_the_budget() -> None:
 
 def test_prompt_samples_applies_the_budget() -> None:
     profiles = [_profile("journal_lines", "net_amount"), _profile("journal_lines", "debit")]
-    samples = prompt_samples(profiles, limit=_BUDGET)
+    samples = prompt_samples(profiles, limit=_BUDGET, max_chars=_CHAR_BUDGET)
 
     assert set(samples) == {("journal_lines", "net_amount"), ("journal_lines", "debit")}
     assert all(len(v) == _BUDGET for v in samples.values())
@@ -63,7 +64,29 @@ def test_prompt_samples_survives_an_unprofiled_column() -> None:
     """No stored top values serves an empty list — absence stays visible."""
     p = _profile("orders", "id")
     p.top_values = None
-    assert prompt_samples([p], limit=_BUDGET) == {("orders", "id"): []}
+    assert prompt_samples([p], limit=_BUDGET, max_chars=_CHAR_BUDGET) == {("orders", "id"): []}
+
+
+def test_prompt_samples_truncates_a_long_string_value() -> None:
+    """DAT-671: the length half of the cap — a pathologically long single value
+    must not dominate the budget even when the COUNT cap already applies."""
+    p = _profile("orders", "note", stored=1)
+    p.top_values = [ValueCount(value="x" * 500, count=1, percentage=0.1)]
+
+    (values,) = prompt_samples([p], limit=_BUDGET, max_chars=_CHAR_BUDGET).values()
+
+    (value,) = values
+    assert value == "x" * _CHAR_BUDGET + "..."
+
+
+def test_prompt_samples_leaves_a_numeric_value_typed() -> None:
+    """A non-string sample (the common case here) passes through unchanged —
+    stringifying it would misrepresent a numeric column's samples to the LLM."""
+    p = _profile("journal_lines", "net_amount", stored=1)
+
+    (values,) = prompt_samples([p], limit=_BUDGET, max_chars=_CHAR_BUDGET).values()
+
+    assert values == [-3900.0]
 
 
 def test_column_annotation_tables_json_carries_at_most_the_budget() -> None:
@@ -71,7 +94,9 @@ def test_column_annotation_tables_json_carries_at_most_the_budget() -> None:
     agent = ColumnAnnotationAgent.__new__(ColumnAnnotationAgent)
     profiles = [_profile("journal_lines", c) for c in ("debit", "credit", "net_amount")]
 
-    tables_json = agent._build_tables_json(profiles, prompt_samples(profiles, limit=_BUDGET))
+    tables_json = agent._build_tables_json(
+        profiles, prompt_samples(profiles, limit=_BUDGET, max_chars=_CHAR_BUDGET)
+    )
 
     (table,) = tables_json
     assert [c["column_name"] for c in table["columns"]] == ["debit", "credit", "net_amount"]
@@ -87,7 +112,9 @@ def test_semantic_per_table_tables_json_carries_at_most_the_budget() -> None:
     agent = SemanticAgent.__new__(SemanticAgent)
     profiles = [_profile("journal_lines", c) for c in ("debit", "net_amount")]
 
-    tables_json = agent._build_tables_json(profiles, prompt_samples(profiles, limit=_BUDGET))
+    tables_json = agent._build_tables_json(
+        profiles, prompt_samples(profiles, limit=_BUDGET, max_chars=_CHAR_BUDGET)
+    )
 
     (table,) = tables_json
     for col in table["columns"]:
@@ -143,7 +170,7 @@ def test_column_agent_passes_the_configured_budget(
         content='{"tables": []}', stop_reason="end_turn", output_tokens=1
     )
     renderer = MagicMock()
-    renderer.render_split.return_value = ("sys", "user", 0.0)
+    renderer.render_split.return_value = ("sys", "user")
 
     agent = ColumnAnnotationAgent(
         config=_stub_config(real_budget), provider=provider, prompt_renderer=renderer
@@ -174,7 +201,7 @@ def test_semantic_per_table_passes_the_configured_budget(
         content='{"tables": [], "relationships": []}', stop_reason="end_turn", output_tokens=1
     )
     renderer = MagicMock()
-    renderer.render_split.return_value = ("sys", "user", 0.0)
+    renderer.render_split.return_value = ("sys", "user")
 
     agent = SemanticAgent(
         config=_stub_config(real_budget), provider=provider, prompt_renderer=renderer

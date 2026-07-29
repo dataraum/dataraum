@@ -50,11 +50,10 @@ def _make_output_response(payload: dict):
 def mock_prompt_renderer():
     """Create a mock prompt renderer that returns valid prompts."""
     renderer = MagicMock()
-    # Configure render_split to return (system_prompt, user_prompt, temperature)
+    # Configure render_split to return (system_prompt, user_prompt)
     renderer.render_split.return_value = (
         "You are an SQL expert.",
         "Generate SQL for this validation.",
-        0.0,
     )
     return renderer
 

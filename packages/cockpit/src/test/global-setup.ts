@@ -137,6 +137,13 @@ export default async function setup({ provide }: TestProject) {
 				corpusDir,
 			});
 		} catch (err) {
+			// Clean the temp lake up HERE. The teardown returned below never runs
+			// when setup throws, so a failure between mkdtemp and a successful
+			// build would strand the directory for the life of the machine. Not a
+			// `finally`: on the success path the directory must survive — the whole
+			// run reads from it, and teardown owns its removal.
+			if (lakeDir) rmSync(lakeDir, { recursive: true, force: true });
+			lakeDir = null;
 			throw new Error(
 				`journey workspace failed to build: ${(err as Error).message}`,
 			);

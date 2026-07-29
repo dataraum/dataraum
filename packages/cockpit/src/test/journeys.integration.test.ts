@@ -312,9 +312,15 @@ describe.skipIf(!jx.available)(
 				expect(date?.temporal).toBeNull();
 				expect(date?.bucketGrain).toBeUndefined();
 				// …and the stated reason is that no verdict exists — which is FALSE
-				// here: `measure|revenue|time|*` = additive IS seeded and readable.
-				// The answer path simply never consults it (`resolveAnswerDrillAxes`
-				// passes `{target: null, carriers: new Map()}` unconditionally).
+				// here: `measure|revenue|time|*` = additive IS seeded. The answer path
+				// simply never consults it (`resolveAnswerDrillAxes` passes
+				// `{target: null, carriers: new Map()}` unconditionally).
+				//
+				// That the row is genuinely READABLE is not taken on faith from this
+				// journey, which never queries it: J5 reads the very same seeded
+				// verdicts through the node path and gets a month grain out of them,
+				// and J6 shows the same declaration withheld on this path. So the
+				// three together isolate the defect to the CONSULTATION, not the data.
 				expect(body.temporalGateSource).toBe("withheld-no-verdict");
 				expect(date?.temporalWithheldReason).toContain(
 					"has not classified for additivity",
@@ -415,10 +421,22 @@ describe.skipIf(!jx.available)(
 					"/api/drill/parts",
 					slice,
 				);
-				// `/api/drill/node` ships a `totals` statement on its open call;
-				// `/api/drill/parts` has no equivalent, and `footerCells` is supplied
-				// only by the metric overlay — so a drilled ANSWER grid has no footer
-				// at all, and the practitioner never sees the figure they started from.
+				// ESTABLISH THE SLICE FIRST. `totals` is absent from EVERY branch of
+				// this route — success, compose refusal, even a 500 — so asserting
+				// its absence on its own is vacuously true and would keep passing
+				// against a completely broken drill. This pin has no implicit safety
+				// net (the other pins go through axisFor/columnsOf, which throw on a
+				// malformed body), so the guard has to be explicit: a working slice
+				// is the PREMISE of the finding "a working slice still has no footer".
+				expect(res.status).toBe(200);
+				composed(res.body);
+				expect(res.body.sql).toEqual(expect.any(String));
+
+				// Only now is the absence meaningful. `/api/drill/node` ships a
+				// `totals` statement on its open call; `/api/drill/parts` has no
+				// equivalent, and `footerCells` is supplied only by the metric
+				// overlay — so a drilled ANSWER grid has no footer at all, and the
+				// practitioner never sees the figure they started from.
 				expect(res.body.totals).toBeUndefined();
 			});
 
@@ -450,11 +468,15 @@ describe.skipIf(!jx.available)(
 			// the journey is not merely wrong on the answer path, it is
 			// unexpressible — the route's `z.strictObject` rejects the `grain` key
 			// outright, so "revenue by month" cannot even be REQUESTED there.
-			it("TODAY refuses a grained step with 400", async () => {
+			it("TODAY refuses a grained step with 400, naming the grain key", async () => {
 				const res = await post(routes.parts, "/api/drill/parts", monthSlice);
 				expect(res.status).toBe(400);
 				const body = (await res.json()) as { error?: string };
-				expect(body.error).toEqual(expect.any(String));
+				// Name the KEY, not just "some 400 happened". The route 400s on any
+				// schema violation, so a bare string assertion would be satisfied by
+				// an unrelated regression (a renamed field, a tightened bound) and the
+				// pin would still look like it was documenting the grain refusal.
+				expect(body.error).toContain("grain");
 			});
 
 			// RED PIN — TARGET behaviour.
@@ -742,6 +764,19 @@ describe.skipIf(!jx.available)(
 				// HAS a dimension in it reports nothing to slice by.
 				expect(axisFor(body, "account")).toBeUndefined();
 				expect(axisFor(body, ACCOUNT_NAME_COLUMN)).toBeUndefined();
+
+				// PIN THE SPECIFIC REASON, not just the emptiness. `resolveAdHocDrillAxes`
+				// has two distinct empty-verdicts and only one of them is this finding:
+				//   · "Nothing in this workspace is catalogued as a dimension yet" —
+				//     `sliceRows.length === 0`, i.e. the CATALOG IS EMPTY. That is what a
+				//     broken fixture or an unseeded lake looks like.
+				//   · the one below — the catalog HAS dimensions, this result just
+				//     projects none of them. That is the alias masking a real dimension.
+				// Asserting only "no axes" would let the first masquerade as the second
+				// and the pin would go on passing after the fixture rotted.
+				expect(body.reason).toContain(
+					"None of this result's columns is a catalogued dimension",
+				);
 			});
 
 			// RED PIN — TARGET behaviour.

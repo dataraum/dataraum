@@ -211,7 +211,9 @@ class _StockAxis:
 
     axis: str | None
     grain: str | None
-    recorded: str | None = None
+    # No default: omitting it would silently disable the mismatch guard, which is the
+    # one thing this field exists for.
+    recorded: str | None
 
 
 def read_reporting_calendar(session: Session, read_schema: str) -> ReportingCalendar | None:
@@ -620,6 +622,9 @@ def _read_stock_axes(
     The joins are LEFT so a stock whose anchor is not served on THIS relation, or whose
     axis was never temporally profiled, still returns a row with ``axis``/``grain``
     ``None`` — the caller falls loud on it rather than silently treating it as a flow.
+    The RECORDED anchor name comes back beside the resolved one so the caller can tell
+    those two cases apart from a stock that was never given an anchor at all (DAT-893);
+    without it all three arrive as ``axis=None`` and collapse into one reason.
     """
     stmt = text(
         f"SELECT DISTINCT m.materialization, axis_col.column_name AS axis,"  # noqa: S608

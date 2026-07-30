@@ -611,12 +611,34 @@ class NoSupportClass(StrEnum):
       e.g. no reporting instant could be placed on the served relation); the
       rejected SQL is the fall-loud ``SELECT NULL`` the model never authored,
       so the NULL says nothing about the grounding itself.
+    - ``UNGROUNDABLE_DIMENSION`` — a filter column of the extract carries the
+      deterministic ungroundable-dimension verdict (DAT-620,
+      ``graphs.groundability``): its coded values have no resolved meaning, no
+      ontology match, and no linked reference table — so ANY predicate over
+      them is a guess, and the absence screen's conclusion would be unsound
+      (an unserved declared value proves nothing when the served values are
+      opaque codes that may well encode the concept). NON-REVISABLE —
+      re-authoring a different predicate is churn by construction; the cure is
+      LINKING a reference/lookup table that resolves these values, which flips
+      the verdict on the next run.
     """
 
     PREDICATE_MATCHED_NO_ROWS = "predicate_matched_no_rows"
     OPERAND_ALL_NULL = "operand_all_null"
     CONCEPT_ABSENT = "concept_absent"
     COMPOSITION_ABSTAINED = "composition_abstained"
+    UNGROUNDABLE_DIMENSION = "ungroundable_dimension"
+
+
+#: The classes whose verdict re-authoring cannot change (churn by construction):
+#: CONCEPT_ABSENT until new DATA serves a representing value, UNGROUNDABLE_DIMENSION
+#: until a resolving reference table is LINKED. Consumed by the three sites that
+#: close the churn loop (agent.py): the cached-row drift demotion, the sticky
+#: carry-forward across compliant fall-loud refreshes, and the do-not-re-author
+#: prior-context guidance.
+NON_REVISABLE_NO_SUPPORT: frozenset[NoSupportClass] = frozenset(
+    {NoSupportClass.CONCEPT_ABSENT, NoSupportClass.UNGROUNDABLE_DIMENSION}
+)
 
 
 @dataclass(frozen=True)

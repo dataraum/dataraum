@@ -254,6 +254,79 @@ class TestClassifier:
         )
 
 
+class TestUngroundableDimension:
+    """DAT-620: the deterministic verdict outranks the probe (see the docstring —
+    a predicate over unresolvable coded values is a guess, so both measured
+    conclusions below it would misdirect)."""
+
+    _EVIDENCE = "filter column 'category' of table 'ledger' holds coded values ..."
+
+    def test_verdict_outranks_the_operand_probe(self, conn) -> None:
+        """Rows MATCH (would be operand_all_null) — the verdict still wins: the
+        matched population itself came from a guessed predicate."""
+        finding = classify_no_support(
+            conn,
+            parts=_parts(["category = 'Salaries'"]),
+            column_mappings_basis=_basis([("category", "Salaries")]),
+            served_values=_SERVED,
+            ungroundable={"category": self._EVIDENCE},
+        )
+        assert finding is not None
+        assert finding.reason_class is NoSupportClass.UNGROUNDABLE_DIMENSION
+        assert finding.evidence == self._EVIDENCE
+
+    def test_verdict_outranks_the_absence_screen(self, conn) -> None:
+        """Zero rows + declared value absent from the complete enumeration (would
+        be concept_absent) — unsound over opaque codes; the verdict wins."""
+        finding = classify_no_support(
+            conn,
+            parts=_parts(["category = 'COGS'"]),
+            column_mappings_basis=_basis([("category", "COGS")]),
+            served_values=_SERVED,
+            ungroundable={"category": self._EVIDENCE},
+        )
+        assert finding is not None
+        assert finding.reason_class is NoSupportClass.UNGROUNDABLE_DIMENSION
+
+    def test_several_verdict_columns_pick_the_first_by_name(self, conn) -> None:
+        finding = classify_no_support(
+            conn,
+            parts=_parts(["category = 'COGS'"]),
+            column_mappings_basis=_basis([("category", "COGS")]),
+            served_values=_SERVED,
+            ungroundable={"zz_code": "zz evidence", "category": self._EVIDENCE},
+        )
+        assert finding is not None
+        assert finding.evidence == self._EVIDENCE
+
+    def test_no_verdict_keeps_the_existing_classification(self, conn) -> None:
+        """The no-false-abstention criterion at this seam: a groundable filter
+        column (empty map) classifies exactly as before."""
+        finding = classify_no_support(
+            conn,
+            parts=_parts(["category = 'Salaries'"]),
+            column_mappings_basis=_basis([("category", "Salaries")]),
+            served_values=_SERVED,
+            ungroundable={},
+        )
+        assert finding is not None
+        assert finding.reason_class is NoSupportClass.OPERAND_ALL_NULL
+
+    def test_composition_abstain_still_outranks_the_verdict(self, conn) -> None:
+        """A system-composed SELECT NULL says nothing about the grounding — the
+        abstain stays the cause even if a verdict map were handed in."""
+        finding = classify_no_support(
+            conn,
+            parts=_fall_loud_parts(),
+            column_mappings_basis=None,
+            served_values=_SERVED,
+            composition_abstain="no reporting instant could be placed",
+            ungroundable={"category": self._EVIDENCE},
+        )
+        assert finding is not None
+        assert finding.reason_class is NoSupportClass.COMPOSITION_ABSTAINED
+
+
 class TestFailedProvenancePairing:
     """The additivity pairing discipline at the pydantic chokepoint."""
 
@@ -266,6 +339,17 @@ class TestFailedProvenancePairing:
         )
         dumped = prov.model_dump(mode="json")
         assert dumped["no_support_class"] == "concept_absent"
+
+    def test_ungroundable_dimension_rides_the_same_pairing(self) -> None:
+        """DAT-620's fifth class is a plain vocabulary member — evidence-backed,
+        verifier-mode-only, no contract change."""
+        prov = FailedSnippetProvenance(
+            failure_mode=SnippetFailureMode.VERIFIER_REJECTED,
+            failure_reason="no support",
+            no_support_class=NoSupportClass.UNGROUNDABLE_DIMENSION,
+            no_support_evidence="filter column 'category' of table 'ledger' ...",
+        )
+        assert prov.model_dump(mode="json")["no_support_class"] == "ungroundable_dimension"
 
     def test_unclassified_row_is_valid(self) -> None:
         """Pre-DAT-658 rows and evidence-gathering failures carry no class."""

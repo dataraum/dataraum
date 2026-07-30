@@ -43,6 +43,8 @@ from .models import (
     GraphProvenanceOutput,
     GraphStep,
     HealthySnippetProvenance,
+    NoSupportClass,
+    NoSupportFinding,
     QueryAssumption,
     SnippetAssumption,
     SnippetFailureMode,
@@ -135,8 +137,10 @@ class GeneratedCode:
     # as `SELECT NULL AS value`: it executes clean and the verifier then rejects it for
     # having no support, so without this the true cause never reaches the persisted
     # failure — it lived only on a sub-floor assumption that the failure path drops.
-    # Carried on the generated code (not passed per call site) because every writer of a
-    # retained failure already holds this object, so no path can forget it.
+    # Carried on the generated code (not passed per call site) because every consumer
+    # already holds this object, so no path can forget it. Since DAT-658 the consumer
+    # is `classify_no_support`, which turns it into the `composition_abstained` finding
+    # the verifier's message and the retained row both carry.
     composition_abstain: str | None = None
 
 
@@ -240,6 +244,131 @@ def _served_value_sets(context: ExecutionContext) -> dict[str, set[str]]:
             if values:
                 served.setdefault(col.column_name, set()).update(values)
     return served
+
+
+def classify_no_support(
+    duckdb_conn: duckdb.DuckDBPyConnection,
+    *,
+    parts: dict[str, Any] | None,
+    column_mappings_basis: dict[str, Any] | None,
+    served_values: dict[str, set[str]],
+    composition_abstain: str | None = None,
+) -> NoSupportFinding | None:
+    """Classify ONE extract's NULL aggregate into an evidence-backed cause (DAT-658).
+
+    Deterministic, no LLM. The verifier can only measure "aggregated to NULL"
+    (DAT-699); this runs where the evidence lives — the same DuckDB connection
+    the extract executed on, the extract's own clause parts, its declared
+    grounding basis, and the served value-set reference — and returns a typed
+    finding the verifier's message, the retained row, and the next authoring's
+    guidance all carry. In order:
+
+    1. ``composition_abstain`` set — the SYSTEM composed the fall-loud
+       ``SELECT NULL`` (DAT-893): the abstain reason IS the cause; nothing to
+       probe.
+    2. No relation in the parts — the model's own fall-loud shape, or a
+       pre-parts snippet: there is no probe to run and no claim to make →
+       ``None`` (the caller keeps the honest possibility-space message).
+    3. The row-count probe: ``SELECT COUNT(*) FROM <relation> WHERE <where>``
+       over the SAME relation text and the SAME AND-composed predicate the
+       extract executed (``compose_where_predicate`` is the single source of
+       that filter), on the same connection. Rows matched ⇒ the aggregated
+       operand is entirely NULL over them (``OPERAND_ALL_NULL``).
+    4. Zero rows — screen for absence against the served value sets: when the
+       grounding DECLARED filter members and EVERY declared value's column has
+       a COMPLETE served enumeration and NO declared value appears in it, the
+       served data carries no value for the concept's family — no predicate
+       over the served values can ever select it (``CONCEPT_ABSENT``,
+       non-revisable). Anything less is honest under-coverage — a declared
+       value that IS served (the predicate composition is wrong, not the
+       concept), an unscreened high-cardinality/search_values column, or no
+       declared members at all — and stays ``PREDICATE_MATCHED_NO_ROWS``:
+       never claim an absence the evidence cannot back.
+
+    A failed probe (an odd relation, a dropped view) degrades to ``None`` with
+    a warning — classification is best-effort context, never a new failure.
+
+    Args:
+        duckdb_conn: The connection the extract executed on.
+        parts: The extract's persisted clause parts (DAT-671) — from the
+            authored step on the authoring path, from the cached snippet row on
+            the assemble/cache-composed path.
+        column_mappings_basis: The persisted MAP shape ``{concept: {…,
+            filter_members: [{column, value}]}}`` (``HealthySnippetProvenance``);
+            the authoring path converts its list-shaped output to this at the
+            call site so both paths feed one shape.
+        served_values: The ``_served_value_sets`` reference — the SAME complete
+            enumerations ``validate_grounding_basis`` enforced, so "served"
+            keeps one meaning across authoring, validation, and this verdict.
+        composition_abstain: DAT-893's abstain reason off the generated code.
+    """
+    from dataraum.graphs.formula_composer import compose_where_predicate
+
+    if composition_abstain:
+        return NoSupportFinding(NoSupportClass.COMPOSITION_ABSTAINED, composition_abstain)
+
+    from_list = (parts or {}).get("from") or []
+    relation = from_list[0] if from_list else None
+    if not relation:
+        return None
+
+    where = [str(p) for p in (parts or {}).get("where") or [] if p and str(p).strip()]
+    probe = f"SELECT COUNT(*) FROM {relation}"  # noqa: S608 - the extract's own served relation
+    clause = compose_where_predicate(where)
+    if clause:
+        probe += f"\nWHERE {clause}"
+    try:
+        row = duckdb_conn.execute(probe).fetchone()
+    except Exception as exc:  # noqa: BLE001 - best-effort context, never a new failure
+        logger.warning("no_support_probe_failed", relation=relation, error=str(exc))
+        return None
+    matched = int(row[0]) if row and row[0] is not None else 0
+
+    if matched > 0:
+        return NoSupportFinding(
+            NoSupportClass.OPERAND_ALL_NULL,
+            f"{matched} row(s) match the filter on {relation}, and the aggregated "
+            "operand is NULL over every one of them",
+        )
+
+    # Zero rows → the absence screen over the DECLARED family values.
+    members: list[tuple[str, str]] = []
+    for basis in (column_mappings_basis or {}).values():
+        for member in (basis or {}).get("filter_members") or []:
+            column, value = member.get("column"), member.get("value")
+            if column and value is not None:
+                members.append((str(column), str(value)))
+
+    zero = f"its filter matched 0 rows of {relation}"
+    if not members:
+        return NoSupportFinding(
+            NoSupportClass.PREDICATE_MATCHED_NO_ROWS,
+            f"{zero}; no filter values were declared, so absence of the concept "
+            "could not be screened",
+        )
+    unscreened = sorted({column for column, _ in members if column not in served_values})
+    if unscreened:
+        return NoSupportFinding(
+            NoSupportClass.PREDICATE_MATCHED_NO_ROWS,
+            f"{zero}; no complete served value-set covers {unscreened}, so absence "
+            "of the concept could not be screened",
+        )
+    still_served = sorted({value for column, value in members if value in served_values[column]})
+    if still_served:
+        return NoSupportFinding(
+            NoSupportClass.PREDICATE_MATCHED_NO_ROWS,
+            f"{zero}, yet its declared value(s) {still_served} ARE served — the "
+            "predicate composition excludes every row, not the concept's absence",
+        )
+    detail = "; ".join(
+        f"'{value}' is not among the complete served values of '{column}' "
+        f"({sorted(served_values[column])})"
+        for column, value in members
+    )
+    return NoSupportFinding(
+        NoSupportClass.CONCEPT_ABSENT,
+        f"the served data carries no value for the concept's family: {detail}",
+    )
 
 
 class GraphAgent(LLMFeature):
@@ -400,9 +529,54 @@ class GraphAgent(LLMFeature):
         # is NOT reusable (excluded below), but it IS retained flagged (DAT-543): a
         # verifier_rejected extract is VALID SQL whose value the data made untrustworthy,
         # so keeping it feeds prior_context + the cockpit's ungroundable-node detail.
-        verdict = verify_execution(graph, execution)
+        #
+        # DAT-658: classify each NULL aggregate FIRST (this is the seam where both the
+        # execution outcome and the evidence are in scope), so the verifier's rejection
+        # names the one measured cause instead of enumerating the possibility space —
+        # the verifier itself stays blind and IO-free, the findings arrive as data.
+        findings = self._classify_no_support_steps(
+            graph, execution, generated_code, cached_snippets, context
+        )
+        verdict = verify_execution(graph, execution, no_support=findings)
         if not verdict.success:
             reason = verdict.error or "metric verification failed"
+            # DAT-658 drift demotion: a CACHED extract classified CONCEPT_ABSENT is a
+            # healthy row whose declared values today's served data provably no longer
+            # carries — serving it for reuse again is serving a known-wrong grounding,
+            # and first-writer-wins would otherwise keep it healthy forever (the
+            # retained-failure write below no-ops on healthy rows). This is exactly
+            # ``demote_to_failure``'s contract (DAT-709): a verdict reached with
+            # strictly MORE information than the writer had. Gated to the one
+            # NON-REVISABLE, evidence-backed class — a revisable drift (zero rows,
+            # operand NULL) keeps DAT-636's first-writer-wins protection.
+            absent_cached = [
+                step_id
+                for step_id, finding in findings.items()
+                if finding.reason_class is NoSupportClass.CONCEPT_ABSENT
+                and step_id in cached_snippets
+            ]
+            if absent_cached:
+                from dataraum.query.snippet_library import SnippetLibrary
+
+                library = SnippetLibrary(session, workspace_id=workspace_id)
+                for step_id in absent_cached:
+                    graph_step = graph.steps.get(step_id)
+                    if graph_step is None or not graph_step.source:
+                        continue
+                    library.demote_to_failure(
+                        snippet_type="extract",
+                        schema_mapping_id=schema_mapping_id,
+                        standard_field=graph_step.source.standard_field,
+                        statement=graph_step.source.statement,
+                        aggregation=graph_step.aggregation,
+                        predicate=graph_step.source.predicate,
+                        provenance=FailedSnippetProvenance(
+                            failure_mode=SnippetFailureMode.VERIFIER_REJECTED,
+                            failure_reason=reason,
+                            no_support_class=findings[step_id].reason_class,
+                            no_support_evidence=findings[step_id].evidence,
+                        ).model_dump(mode="json"),
+                    )
             self._save_failed_snippet(
                 session,
                 graph,
@@ -411,6 +585,7 @@ class GraphAgent(LLMFeature):
                 workspace_id=workspace_id,
                 mode=SnippetFailureMode.VERIFIER_REJECTED,
                 reason=reason,
+                no_support=findings,
             )
             return Result.fail(reason)
         execution.verification_flags = verdict.unwrap() or []
@@ -509,7 +684,15 @@ class GraphAgent(LLMFeature):
         if not exec_result.success or not exec_result.value:
             return Result.fail(exec_result.error or "metric assembly execution failed")
         execution = exec_result.value
-        verdict = verify_execution(graph, execution)
+        # DAT-658: classify any NULL aggregate before the verifier judges it — on this
+        # path the parts and basis come off the cached snippet rows (composed steps
+        # carry none). The typed cause rides the returned reason into the metric's
+        # lifecycle state_reason; no retained-failure row is written here (the failure
+        # is metric-level — the cached extract snippets stay first-writer-protected).
+        findings = self._classify_no_support_steps(
+            graph, execution, generated_code, cached_snippets, context
+        )
+        verdict = verify_execution(graph, execution, no_support=findings)
         if not verdict.success:
             return Result.fail(verdict.error or "metric verification failed")
         execution.verification_flags = verdict.unwrap() or []
@@ -1353,6 +1536,72 @@ class GraphAgent(LLMFeature):
 
         return Result.ok(execution)
 
+    def _classify_no_support_steps(
+        self,
+        graph: TransformationGraph,
+        execution: GraphExecution,
+        generated_code: GeneratedCode,
+        cached_snippets: dict[str, dict[str, Any]] | None,
+        context: ExecutionContext,
+    ) -> dict[str, NoSupportFinding]:
+        """Classified cause per NULL-aggregate extract step (DAT-658), possibly empty.
+
+        The classification seam: runs between execution and the verifier gate,
+        where the execution outcome AND the evidence are both in scope — the
+        DuckDB connection the extract ran on, the extract's clause parts, its
+        grounding basis, and the served value-set reference. The verifier then
+        receives the findings as data (it stays IO-free) and its rejection
+        names the measured class; ``_save_failed_snippet`` persists the same
+        finding on the retained row.
+
+        Per failing step the parts + basis come from wherever that step was
+        minted: a freshly-AUTHORED step carries its parts on the generated step
+        dict (and its basis on ``generated_code.provenance``, converted to the
+        persisted map shape so both paths feed one shape); a cache-composed
+        step (the assemble path and ``execute``'s all-cached branch) carries
+        neither there — its parts and basis live on the cached snippet row.
+        A healthy (non-NULL) run classifies nothing and pays nothing.
+        """
+        null_extracts = [
+            sr.step_id
+            for sr in execution.step_results
+            if sr.value is None
+            and (
+                (step := graph.steps.get(sr.step_id)) is None or step.step_type == StepType.EXTRACT
+            )
+        ]
+        if not null_extracts:
+            return {}
+        served_values = _served_value_sets(context)
+        authored_parts: dict[str, dict[str, Any] | None] = {
+            s["step_id"]: s.get("parts") for s in generated_code.steps if s.get("step_id")
+        }
+        authored_basis = (
+            {
+                e.concept: e.basis.model_dump(mode="json")
+                for e in generated_code.provenance.column_mappings_basis
+            }
+            if generated_code.provenance
+            else None
+        )
+        findings: dict[str, NoSupportFinding] = {}
+        for step_id in null_extracts:
+            if authored_parts.get(step_id) is not None:
+                parts, basis = authored_parts[step_id], authored_basis
+            else:
+                cached = (cached_snippets or {}).get(step_id) or {}
+                parts, basis = cached.get("parts"), cached.get("column_mappings_basis")
+            finding = classify_no_support(
+                context.duckdb_conn,
+                parts=parts,
+                column_mappings_basis=basis,
+                served_values=served_values,
+                composition_abstain=generated_code.composition_abstain,
+            )
+            if finding is not None:
+                findings[step_id] = finding
+        return findings
+
     def _build_schema_info(
         self,
         context: ExecutionContext,
@@ -1777,6 +2026,7 @@ class GraphAgent(LLMFeature):
         workspace_id: str,
         mode: SnippetFailureMode,
         reason: str,
+        no_support: dict[str, NoSupportFinding] | None = None,
     ) -> None:
         """Retain an authored-but-unusable EXTRACT SQL, flagged (DAT-543).
 
@@ -1789,18 +2039,25 @@ class GraphAgent(LLMFeature):
         cannot ground ``uses`` edges on an unenforced column enumeration).
         We persist THIS node's own generated extract SQL with
         ``failed=True`` (``failure_count=1`` → ``find_by_key`` keeps it OUT of reuse)
-        plus ``{failure_mode, failure_reason, composition_abstain}`` in provenance, so
-        ``_build_prior_context`` can feed the exact prior SQL + reason to the next
-        authoring, and the cockpit can surface it on the ungroundable node.
+        plus ``{failure_mode, failure_reason, no_support_class, no_support_evidence}``
+        in provenance, so ``_build_prior_context`` can feed the exact prior SQL +
+        reason to the next authoring, and the cockpit can surface it on the
+        ungroundable node.
 
-        ``composition_abstain`` (DAT-893) comes off the ``generated_code`` rather than the
-        call site: when composition abstained, the SQL persisted here is the fall-loud
-        ``SELECT NULL AS value`` and ``reason`` is whatever rejected THAT — so the cause
-        would otherwise be unrecoverable from the row.
+        ``no_support`` (DAT-658) is the per-step classified cause of a verifier
+        no-support rejection — passed only from that branch; the
+        ``FailedSnippetProvenance`` validator raises on any other mode (the DAT-893
+        invariant generalized: on a contract violation or an execution error the
+        grounding failed for its own reason, and a cause class there would contradict
+        the mode and steer the retry guidance away from the actual retained defect).
+        The DAT-893 composition abstention arrives THROUGH this mapping now
+        (``classify_no_support`` reads it off the ``generated_code`` before probing),
+        so the cause of a system-composed ``SELECT NULL`` still survives the row.
 
         This loops over EVERY extract leaf in the graph (execution/verifier failure is
         graph-level — there is no per-leaf attribution), stamping each with the same
-        graph-level ``reason``. It does NOT poison a shared, already-working extract:
+        graph-level ``reason`` and its OWN finding (a leaf that had support carries no
+        class). It does NOT poison a shared, already-working extract:
         ``save_snippet(failed=True)`` hits the first-writer-wins guard and leaves any
         pre-existing HEALTHY row untouched (DAT-636). The residue is only precision — a
         genuinely-fine leaf of a metric that failed elsewhere (e.g. at the formula) gets
@@ -1815,22 +2072,6 @@ class GraphAgent(LLMFeature):
         generated_steps = {
             s.get("step_id", ""): s for s in generated_code.steps if s.get("step_id")
         }
-        provenance = FailedSnippetProvenance(
-            failure_mode=mode,
-            failure_reason=reason,
-            # The abstain cause accompanies ONLY the verifier's rejection of the
-            # fall-loud ``SELECT NULL`` it produced (the models.py invariant: "the MODE
-            # is still the verifier's rejection, honestly"). On any other mode — a
-            # contract violation, an execution error — the grounding failed for its own
-            # reason, and recording a composition abstain there would contradict the
-            # mode and steer ``_build_prior_context``'s retry guidance away from the
-            # actual retained defect.
-            composition_abstain=(
-                generated_code.composition_abstain
-                if mode is SnippetFailureMode.VERIFIER_REJECTED
-                else None
-            ),
-        ).model_dump(mode="json")
         for step_id, graph_step in graph.steps.items():
             if graph_step.step_type != StepType.EXTRACT or not graph_step.source:
                 continue
@@ -1846,6 +2087,44 @@ class GraphAgent(LLMFeature):
                     generated_step_ids=sorted(generated_steps),
                 )
                 continue
+            finding = (no_support or {}).get(step_id)
+            if (
+                finding is None
+                and mode is SnippetFailureMode.VERIFIER_REJECTED
+                and not (gen_step.get("parts") or {}).get("from")
+            ):
+                # Sticky CONCEPT_ABSENT (DAT-658). A model that FOLLOWS the
+                # do-not-re-author guidance emits the fall-loud shape, which
+                # classifies as nothing (no relation → no probe, no claim) — a
+                # plain refresh would then STRIP the absence verdict from the
+                # retained row and the run after that would get the generic
+                # guidance again, resurrecting exactly the churn the class
+                # stops. Compliance is not new evidence, so an UNCLASSIFIED
+                # fall-loud refresh carries the prior row's concept_absent
+                # forward verbatim; any measured finding above replaces it, and
+                # a clean authoring heals the row entirely (failure_count → 0).
+                prior = library.retained_failure(
+                    snippet_type="extract",
+                    schema_mapping_id=schema_mapping_id,
+                    standard_field=graph_step.source.standard_field,
+                    statement=graph_step.source.statement,
+                    aggregation=graph_step.aggregation,
+                    predicate=graph_step.source.predicate,
+                )
+                prior_prov = (prior.provenance or {}) if prior else {}
+                if prior_prov.get(
+                    "no_support_class"
+                ) == NoSupportClass.CONCEPT_ABSENT and prior_prov.get("no_support_evidence"):
+                    finding = NoSupportFinding(
+                        NoSupportClass.CONCEPT_ABSENT,
+                        prior_prov["no_support_evidence"],
+                    )
+            provenance = FailedSnippetProvenance(
+                failure_mode=mode,
+                failure_reason=reason,
+                no_support_class=finding.reason_class if finding else None,
+                no_support_evidence=finding.evidence if finding else None,
+            ).model_dump(mode="json")
             library.save_snippet(
                 snippet_type="extract",
                 sql=gen_step.get("sql", ""),
@@ -2113,7 +2392,14 @@ class GraphAgent(LLMFeature):
                     prov = rec.provenance or {}
                     mode = prov.get("failure_mode", "failed")
                     why = prov.get("failure_reason", "(no reason recorded)")
-                    abstained = prov.get("composition_abstain")
+                    # DAT-658: the typed no-support cause, when the failure was
+                    # classified. Each class gets ITS OWN guidance — the old generic
+                    # tail asked the model to decide between causes the system had
+                    # already measured, and for a non-revisable absence it invited
+                    # re-authoring superficially different SQL forever.
+                    reason_class = prov.get("no_support_class")
+                    evidence = prov.get("no_support_evidence")
+                    abstained = reason_class == NoSupportClass.COMPOSITION_ABSTAINED
                     if abstained:
                         # DAT-893: the SYSTEM withheld composition — the extract the
                         # verifier rejected is the fall-loud `SELECT NULL AS value` this
@@ -2148,7 +2434,46 @@ class GraphAgent(LLMFeature):
                             "Never re-emit the colliding extract, and never hand back the "
                             "other concept's."
                         )
+                    elif reason_class == NoSupportClass.CONCEPT_ABSENT:
+                        # DAT-658: NON-REVISABLE — the served data provably carries no
+                        # value for this concept's family, so re-authoring SQL against
+                        # it is churn by construction. The evidence names the absent
+                        # value(s) and the complete served enumeration, so the model
+                        # can verify against the Value sets served THIS run whether
+                        # the data has changed — the one condition under which
+                        # re-authoring is not churn.
+                        guidance = (
+                            "Do NOT re-author SQL for this concept — it is ABSENT from "
+                            f"the served data: {evidence}. No predicate over the served "
+                            "values can select it; another superficially different "
+                            "extract will fail the same way. UNLESS the Value sets "
+                            "served above now show a value that represents this concept "
+                            "(the data has changed since that evidence), fall loud: "
+                            "empty relation, select_expr NULL, empty "
+                            "column_mappings_basis, and ONE LOW-confidence assumption "
+                            "naming the absent value(s) so the absence stays disclosed."
+                        )
+                    elif reason_class == NoSupportClass.PREDICATE_MATCHED_NO_ROWS:
+                        guidance = (
+                            f"Measured cause: {evidence}. The concept was NOT shown to "
+                            "be absent — the PREDICATE is what selected nothing. Revise "
+                            "it against the served Value sets (a different served value, "
+                            "or drop a wrongly-narrowing conjunct); if no served value "
+                            "represents the concept, fall loud instead of guessing "
+                            "another filter."
+                        )
+                    elif reason_class == NoSupportClass.OPERAND_ALL_NULL:
+                        guidance = (
+                            f"Measured cause: {evidence}. This is one-sided data, not "
+                            "absence — the filter is right and rows exist. Combine the "
+                            "operands with row-guarded NULL-safety per the "
+                            "empty-aggregation rule; do NOT abstain, and do NOT change "
+                            "the filter."
+                        )
                     else:
+                        # Unclassified (pre-DAT-658 rows, or evidence-gathering could
+                        # not run): the honest dual steer stays — the system measured
+                        # nothing, so the model must decide between the causes.
                         guidance = (
                             "Revise to address the reason, or abstain (low-confidence). If the "
                             "prior SQL aggregated to NULL, decide from the schema evidence which "
@@ -2161,7 +2486,7 @@ class GraphAgent(LLMFeature):
                     # The cause rides AHEAD of the symptom, and the abstain branch above
                     # replaces the guidance rather than appending to it.
                     cause = (
-                        f"\nThe system ABSTAINED from composing it: {abstained}\n"
+                        f"\nThe system ABSTAINED from composing it: {evidence}\n"
                         f"That, not the SQL, is why the value was NULL."
                         if abstained
                         else ""

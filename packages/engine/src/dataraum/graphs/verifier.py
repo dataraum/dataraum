@@ -10,6 +10,13 @@ is NO VALUE to stand behind:
   misdirected diagnosis of exactly the second case — DAT-699;
 - the composed value is NULL (a contributing extract had no support).
 
+Since DAT-658 the caller MAY hand in a typed, evidence-backed cause per
+NULL-aggregate step (``classify_no_support`` in agent.py computes it where the
+execution outcome, the connection, and the served value sets are all in scope).
+The verifier stays blind and IO-free — the classification arrives as DATA, and
+the no-support message then names the one measured cause instead of
+enumerating the possibility space.
+
 A catalogue-declared ``validation:`` bound (e.g. ``0 <= value <= 365``) is an
 EXPECTATION, not a gate (DAT-699): a violation FLAGS the executed metric
 (execute-and-flag, the DAT-631 amber pattern) — it never refuses the number.
@@ -34,14 +41,18 @@ from __future__ import annotations
 
 import ast
 import operator
-from collections.abc import Callable
+from collections.abc import Callable, Mapping
 from typing import TYPE_CHECKING, Any
 
 from dataraum.core.models.base import Result
 from dataraum.graphs.models import StepType
 
 if TYPE_CHECKING:
-    from dataraum.graphs.models import GraphExecution, TransformationGraph
+    from dataraum.graphs.models import (
+        GraphExecution,
+        NoSupportFinding,
+        TransformationGraph,
+    )
 
 _COMPARATORS: dict[type[ast.cmpop], Callable[[Any, Any], bool]] = {
     ast.Gt: operator.gt,
@@ -53,12 +64,21 @@ _COMPARATORS: dict[type[ast.cmpop], Callable[[Any, Any], bool]] = {
 }
 
 
-def verify_execution(graph: TransformationGraph, execution: GraphExecution) -> Result[list[str]]:
+def verify_execution(
+    graph: TransformationGraph,
+    execution: GraphExecution,
+    no_support: Mapping[str, NoSupportFinding] | None = None,
+) -> Result[list[str]]:
     """Judge a clean execution for support and non-degeneracy; flag declared expectations.
 
     Args:
         graph: The metric graph (carries each step's declared ``validations``).
         execution: The completed execution (per-step values + composed value).
+        no_support: Per-step classified cause for a NULL aggregate (DAT-658),
+            computed UPSTREAM by ``classify_no_support`` — this function does
+            no IO; a step present here has its rejection name the measured
+            class + evidence, one absent keeps the honest possibility-space
+            enumeration.
 
     Returns:
         ``Result.ok(flags)`` — the metric EXECUTES; ``flags`` is the (possibly
@@ -72,18 +92,28 @@ def verify_execution(graph: TransformationGraph, execution: GraphExecution) -> R
 
     # 1. Support: an extract whose aggregate is NULL has no measured support.
     #    With the COALESCE mask removed from the prompt, that surfaces as NULL
-    #    here — inconclusive (not a real value). Report ONLY the measurement:
-    #    this check cannot see whether the filter matched zero rows or whether
-    #    an aggregated operand was all-NULL over matched rows, and asserting
-    #    either would fabricate a cause (DAT-699). The reason enumerates the
-    #    possibility space so the re-author loop (retained failed snippet →
-    #    prior context) can resolve it instead of trusting a wrong diagnosis.
-    #    A non-extract step (formula/constant) that is NULL is degenerate —
-    #    word the reason for what the step actually is.
+    #    here — inconclusive (not a real value). This check itself cannot see
+    #    whether the filter matched zero rows or whether an aggregated operand
+    #    was all-NULL over matched rows, and asserting either unmeasured would
+    #    fabricate a cause (DAT-699). When the caller classified the step
+    #    (DAT-658 — evidence gathered upstream, where conn + served values
+    #    live), the reason names that one measured class; without a
+    #    classification the reason still enumerates the possibility space so
+    #    the re-author loop (retained failed snippet → prior context) can
+    #    resolve it instead of trusting a wrong diagnosis. A non-extract step
+    #    (formula/constant) that is NULL is degenerate — word the reason for
+    #    what the step actually is.
     for sr in execution.step_results:
         if sr.value is None:
             step = graph.steps.get(sr.step_id)
             if step is None or step.step_type == StepType.EXTRACT:
+                finding = (no_support or {}).get(sr.step_id)
+                if finding is not None:
+                    return Result.fail(
+                        f"extract '{sr.step_id}' has no support "
+                        f"({finding.reason_class}): {finding.evidence}; "
+                        "metric inconclusive, not a real value"
+                    )
                 return Result.fail(
                     f"extract '{sr.step_id}' has no support: it aggregated to NULL — "
                     "either its filter matched no rows, or an aggregated operand is "

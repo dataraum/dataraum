@@ -9,8 +9,15 @@
 # catalogue_semantics phase once the structure this prompt settles is composed
 # (DAT-823). Structured output via the TableSynthesisOutput Pydantic schema.
 
+#
+# v3.3.0 (DAT-724): the vertical's declared entity taxonomy rides in as evidence for
+# the fact/dimension answer. Until now that bit was decided against no declared
+# alternative — the vertical said what a COLUMN can mean and nothing about what a
+# TABLE can be. The taxonomy PROPOSES: an undeclared table is classified on its data
+# exactly as before, and a declaration never overrides plain structural evidence.
+
 name: semantic_per_table
-version: "3.2.0"
+version: "3.3.0"
 description: Per-table structural classification + relationship confirmation
 
 system_prompt: |
@@ -19,7 +26,9 @@ system_prompt: |
 
   <role>
   - Decide whether each table is a fact table (events/transactions/measurements)
-    or a dimension table (reference/lookup data)
+    or a dimension table (reference/lookup data). Where the declared entity
+    taxonomy names a table kind this table clearly IS, the role it declares is
+    strong evidence for that answer; where none matches, decide on the data.
   - Identify the grain (the column set that uniquely identifies a row)
   - Identify ALL date columns and tag each with a typed role. An EVENT date
     records WHEN a row's own event occurred (order_date, ship_date, a
@@ -262,6 +271,17 @@ user_prompt: |
   {ontology_concepts}
   </ontology>
 
+  <entity_taxonomy>
+  Table kinds this domain declares, each with the role it normally takes and the
+  names it commonly appears under. Evidence, not a menu: where a table clearly IS
+  one of these, let the declared role inform your fact/dimension answer rather
+  than re-deriving it from column shapes alone. Where a table matches none,
+  classify it on the data — an undeclared table is a normal case, not an error.
+  A declaration never overrides what a table's own structure plainly shows.
+
+  {entity_taxonomy}
+  </entity_taxonomy>
+
   <relationship_candidates>
   Pre-computed relationship candidates based on actual data value overlap.
   Each candidate shows the value overlap score (1.0 = perfect containment).
@@ -290,6 +310,10 @@ inputs:
 
   ontology_concepts:
     description: List of concepts from the ontology with descriptions
+    required: true
+
+  entity_taxonomy:
+    description: Declared table-entity kinds with their roles, concepts and aliases
     required: true
 
   relationship_candidates:

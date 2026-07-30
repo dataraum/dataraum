@@ -14,8 +14,16 @@
 # column_concepts block explained every sibling field and skipped this one — a
 # number the model had to emit blind on every column.
 
+#
+# v1.5.0 (DAT-724): the vertical's declared entity taxonomy rides in as evidence for
+# entity_type. That field was unconstrained free text — two runs over the same table
+# could answer "invoice", "vendor bill" and "AP document", none wrong and none
+# comparable, which is why the eval could only grade it report-only. Declared kinds
+# give it something to ground against. The taxonomy PROPOSES: a table matching no
+# declared entity is still described in the model's own words.
+
 name: catalogue_semantics
-version: "1.4.0"
+version: "1.5.0"
 description: Catalogue-horizon business semantics — table readings + column concepts
 
 system_prompt: |
@@ -29,7 +37,11 @@ system_prompt: |
 
   <table_readings>
   Emit a table_readings entry for EVERY table:
-  - entity_type: the real-world entity the table represents.
+  - entity_type: the real-world entity the table represents. Where the declared
+    entity taxonomy names a kind this table IS, answer with that entity's name
+    verbatim, so the same table reads the same way across runs. Where none fits,
+    name the entity in your own words — forcing a table into a declared kind it
+    is not is worse than an honest new name.
   - description: one sentence on the table's purpose in the business domain.
   Argue each reading at the catalogue horizon: what the table references and
   what references it, the axes it shares with other facts, and the value
@@ -189,6 +201,14 @@ user_prompt: |
   {required_standard_fields}
   </ontology>
 
+  <entity_taxonomy>
+  Table kinds this domain declares, with the concepts each normally carries and
+  the names it commonly appears under. Evidence for entity_type, not a menu: a
+  table that matches none of these is described in your own words.
+
+  {entity_taxonomy}
+  </entity_taxonomy>
+
   Author both surfaces and emit the required output structure.
 
 inputs:
@@ -222,6 +242,10 @@ inputs:
 
   required_standard_fields:
     description: Fields the workspace's metric definitions depend on
+    required: true
+
+  entity_taxonomy:
+    description: Declared table-entity kinds with their roles, concepts and aliases
     required: true
 
 # Output is defined by the CatalogueSemanticsOutput Pydantic schema

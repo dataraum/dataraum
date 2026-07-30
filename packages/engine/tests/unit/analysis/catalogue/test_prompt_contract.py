@@ -45,9 +45,25 @@ class TestCataloguePrompt:
             "ontology_name": "general",
             "ontology_concepts": "c",
             "required_standard_fields": "- revenue",
+            "entity_taxonomy": "- gl_line [fact]",
         }
         system, user = renderer.render_split("catalogue_semantics", context)
         assert system and user
+
+    def test_grounds_entity_type_on_the_declared_taxonomy(
+        self, catalogue: PromptTemplate
+    ) -> None:
+        """DAT-724: entity_type was free text answered against no declared
+        alternative. The taxonomy PROPOSES — the escape hatch for a table matching
+        no declared kind is part of the contract, not a nicety: without it the
+        framed-vertical / novel-table case degrades into forced misclassification."""
+        system = _flat(catalogue.system_prompt)
+        assert "Where the declared entity taxonomy names a kind this table IS" in system
+        assert "answer with that entity's name verbatim" in system
+        assert "Where none fits, name the entity in your own words" in system
+        user = _flat(catalogue.user_prompt)
+        assert "<entity_taxonomy>" in user
+        assert "Evidence for entity_type, not a menu" in user
 
     def test_carries_the_ambiguous_contract(self, catalogue: PromptTemplate) -> None:
         """'ambiguous' is declared ignorance WITH a meaning present (DAT-769/823)."""
@@ -75,6 +91,37 @@ class TestCataloguePrompt:
 
 
 class TestPerTablePromptShrink:
+    def test_renders_with_all_declared_inputs(self, renderer: PromptRenderer) -> None:
+        context = {
+            "tables_json": "[]",
+            "ontology_name": "general",
+            "ontology_concepts": "c",
+            "entity_taxonomy": "- gl_line [fact]",
+            "relationship_candidates": "r",
+            "column_annotations": "a",
+        }
+        system, user = renderer.render_split("semantic_per_table", context)
+        assert system and user
+
+    def test_grounds_the_fact_dimension_answer_on_the_taxonomy(
+        self, per_table: PromptTemplate
+    ) -> None:
+        """DAT-724: the declared role is EVIDENCE for is_fact_table, never a
+        substitute for structure. Both halves are pinned — softening the
+        'strong evidence' steer makes the taxonomy inert, and dropping the
+        'never overrides' guard turns a declaration into an override, which
+        ``derive_table_role``'s structural periodic_snapshot refinement (which
+        this value never reaches) is there to keep owning."""
+        system = _flat(per_table.system_prompt)
+        assert "Where the declared entity taxonomy names a table kind this table" in system
+        assert "strong evidence for that answer" in system
+        assert "where none matches, decide on the data" in system
+        user = _flat(per_table.user_prompt)
+        assert "<entity_taxonomy>" in user
+        assert "Evidence, not a menu" in user
+        assert "A declaration never overrides what a table's own structure plainly shows" in user
+
+
     def test_identity_note_is_structural_only(self, per_table: PromptTemplate) -> None:
         """The lead-adjacent ruling (DAT-823): identity notes are STRUCTURAL
         observations — an entity claim in a note would smuggle the business

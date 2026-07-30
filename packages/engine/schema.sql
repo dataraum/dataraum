@@ -744,6 +744,36 @@ CREATE INDEX idx_derived_table ON derived_columns (table_id);
 
 CREATE INDEX ix_derived_columns_run_id ON derived_columns (run_id);
 
+CREATE TABLE dimension_groundability (
+	groundability_id VARCHAR NOT NULL, 
+	run_id VARCHAR NOT NULL, 
+	vertical VARCHAR NOT NULL, 
+	column_id VARCHAR NOT NULL, 
+	table_id VARCHAR NOT NULL, 
+	column_name VARCHAR NOT NULL, 
+	table_name VARCHAR NOT NULL, 
+	status VARCHAR NOT NULL, 
+	verdict VARCHAR, 
+	reason VARCHAR, 
+	abstain_reason VARCHAR, 
+	created_at TIMESTAMP WITH TIME ZONE NOT NULL, 
+	CONSTRAINT pk_dimension_groundability PRIMARY KEY (groundability_id), 
+	CONSTRAINT uq_dimension_groundability_column_run UNIQUE (column_id, run_id), 
+	CONSTRAINT ck_dimension_groundability_status CHECK (status IN ('abstained', 'classified')), 
+	CONSTRAINT ck_dimension_groundability_verdict CHECK (verdict IS NULL OR verdict IN ('groundable', 'ungroundable')), 
+	CONSTRAINT ck_dimension_groundability_reason CHECK (reason IS NULL OR reason IN ('meaning_resolved', 'no_resolving_reference', 'not_coded_discriminator', 'resolving_reference_linked')), 
+	CONSTRAINT ck_dimension_groundability_abstain_reason CHECK (abstain_reason IS NULL OR abstain_reason IN ('no_catalogue_run', 'no_semantic_annotation')), 
+	CONSTRAINT ck_dimension_groundability_status_verdict_reason CHECK ((status = 'classified' AND verdict IS NOT NULL AND reason IS NOT NULL AND abstain_reason IS NULL AND ((verdict = 'ungroundable' AND reason = 'no_resolving_reference') OR (verdict = 'groundable' AND reason IN ('meaning_resolved', 'not_coded_discriminator', 'resolving_reference_linked')))) OR (status = 'abstained' AND verdict IS NULL AND reason IS NULL AND abstain_reason IS NOT NULL)), 
+	CONSTRAINT fk_dimension_groundability_column_id_columns FOREIGN KEY(column_id) REFERENCES columns (column_id), 
+	CONSTRAINT fk_dimension_groundability_table_id_tables FOREIGN KEY(table_id) REFERENCES tables (table_id)
+);
+
+CREATE INDEX ix_dimension_groundability_column_id ON dimension_groundability (column_id);
+
+CREATE INDEX ix_dimension_groundability_run_id ON dimension_groundability (run_id);
+
+CREATE INDEX ix_dimension_groundability_vertical ON dimension_groundability (vertical);
+
 CREATE TABLE driver_rankings (
 	ranking_id VARCHAR NOT NULL, 
 	run_id VARCHAR NOT NULL, 

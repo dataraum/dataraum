@@ -1497,6 +1497,39 @@ class TestPriorContextFeedback:
         assert "Revise to address the reason" not in out
         assert "one-sided data" not in out
 
+    def test_ungroundable_dimension_gets_link_reference_guidance(
+        self, session: Session, sample_graph
+    ) -> None:
+        """DAT-620, the same churn stop for the fifth class: a filter column whose
+        coded values resolve to nothing must not be served the generic revisable
+        steers — its branch says do-not-guess-another-predicate, carries the
+        evidence (which names the link-a-reference cure), and steers to the
+        fall-loud shape, with the linked-reference escape hatch instead of
+        concept_absent's data-change one."""
+        self._retain(
+            session,
+            {
+                "failure_mode": "verifier_rejected",
+                "failure_reason": "SENTINEL_NO_SUPPORT",
+                "no_support_class": "ungroundable_dimension",
+                "no_support_evidence": "SENTINEL_UNGROUNDABLE_EVIDENCE",
+            },
+        )
+
+        out = self._agent()._build_prior_context(session, sample_graph, None, "default")
+
+        assert "Do NOT guess another predicate" in out
+        assert "SENTINEL_UNGROUNDABLE_EVIDENCE" in out
+        assert "reference/lookup table" in out
+        assert "fall loud" in out
+        # The linked-reference escape hatch, not concept_absent's data-change one.
+        assert "linked reference table" in out
+        assert "the data has changed" not in out
+        # The revisable steers must not ride along.
+        assert "Revise to address the reason" not in out
+        assert "one-sided data" not in out
+        assert "NOT shown to be absent" not in out
+
     def test_predicate_zero_rows_gets_predicate_revision_guidance(
         self, session: Session, sample_graph
     ) -> None:
@@ -1675,6 +1708,81 @@ class TestNoSupportRetention:
         )
         assert rec is not None
         return rec.provenance or {}
+
+    _PRIOR_PARTS = {
+        "select": [{"expr": "SUM(amount)", "alias": "value"}],
+        "from": ["enriched_gl"],
+        "where": ["category = 'X1'"],
+    }
+
+    def _seed_nonrevisable_row(self, session: Session, reason_class: str) -> None:
+        """A retained non-revisable row WITH its authored parts — the DAT-671
+        artifact the fall-loud refresh must not wipe (senior critical)."""
+        from dataraum.query.snippet_library import SnippetLibrary
+
+        SnippetLibrary(session, workspace_id=baseline_run_id()).save_snippet(
+            snippet_type="extract",
+            sql="SELECT SUM(amount) AS value FROM enriched_gl WHERE category = 'X1'",
+            description="prior attempt",
+            schema_mapping_id="default",
+            source="graph:test_metric",
+            standard_field="test_field",
+            statement="test_table",
+            aggregation="sum",
+            provenance={
+                "failure_mode": "verifier_rejected",
+                "failure_reason": f"no support ({reason_class})",
+                "no_support_class": reason_class,
+                "no_support_evidence": "SENTINEL_STICKY_EVIDENCE",
+            },
+            parts=self._PRIOR_PARTS,
+            failed=True,
+        )
+        session.flush()
+
+    def _read_record(self, session: Session):
+        from dataraum.query.snippet_library import SnippetLibrary
+
+        rec = SnippetLibrary(session).retained_failure(
+            snippet_type="extract",
+            schema_mapping_id="default",
+            standard_field="test_field",
+            statement="test_table",
+            aggregation="sum",
+            predicate="",
+        )
+        assert rec is not None
+        return rec
+
+    @pytest.mark.parametrize("reason_class", ["concept_absent", "ungroundable_dimension"])
+    def test_compliant_fall_loud_refresh_keeps_class_and_parts(
+        self, session: Session, sample_graph, reason_class: str
+    ) -> None:
+        """The sticky carry preserves the CLASS and the PRIOR PARTS (senior
+        critical): save_snippet's refresh overwrites parts unconditionally, and
+        the fall-loud shape's ``from: []`` would destroy the row's filter-column
+        identity — the relation on ``current_groundings`` and the groundability
+        persist's dependency read both key on it. No ``context`` is passed here,
+        so the ungroundable carry cannot be re-judged and stands verbatim (the
+        fail-closed side of the DAT-620 re-evaluation gate)."""
+        self._seed_nonrevisable_row(session, reason_class)
+
+        self._agent()._save_failed_snippet(
+            session,
+            sample_graph,
+            self._fall_loud_code(),
+            "default",
+            workspace_id=baseline_run_id(),
+            mode=SnippetFailureMode.VERIFIER_REJECTED,
+            reason="no support: aggregated to NULL",
+            no_support={},  # the fall-loud shape classified as nothing
+        )
+
+        rec = self._read_record(session)
+        prov = rec.provenance or {}
+        assert prov.get("no_support_class") == reason_class
+        assert prov.get("no_support_evidence") == "SENTINEL_STICKY_EVIDENCE"
+        assert rec.parts == self._PRIOR_PARTS, "the refresh must not wipe the prior parts"
 
     def test_compliant_fall_loud_refresh_keeps_concept_absent(
         self, session: Session, sample_graph

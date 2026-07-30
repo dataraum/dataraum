@@ -119,6 +119,10 @@ _CATALOG_GRAIN: dict[str, str] = {
     "validation_results": "operating_model",
     "detected_business_cycles": "operating_model",
     "metric_axis_additivity": "operating_model",  # operating_model metrics phase (DAT-857/868)
+    # The ungroundable-dimension verdict (DAT-620) — same phase, same head as the
+    # additivity twin, so a consumer never reads a verdict computed against a
+    # grounding set that is no longer current.
+    "dimension_groundability": "operating_model",
     # The evaluated reconciles_with tie-out (DAT-739) — same phase, same head as
     # the groundings it re-executed, so a consumer can never read a tie-out
     # computed from a grounding set that is no longer current.

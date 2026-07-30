@@ -15,6 +15,7 @@ from __future__ import annotations
 
 import hashlib
 import json
+from collections.abc import Mapping
 from dataclasses import dataclass, field
 from datetime import UTC, datetime
 from decimal import Decimal
@@ -35,6 +36,7 @@ from dataraum.llm.prompts import PromptRenderer
 from dataraum.llm.providers.base import LLMProvider
 
 from .models import (
+    NON_REVISABLE_NO_SUPPORT,
     AssumptionBasis,
     ExtractGroundingOutput,
     FailedSnippetProvenance,
@@ -160,6 +162,13 @@ class ExecutionContext:
     # - Entropy scores and data readiness
     rich_context: Any | None = None  # GraphExecutionContext from graphs.context_models
 
+    # The pinned begin_session catalogue head this execution reads under —
+    # retained (DAT-620) so the no-support classification seam can evaluate the
+    # ungroundable-dimension verdict at the SAME run every other catalogue read
+    # was pinned to. None (e.g. a context built without rich context) disables
+    # that check — never a fallback to an unpinned read.
+    catalogue_run_id: str | None = None
+
     @classmethod
     def with_rich_context(
         cls,
@@ -211,6 +220,7 @@ class ExecutionContext:
         return cls(
             duckdb_conn=duckdb_conn,
             rich_context=rich_context,
+            catalogue_run_id=catalogue_run_id,
             **kwargs,
         )
 
@@ -253,6 +263,7 @@ def classify_no_support(
     column_mappings_basis: dict[str, Any] | None,
     served_values: dict[str, set[str]],
     composition_abstain: str | None = None,
+    ungroundable: Mapping[str, str] | None = None,
 ) -> NoSupportFinding | None:
     """Classify ONE extract's NULL aggregate into an evidence-backed cause (DAT-658).
 
@@ -304,6 +315,19 @@ def classify_no_support(
             enumerations ``validate_grounding_basis`` enforced, so "served"
             keeps one meaning across authoring, validation, and this verdict.
         composition_abstain: DAT-893's abstain reason off the generated code.
+        ungroundable: DAT-620 — ``{filter column name: evidence}`` for THIS
+            extract's filter columns that carry the deterministic
+            ungroundable-dimension verdict, computed by the caller
+            (``_ungroundable_filter_columns``) via ``graphs.groundability``.
+            Checked AHEAD of the probe: when a filter column's coded values are
+            unresolvable, any predicate over them was a guess, so both
+            measured conclusions below would misdirect — ``operand_all_null``
+            judges an operand over a guessed row population, and
+            ``concept_absent``'s absence screen is unsound over opaque codes
+            (an unserved declared value proves nothing when a served code may
+            well encode the concept). Empty/None on a groundable column —
+            classification then proceeds exactly as before (the ticket's
+            no-false-abstention criterion).
     """
     from dataraum.graphs.formula_composer import compose_where_predicate
 
@@ -322,6 +346,13 @@ def classify_no_support(
         select_expr = str(select[0].get("expr", "")).strip() if select else ""
         if not from_list and not where and select_expr == "NULL":
             return NoSupportFinding(NoSupportClass.COMPOSITION_ABSTAINED, composition_abstain)
+
+    if ungroundable:
+        # DAT-620: the one deterministic verdict that outranks the probe (see the
+        # docstring). One finding per step — the first column by name keeps the
+        # evidence deterministic when several filter columns carry the verdict.
+        _column, evidence = sorted(ungroundable.items())[0]
+        return NoSupportFinding(NoSupportClass.UNGROUNDABLE_DIMENSION, evidence)
 
     relation = from_list[0] if from_list else None
     if not relation:
@@ -390,6 +421,65 @@ def classify_no_support(
         NoSupportClass.CONCEPT_ABSENT,
         f"the served data carries no value for the concept's family: {detail}",
     )
+
+
+def _ungroundable_filter_columns(
+    session: Session,
+    parts: dict[str, Any] | None,
+    column_mappings_basis: dict[str, Any] | None,
+    context: ExecutionContext,
+) -> dict[str, str]:
+    """The failing extract's filter columns that carry the DAT-620 verdict.
+
+    ``{served filter-column name: evidence}`` for every filter column whose
+    typed source evaluates ``ungroundable`` — the input ``classify_no_support``
+    checks ahead of its probe. Filter columns come from the declared typed
+    ``filter_members`` UNION the DuckDB parse of the step's own ``where`` parts
+    (the same derivation the metrics phase's persist uses, so the two surfaces
+    see one dependency set). Empty when the context carries no pinned catalogue
+    run (no pinned read → no claim), when nothing resolves, or on any failure —
+    best-effort context, never a new failure (the classifier-probe contract).
+    """
+    from dataraum.graphs.groundability import (
+        GroundabilityVerdict,
+        evaluate_groundability,
+        resolve_served_filter_columns,
+        where_predicate_columns,
+    )
+
+    if context.catalogue_run_id is None:
+        return {}
+    relation = next(iter((parts or {}).get("from") or []), None)
+    if not relation:
+        return {}
+    try:
+        names: set[str] = set()
+        for basis in (column_mappings_basis or {}).values():
+            for member in (basis or {}).get("filter_members") or []:
+                if member.get("column"):
+                    names.add(str(member["column"]))
+        names |= where_predicate_columns((parts or {}).get("where") or [], context.duckdb_conn)
+        if not names:
+            return {}
+        resolved = resolve_served_filter_columns(session, str(relation), names)
+        if not resolved:
+            return {}
+        verdicts = evaluate_groundability(
+            session,
+            [resolved[name] for name in sorted(resolved)],
+            catalogue_run_id=context.catalogue_run_id,
+        )
+        by_column_id = {
+            v.column_id: v for v in verdicts if v.verdict is GroundabilityVerdict.UNGROUNDABLE
+        }
+        return {
+            name: by_column_id[str(col.column_id)].evidence()
+            for name, (col, _table) in resolved.items()
+            if str(col.column_id) in by_column_id
+        }
+    except Exception as exc:  # noqa: BLE001 - best-effort context, never a new failure
+        logger.warning("ungroundable_check_failed", relation=relation, error=str(exc))
+        return {}
 
 
 class GraphAgent(LLMFeature):
@@ -538,6 +628,7 @@ class GraphAgent(LLMFeature):
                 workspace_id=workspace_id,
                 mode=SnippetFailureMode.EXECUTION_FAILED,
                 reason=reason,
+                context=context,
             )
             return Result.fail(reason)
 
@@ -556,25 +647,27 @@ class GraphAgent(LLMFeature):
         # names the one measured cause instead of enumerating the possibility space —
         # the verifier itself stays blind and IO-free, the findings arrive as data.
         findings = self._classify_no_support_steps(
-            graph, execution, generated_code, cached_snippets, context
+            session, graph, execution, generated_code, cached_snippets, context
         )
         verdict = verify_execution(graph, execution, no_support=findings)
         if not verdict.success:
             reason = verdict.error or "metric verification failed"
-            # DAT-658 drift demotion: a CACHED extract classified CONCEPT_ABSENT is a
-            # healthy row whose declared values today's served data provably no longer
-            # carries — serving it for reuse again is serving a known-wrong grounding,
-            # and first-writer-wins would otherwise keep it healthy forever (the
-            # retained-failure write below no-ops on healthy rows). This is exactly
-            # ``demote_to_failure``'s contract (DAT-709): a verdict reached with
-            # strictly MORE information than the writer had. Gated to the one
-            # NON-REVISABLE, evidence-backed class — a revisable drift (zero rows,
-            # operand NULL) keeps DAT-636's first-writer-wins protection.
+            # DAT-658 drift demotion: a CACHED extract classified into a
+            # NON-REVISABLE class is a healthy row whose grounding today's evidence
+            # proves unsound — CONCEPT_ABSENT (its declared values are provably no
+            # longer served) and, since DAT-620, UNGROUNDABLE_DIMENSION (its filter
+            # column's coded values resolve to nothing, so the cached predicate was
+            # a guess). Serving either for reuse again is serving a known-wrong
+            # grounding, and first-writer-wins would otherwise keep it healthy
+            # forever (the retained-failure write below no-ops on healthy rows).
+            # This is exactly ``demote_to_failure``'s contract (DAT-709): a verdict
+            # reached with strictly MORE information than the writer had. Gated to
+            # the NON-REVISABLE, evidence-backed classes — a revisable drift (zero
+            # rows, operand NULL) keeps DAT-636's first-writer-wins protection.
             absent_cached = [
                 step_id
                 for step_id, finding in findings.items()
-                if finding.reason_class is NoSupportClass.CONCEPT_ABSENT
-                and step_id in cached_snippets
+                if finding.reason_class in NON_REVISABLE_NO_SUPPORT and step_id in cached_snippets
             ]
             if absent_cached:
                 from dataraum.query.snippet_library import SnippetLibrary
@@ -613,6 +706,7 @@ class GraphAgent(LLMFeature):
                 # nulling the just-preserved parts (and with them the row's relation
                 # on current_groundings) while re-writing identical content.
                 skip_steps=set(absent_cached),
+                context=context,
             )
             return Result.fail(reason)
         execution.verification_flags = verdict.unwrap() or []
@@ -717,7 +811,7 @@ class GraphAgent(LLMFeature):
         # lifecycle state_reason; no retained-failure row is written here (the failure
         # is metric-level — the cached extract snippets stay first-writer-protected).
         findings = self._classify_no_support_steps(
-            graph, execution, generated_code, cached_snippets, context
+            session, graph, execution, generated_code, cached_snippets, context
         )
         verdict = verify_execution(graph, execution, no_support=findings)
         if not verdict.success:
@@ -1376,6 +1470,7 @@ class GraphAgent(LLMFeature):
                 workspace_id=workspace_id,
                 mode=SnippetFailureMode.PROVENANCE_INVALID,
                 reason=reason,
+                context=context,
             )
             return Result.fail(reason)
 
@@ -1565,6 +1660,7 @@ class GraphAgent(LLMFeature):
 
     def _classify_no_support_steps(
         self,
+        session: Session,
         graph: TransformationGraph,
         execution: GraphExecution,
         generated_code: GeneratedCode,
@@ -1580,6 +1676,16 @@ class GraphAgent(LLMFeature):
         receives the findings as data (it stays IO-free) and its rejection
         names the measured class; ``_save_failed_snippet`` persists the same
         finding on the retained row.
+
+        ``session`` (DAT-620) feeds the ungroundable-dimension check: the
+        failing step's filter columns are resolved to their typed identity and
+        evaluated by ``graphs.groundability`` at the context's pinned catalogue
+        run — the SAME deterministic evaluation the metrics phase persists as
+        ``dimension_groundability`` rows, so for a FRESHLY-MEASURED finding the
+        failure message and the persisted verdict cannot disagree within a run.
+        (A finding CARRIED across a compliant fall-loud refresh is a prior
+        run's measurement — ``_save_failed_snippet``'s sticky branch re-checks
+        it where the pinned reads are available.)
 
         Per failing step the parts + basis come from wherever that step was
         minted: a freshly-AUTHORED step carries its parts on the generated step
@@ -1624,6 +1730,7 @@ class GraphAgent(LLMFeature):
                 column_mappings_basis=basis,
                 served_values=served_values,
                 composition_abstain=generated_code.composition_abstain,
+                ungroundable=_ungroundable_filter_columns(session, parts, basis, context),
             )
             if finding is not None:
                 findings[step_id] = finding
@@ -2055,6 +2162,7 @@ class GraphAgent(LLMFeature):
         reason: str,
         no_support: dict[str, NoSupportFinding] | None = None,
         skip_steps: set[str] | None = None,
+        context: ExecutionContext | None = None,
     ) -> None:
         """Retain an authored-but-unusable EXTRACT SQL, flagged (DAT-543).
 
@@ -2086,6 +2194,13 @@ class GraphAgent(LLMFeature):
         (the DAT-658 drift demotion writes the row itself, keeping its sql AND
         parts) — writing them again here from cache-composed step dicts, which
         carry no ``parts``, would null exactly what the demote preserved.
+
+        ``context`` (DAT-620) feeds the sticky-carry branch's re-evaluation of a
+        prior ``ungroundable_dimension`` verdict — the evaluator is cheap and
+        deterministic, so a verdict the workspace has since cleared (a linked
+        reference) is dropped instead of carried stale. ``None`` (or no pinned
+        catalogue run on it) means the carry cannot be re-judged and stands
+        verbatim — never a fail-open drop on missing evidence.
 
         This loops over EVERY extract leaf in the graph (execution/verifier failure is
         graph-level — there is no per-leaf attribution), stamping each with the same
@@ -2123,21 +2238,23 @@ class GraphAgent(LLMFeature):
                 )
                 continue
             finding = (no_support or {}).get(step_id)
+            carry_parts: dict[str, Any] | None = None
             if (
                 finding is None
                 and mode is SnippetFailureMode.VERIFIER_REJECTED
                 and not (gen_step.get("parts") or {}).get("from")
             ):
-                # Sticky CONCEPT_ABSENT (DAT-658). A model that FOLLOWS the
-                # do-not-re-author guidance emits the fall-loud shape, which
-                # classifies as nothing (no relation → no probe, no claim) — a
-                # plain refresh would then STRIP the absence verdict from the
-                # retained row and the run after that would get the generic
-                # guidance again, resurrecting exactly the churn the class
-                # stops. Compliance is not new evidence, so an UNCLASSIFIED
-                # fall-loud refresh carries the prior row's concept_absent
-                # forward verbatim; any measured finding above replaces it, and
-                # a clean authoring heals the row entirely (failure_count → 0).
+                # Sticky NON-REVISABLE verdicts (DAT-658, widened by DAT-620). A
+                # model that FOLLOWS the do-not-re-author guidance emits the
+                # fall-loud shape, which classifies as nothing (no relation → no
+                # probe, no claim) — a plain refresh would then STRIP the verdict
+                # from the retained row and the run after that would get the
+                # generic guidance again, resurrecting exactly the churn the
+                # class stops. Compliance is not new evidence, so an UNCLASSIFIED
+                # fall-loud refresh carries the prior row's non-revisable class
+                # (concept_absent / ungroundable_dimension) forward; any measured
+                # finding above replaces it, and a clean authoring heals the row
+                # entirely (failure_count → 0).
                 prior = library.retained_failure(
                     snippet_type="extract",
                     schema_mapping_id=schema_mapping_id,
@@ -2147,13 +2264,57 @@ class GraphAgent(LLMFeature):
                     predicate=graph_step.source.predicate,
                 )
                 prior_prov = (prior.provenance or {}) if prior else {}
-                if prior_prov.get(
-                    "no_support_class"
-                ) == NoSupportClass.CONCEPT_ABSENT and prior_prov.get("no_support_evidence"):
-                    finding = NoSupportFinding(
-                        NoSupportClass.CONCEPT_ABSENT,
-                        prior_prov["no_support_evidence"],
-                    )
+                prior_class = prior_prov.get("no_support_class")
+                if (
+                    prior is not None
+                    and prior_class in {c.value for c in NON_REVISABLE_NO_SUPPORT}
+                    and prior_prov.get("no_support_evidence")
+                ):
+                    # PARTS preservation (senior critical): save_snippet's refresh
+                    # branch overwrites the row's parts unconditionally, and the
+                    # fall-loud shape's parts (`from: []`) carry ZERO information
+                    # while destroying the row's filter-column identity — the
+                    # DAT-671 artifact everything downstream keys on: the
+                    # groundability persist's dependency read (`if not relation:
+                    # continue` would silently drop the column, so "absence means
+                    # not-a-dependency" on the read surface becomes a lie) and
+                    # current_groundings' relation column. So a compliant
+                    # fall-loud refresh over EITHER non-revisable class keeps the
+                    # prior row's parts — even when the class carry itself is
+                    # dropped by the re-evaluation below, because the dependency
+                    # identity must survive regardless of the verdict's fate.
+                    carry_parts = prior.parts
+                    keep_carry = True
+                    if (
+                        prior_class == NoSupportClass.UNGROUNDABLE_DIMENSION
+                        and context is not None
+                        and context.catalogue_run_id is not None
+                    ):
+                        # Re-evaluate before forwarding (DAT-620): unlike
+                        # concept_absent (whose escape hatch is the model checking
+                        # the served Value sets), this verdict's evaluator is
+                        # cheap, deterministic, and readable right here — so a
+                        # verdict the workspace has since cleared (reference
+                        # linked) is DROPPED, not carried stale. The un-evaluable
+                        # paths (no context / no pinned catalogue run) keep the
+                        # carry verbatim — absence of evidence is not evidence of
+                        # clearance. A transient evaluator failure degrades to {}
+                        # and drops the carry: the cost is one unclassified
+                        # re-authoring turn, after which a fresh classification
+                        # re-measures the verdict.
+                        keep_carry = bool(
+                            _ungroundable_filter_columns(
+                                session,
+                                prior.parts,
+                                prior_prov.get("column_mappings_basis"),
+                                context,
+                            )
+                        )
+                    if keep_carry:
+                        finding = NoSupportFinding(
+                            NoSupportClass(prior_class),
+                            prior_prov["no_support_evidence"],
+                        )
             provenance = FailedSnippetProvenance(
                 failure_mode=mode,
                 failure_reason=reason,
@@ -2171,7 +2332,7 @@ class GraphAgent(LLMFeature):
                 aggregation=graph_step.aggregation,
                 predicate=graph_step.source.predicate,
                 provenance=provenance,
-                parts=gen_step.get("parts"),
+                parts=carry_parts if carry_parts is not None else gen_step.get("parts"),
                 failed=True,
             )
         logger.debug("saved_failed_snippet", graph_id=graph.graph_id, mode=mode)
@@ -2468,6 +2629,27 @@ class GraphAgent(LLMFeature):
                             "assumption naming the concept it could not be separated from). "
                             "Never re-emit the colliding extract, and never hand back the "
                             "other concept's."
+                        )
+                    elif reason_class == NoSupportClass.UNGROUNDABLE_DIMENSION:
+                        # DAT-620: NON-REVISABLE — the filter column's coded values
+                        # resolve to nothing in the served workspace, so ANY predicate
+                        # over them is a guess and a different one is churn by
+                        # construction. The one condition under which re-authoring is
+                        # not churn is a NEWLY LINKED reference/lookup table resolving
+                        # these values — visible in the served schema/relationships of
+                        # THIS run's prompt, at which point the fresh classification
+                        # no longer produces the class.
+                        guidance = (
+                            f"Do NOT guess another predicate over this filter column — "
+                            f"{evidence}. Any filter over these coded values is a guess "
+                            "until a reference/lookup table that resolves them is linked; "
+                            "a superficially different predicate will fail the same way. "
+                            "UNLESS the schema served above now carries such a linked "
+                            "reference table (a new relation or joined dimension "
+                            "resolving these values), re-author against THAT; otherwise "
+                            "fall loud: empty relation, select_expr NULL, empty "
+                            "column_mappings_basis, and ONE LOW-confidence assumption "
+                            "naming the unresolvable filter column."
                         )
                     elif reason_class == NoSupportClass.CONCEPT_ABSENT:
                         # DAT-658: NON-REVISABLE — the served data provably carries no

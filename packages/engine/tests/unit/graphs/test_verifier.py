@@ -139,15 +139,10 @@ class TestSupportGate:
 
         assert verify_execution(graph, execution).success
 
-    @pytest.mark.parametrize(
-        "reason_class",
-        [
-            NoSupportClass.PREDICATE_MATCHED_NO_ROWS,
-            NoSupportClass.OPERAND_ALL_NULL,
-            NoSupportClass.CONCEPT_ABSENT,
-            NoSupportClass.COMPOSITION_ABSTAINED,
-        ],
-    )
+    # The WHOLE vocabulary, not a hand-kept list: every class — including a
+    # newly added one (DAT-620's ungroundable_dimension was the first) — must
+    # ride the rejection message the same way.
+    @pytest.mark.parametrize("reason_class", list(NoSupportClass))
     def test_classified_null_names_the_class_not_the_possibility_space(
         self, reason_class: NoSupportClass
     ) -> None:

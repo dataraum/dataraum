@@ -295,9 +295,7 @@ def test_no_flow_anchor_designated_at_all_still_reports_an_absence(
     """The mirror: nothing was ever designated, so there is no mismatch to name."""
     reason = _observe_with_measures(monkeypatch, [_axis(axis=None, grain=None, recorded=None)])
 
-    assert (
-        reason == "flow 'cost_of_goods_sold' has no anchor time axis to observe a span on"
-    )
+    assert reason == "flow 'cost_of_goods_sold' has no anchor time axis to observe a span on"
 
 
 def test_a_served_flow_anchor_without_a_profile_names_that_fact(

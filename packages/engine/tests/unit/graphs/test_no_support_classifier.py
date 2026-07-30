@@ -205,9 +205,7 @@ class TestClassifier:
             is None
         )
 
-    def test_multi_relation_parts_are_unclassifiable(
-        self, conn: duckdb.DuckDBPyConnection
-    ) -> None:
+    def test_multi_relation_parts_are_unclassifiable(self, conn: duckdb.DuckDBPyConnection) -> None:
         """No engine path composes a multi-FROM extract today, but the parts schema
         allows one — and the single-relation COUNT probe cannot mirror its scan (a
         WHERE touching only the first relation's columns would count unjoined rows

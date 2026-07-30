@@ -898,6 +898,22 @@ export const validations = pgView("validations", {
 	sql`SELECT row_id, vertical, validation_id, name, description, category, severity, check_type, tolerance, guidance, expected_outcome, relevant_cycles, relevant_conventions, tags, version, source, created_at, superseded_at FROM engine.validations WHERE vertical::text = COALESCE(( SELECT workspace_settings.active_vertical FROM engine.workspace_settings), '_adhoc'::character varying)::text`,
 );
 
+export const verticalEntities = pgView("vertical_entities", {
+	verticalEntityId: varchar("vertical_entity_id"),
+	vertical: varchar(),
+	name: varchar(),
+	role: varchar(),
+	description: text(),
+	concepts: json(),
+	cycles: json(),
+	aliases: json(),
+	source: varchar(),
+	createdAt: timestamp("created_at"),
+	supersededAt: timestamp("superseded_at"),
+}).as(
+	sql`SELECT vertical_entity_id, vertical, name, role, description, concepts, cycles, aliases, source, created_at, superseded_at FROM engine.vertical_entities WHERE vertical::text = COALESCE(( SELECT workspace_settings.active_vertical FROM engine.workspace_settings), '_adhoc'::character varying)::text`,
+);
+
 export const verticalEnvelopes = pgView("vertical_envelopes", {
 	envelopeId: varchar("envelope_id"),
 	vertical: varchar(),

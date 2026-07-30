@@ -212,9 +212,7 @@ def test_drifted_absent_concept_demotes_to_typed_non_revisable_provenance(
     # classified CONCEPT_ABSENT, and the stale healthy row demoted with the typed,
     # evidence-backed provenance.
     agent.provider.converse.reset_mock()
-    result = agent.execute(
-        pg_session, graph, _context(duckdb_conn, ["Rent"]), workspace_id=WS_ID
-    )
+    result = agent.execute(pg_session, graph, _context(duckdb_conn, ["Rent"]), workspace_id=WS_ID)
     agent.provider.converse.assert_not_called()
     assert not result.success
     assert "concept_absent" in result.error

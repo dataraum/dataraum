@@ -1698,9 +1698,7 @@ class TestNoSupportRetention:
         assert prov.get("no_support_class") == "concept_absent"
         assert prov.get("no_support_evidence") == "SENTINEL_ABSENCE_EVIDENCE"
 
-    def test_measured_finding_replaces_concept_absent(
-        self, session: Session, sample_graph
-    ) -> None:
+    def test_measured_finding_replaces_concept_absent(self, session: Session, sample_graph) -> None:
         """A NEW measured finding is new evidence — it replaces the carried verdict
         (the sticky rule protects compliance, never contradicts a measurement)."""
         self._seed_absent_row(session)

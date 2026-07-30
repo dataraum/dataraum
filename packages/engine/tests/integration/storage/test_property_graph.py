@@ -1229,9 +1229,11 @@ def test_measure_anchor_time_axis_is_never_the_evidence_relations_axis(
         "COLUMNS (c.table_id AS table_id, c.anchor_time_axis AS anchor))"
     )
     with graph_engine.connect() as conn:
-        rows = dict(conn.execute(text(sql)).all())
+        # A LIST, not a dict: a duplicate vertex would collapse silently into a dict and
+        # the KEY-uniqueness this view must hold would go unasserted.
+        rows = sorted(conn.execute(text(sql)).all())
     # 'posted_at' — the event side — must appear on neither.
-    assert rows == {"t1": "period_date", "t_enr": "period_date"}
+    assert rows == [("t1", "period_date"), ("t_enr", "period_date")]
 
 
 def test_measure_anchor_time_axis_falls_back_to_declared_anchor(graph_engine: Engine) -> None:

@@ -1388,6 +1388,51 @@ class TestPriorContextFeedback:
         # here would answer a question this failure never asked.
         assert "one-sided data" not in out
 
+    def test_composition_abstention_names_the_cause_not_the_symptom(
+        self, session: Session, sample_graph
+    ) -> None:
+        """DAT-893: an abstained extract's retry is told the SYSTEM withheld composition.
+
+        The retained SQL here is the fall-loud ``SELECT NULL AS value`` the agent never
+        authored, and ``failure_reason`` is the verifier's generic "no support" — a
+        symptom the model did not cause. Without the abstain reason the retry sees only
+        that its value was NULL, and the generic steer ("if the prior SQL aggregated to
+        NULL, decide whether the concept has no supporting rows") reads as directly
+        applicable, pushing it to abstain on a grounding that was fine.
+        """
+        from dataraum.query.snippet_library import SnippetLibrary
+
+        SnippetLibrary(session, workspace_id=baseline_run_id()).save_snippet(
+            snippet_type="extract",
+            sql="SELECT NULL AS value",
+            description="abstained attempt",
+            schema_mapping_id="default",
+            source="graph:test_metric",
+            standard_field="test_field",
+            statement="test_table",
+            aggregation="sum",
+            provenance={
+                "failure_mode": "verifier_rejected",
+                "failure_reason": "SENTINEL_NO_SUPPORT",
+                "composition_abstain": "SENTINEL_ANCHOR_MISMATCH",
+            },
+            failed=True,
+        )
+        session.flush()
+
+        out = self._agent()._build_prior_context(session, sample_graph, None, "default")
+
+        assert "SENTINEL_ANCHOR_MISMATCH" in out, "the retry must know what actually failed"
+        assert "ABSTAINED" in out
+        # The cause must not be buried BEHIND the symptom.
+        assert out.index("SENTINEL_ANCHOR_MISMATCH") < out.index("Prior SQL")
+        assert "NOT a grounding defect" in out
+        # The generic NULL-aggregation steer contradicts the abstention (the prior SQL is
+        # LITERALLY a NULL) and must not ride along — the same discipline the collision
+        # branch already keeps.
+        assert "one-sided data" not in out
+        assert "concept has no supporting rows" not in out
+
     def test_retained_failure_reuse_excluded_but_fed_back(
         self, session: Session, sample_graph
     ) -> None:

@@ -434,11 +434,27 @@ def _element_view_sql(name: str) -> str:
         # the measure's enriched view, so recording the event axis made every stock
         # measure on a snapshot table unbindable: balance_sheet.ending_balance anchored to
         # the journal-lines axis `entry_id__date`, the binder abstained, and the extract
-        # composed `SELECT NULL AS value`. The anchor of a measure is an axis ON ITS OWN
-        # TABLE; the evidence axis keeps its own home on the lineage row, where the audit
-        # trail reads it. `measure_time_axis_column` is the measure table's own declared
-        # event axis that won the competition, and enriched views pass fact columns
-        # through under their original names — so it resolves on the served relation.
+        # composed `SELECT NULL AS value`. It broke FLOWS the same way and for the same
+        # reason — materialization prefers the witness too, so a witness-classified flow
+        # ALSO carried an evidence-relation anchor, and period_resolver fell back to the
+        # flagged config window for every one of them.
+        #
+        # The anchor of a measure is an axis ON ITS OWN TABLE. `measure_time_axis_column`
+        # is the measure table's own declared event axis that won the competition, and
+        # enriched views serve fact columns under their original names (views/builder.py
+        # seeds the dedup set with them, so a fact column always wins its name against a
+        # colliding dim one) — so it resolves on the served relation FOR A MEASURE THAT IS
+        # ITS FACT'S OWN COLUMN.
+        #
+        # That does NOT hold for every vertex this view emits, which is why the consumer
+        # guard is live code and not dead: the ENRICHED branch also serves DIM-SOURCED
+        # measures, which resolve `mal` — and `declared_anchor`, via
+        # `te.table_id = src.table_id` — through the DIMENSION's table. Such an axis is
+        # served on the fact's view as `{fk}__{col}`, never under its bare name, so a
+        # dim-sourced measure's anchor is generally NOT servable on the relation it is
+        # read from. Not a regression (the event-side value was unservable for those too),
+        # but a REACHABLE unservable anchor — which the consumer must NAME rather than
+        # report as an absence (boundary_resolver._resolve).
         #
         # stored_sign (DAT-875) — the RESOLVED storage convention of a monetary
         # measure ('natural_balance' | 'ledger_signed'), served raw: unlike

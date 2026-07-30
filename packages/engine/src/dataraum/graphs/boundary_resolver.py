@@ -334,6 +334,18 @@ def _resolve(
     # cause. Checked BEFORE the emptiness test so a mismatch is never reported as an
     # absence, and across ALL stocks so a second measure's unservable anchor cannot hide
     # behind a first measure's good one.
+    #
+    # That last part is a deliberate BEHAVIOUR change, not just a relabelling, and it is
+    # the one path here that turns a previously-binding extract into a fall-loud: with two
+    # stock operands where only one anchor resolves, the old code bound on the resolvable
+    # one. It is reachable — `parse_aggregate_calls` unions the columns of every call, so
+    # one select_expr can mix a fact measure with a dim-sourced one whose anchor is served
+    # only as `{fk}__{col}`. Binding operand A's instant while operand B trends on an axis
+    # this relation cannot carry misstates B, which is exactly the class of silent error
+    # this module exists to refuse.
+    #
+    # `if s.recorded` also treats '' as absent: `declared_anchor` comes from unvalidated
+    # LLM JSON, and an empty anchor name is an absence, not a mismatch worth naming.
     unservable = sorted({s.recorded for s in stocks if s.axis is None and s.recorded})
     if unservable:
         named = ", ".join(repr(a) for a in unservable)

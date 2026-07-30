@@ -2102,7 +2102,26 @@ class GraphAgent(LLMFeature):
                     prov = rec.provenance or {}
                     mode = prov.get("failure_mode", "failed")
                     why = prov.get("failure_reason", "(no reason recorded)")
-                    if mode == SnippetFailureMode.DISJOINT_COLLISION:
+                    abstained = prov.get("composition_abstain")
+                    if abstained:
+                        # DAT-893: the SYSTEM withheld composition — the extract the
+                        # verifier rejected is the fall-loud `SELECT NULL AS value` this
+                        # agent never authored, so `why` describes a symptom the model
+                        # did not cause. Its own branch, like the collision one below:
+                        # the generic "if the prior SQL aggregated to NULL" tail reads as
+                        # directly applicable here (the prior SQL is LITERALLY a NULL)
+                        # and would send the turn hunting supporting rows for a grounding
+                        # that may have been perfectly fine.
+                        guidance = (
+                            "This is NOT a grounding defect to revise around: the system "
+                            "could not resolve a reporting instant for a point-in-time "
+                            "measure on the relation you grounded on. Re-author the "
+                            "grounding normally — do NOT add a period predicate of your "
+                            "own to work around it, and do NOT abstain merely because the "
+                            "prior value was NULL. If a DIFFERENT relation serves the same "
+                            "concept with its own period axis, prefer it."
+                        )
+                    elif mode == SnippetFailureMode.DISJOINT_COLLISION:
                         # DAT-709: the cross-concept guard already named the disjoint
                         # partner(s) in `why`, and the prior SQL above is the statement
                         # BOTH concepts produced. What this turn needs is the
@@ -2128,12 +2147,8 @@ class GraphAgent(LLMFeature):
                             "operands with row-guarded NULL-safety per the empty-aggregation "
                             "rule)."
                         )
-                    # DAT-893: when the prior failure was an ABSTENTION, `why` describes
-                    # the symptom the verifier saw (a NULL with no support) and the
-                    # guidance above would send this turn chasing its own SQL. Name the
-                    # actual cause first — the system withheld composition, the authored
-                    # grounding may have been fine.
-                    abstained = prov.get("composition_abstain")
+                    # The cause rides AHEAD of the symptom, and the abstain branch above
+                    # replaces the guidance rather than appending to it.
                     cause = (
                         f"\nThe system ABSTAINED from composing it: {abstained}\n"
                         f"That, not the SQL, is why the value was NULL."

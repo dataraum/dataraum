@@ -171,6 +171,7 @@ def _axis(**kw: object) -> _MeasureAxis:
         "materialization": "flow",
         "axis": "period_date",
         "grain": "month",
+        "recorded": "period_date",
         "persisted_span_days": 334.0,
         "persisted_actual_periods": 12,
         "axis_is_view_own": True,

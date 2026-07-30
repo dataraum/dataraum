@@ -719,13 +719,19 @@ def test_an_anchor_from_another_relation_persists_the_named_reason(
     pg_session: Session,
     duckdb_conn: duckdb.DuckDBPyConnection,
 ) -> None:
-    """The constructed mismatch, all the way to the read surface.
+    """The constructed mismatch, and its reason's trip through the read surface.
 
-    DAT-893's writer fix makes this unreachable through the witness on a clean corpus, so
-    the mismatch is constructed directly: an anchor naming a column the served relation
-    does not carry. Two things must hold — the binder NAMES the axis and the relation
-    rather than reporting an absence, and that reason survives onto the persisted
-    failure, where ``failure_reason`` alone would say only "no support".
+    DAT-893's writer fix makes this unreachable through the witness for a measure that is
+    its fact's own column, so the mismatch is constructed directly: an anchor naming a
+    column the served relation does not carry. Two things must hold — the binder NAMES
+    the axis and the relation rather than reporting an absence, and the reason survives
+    ``current_groundings``, where ``failure_reason`` alone would say only "no support".
+
+    Scope, precisely: this covers the resolver and the provenance ROUND-TRIP (the record
+    is written the way the agent writes it, then read back off the view). It does NOT
+    drive ``_save_failed_snippet`` — that wire is covered by the unit case
+    ``test_the_abstain_reason_reaches_the_persisted_failure_provenance``, which calls the
+    real writer. The two together cover the path; neither does alone.
     """
     _seed(pg_session)
     # The anchor now names an axis of the EVIDENCE relation — exactly what the old view

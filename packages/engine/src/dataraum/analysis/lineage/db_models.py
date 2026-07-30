@@ -60,8 +60,13 @@ class MeasureAggregationLineage(Base):
     # feeds the anchor designation (``og_columns.anchor_time_axis``, DAT-893) — an
     # anchor is the axis a measure trends by on ITS OWN relation, and the event side
     # names a column of the evidence fact, which the measure's served view does not
-    # carry. The event side is kept for the audit trail (which axis the reconciliation
-    # actually ran against), which is the ONE thing it is read for.
+    # carry.
+    #
+    # ``event_time_axis_column`` has NO code reader as of DAT-893 (it is written here and
+    # projected into the cockpit's Drizzle mirror; nothing selects it). It is retained as
+    # the audit record of which axis the reconciliation actually ran against — the
+    # reproducibility claim DAT-778 added these fields for. Stated plainly so the next
+    # reader reaches for a real consumer instead of inferring one from this comment.
     measure_time_axis_column: Mapped[str] = mapped_column(String, nullable=False)
     measure_time_axis_column_id: Mapped[str | None] = mapped_column(
         ForeignKey("columns.column_id"), nullable=True

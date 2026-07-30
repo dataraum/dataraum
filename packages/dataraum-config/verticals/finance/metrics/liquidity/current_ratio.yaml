@@ -4,6 +4,7 @@ metadata:
   name: Current Ratio
   description: Measure of short-term liquidity - ability to pay current liabilities
   category: liquidity
+  dimension_facet: capital
   source: system
   tags:
   - liquidity

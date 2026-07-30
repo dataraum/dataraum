@@ -4,6 +4,7 @@ metadata:
   name: Transaction Count
   description: Number of ledger transactions recorded in the period
   category: activity
+  dimension_facet: cross_cutting
   source: system
   tags:
   - activity

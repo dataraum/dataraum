@@ -90,7 +90,8 @@ LEFT JOIN LATERAL (
   ) declared_anchor ON TRUE;
 
 CREATE VIEW __READ__.og_concepts AS
-SELECT concept_id::text AS concept_id, vertical, name, kind, ordering
+SELECT concept_id::text AS concept_id, vertical, name, kind, ordering,
+       dimension_facet
 FROM __READ__.concepts
 WHERE superseded_at IS NULL;
 
@@ -531,7 +532,8 @@ WHERE cc.unit_source_column IS NOT NULL
   AND cc.unit_source_column <> 'dimensionless';
 
 CREATE VIEW __READ__.og_metrics AS
-SELECT graph_id::text AS graph_id, vertical, name, category, unit, output_type
+SELECT graph_id::text AS graph_id, vertical, name, category, unit, output_type,
+       dimension_facet
 FROM __READ__.metrics
 WHERE superseded_at IS NULL;
 
@@ -566,7 +568,7 @@ CREATE PROPERTY GRAPH __READ__.operating_model
       PROPERTIES (column_id, table_id, column_name, semantic_role, materialization,
                   anchor_time_axis, stored_sign),
     __READ__.og_concepts KEY (concept_id) LABEL concept_node
-      PROPERTIES (concept_id, vertical, name, kind, ordering),
+      PROPERTIES (concept_id, vertical, name, kind, ordering, dimension_facet),
     __READ__.og_grounding KEY (snippet_id) LABEL grounding_node
       PROPERTIES (snippet_id, concept, statement, aggregation,
                   relation, select_expr, where_predicates, description, failed,
@@ -577,7 +579,8 @@ CREATE PROPERTY GRAPH __READ__.operating_model
       PROPERTIES (additivity_id, target_kind, target_key, axis_kind, axis_key,
                   status, verdict, reason, abstain_reason, bucket_grain),
     __READ__.og_metrics KEY (graph_id) LABEL metric_node
-      PROPERTIES (graph_id, vertical, name, category, unit, output_type),
+      PROPERTIES (graph_id, vertical, name, category, unit, output_type,
+                  dimension_facet),
     __READ__.og_metric_parameters KEY (parameter_id) LABEL parameter_node
       PROPERTIES (parameter_id, graph_id, name, param_type, default_value,
                   options, derivation, description),

@@ -67,13 +67,15 @@ CREATE TABLE concepts (
 	exclude_patterns JSON, 
 	unit_from_concept VARCHAR, 
 	ordering VARCHAR, 
+	dimension_facet VARCHAR, 
 	source VARCHAR, 
 	created_at TIMESTAMP WITHOUT TIME ZONE NOT NULL, 
 	superseded_at TIMESTAMP WITHOUT TIME ZONE, 
 	CONSTRAINT pk_concepts PRIMARY KEY (concept_id), 
 	CONSTRAINT ck_concepts_kind CHECK (kind IN ('dimension', 'entity', 'measure', 'unit')), 
 	CONSTRAINT ck_concepts_source CHECK (source IS NULL OR source IN ('seed', 'frame')), 
-	CONSTRAINT ck_concepts_ordering CHECK (ordering IS NULL OR ordering IN ('nominal', 'ordered'))
+	CONSTRAINT ck_concepts_ordering CHECK (ordering IS NULL OR ordering IN ('nominal', 'ordered')), 
+	CONSTRAINT ck_concepts_dimension_facet CHECK (dimension_facet IS NULL OR dimension_facet IN ('capacity', 'capital', 'cross_cutting', 'demand', 'offer', 'supply', 'throughput'))
 );
 
 CREATE UNIQUE INDEX uq_concept_active ON concepts (vertical, name) WHERE superseded_at IS NULL;
@@ -307,11 +309,13 @@ CREATE TABLE metrics (
 	description TEXT, 
 	output JSON, 
 	dependencies JSON, 
+	dimension_facet VARCHAR, 
 	source VARCHAR, 
 	created_at TIMESTAMP WITHOUT TIME ZONE NOT NULL, 
 	superseded_at TIMESTAMP WITHOUT TIME ZONE, 
 	CONSTRAINT pk_metrics PRIMARY KEY (metric_id), 
-	CONSTRAINT ck_metrics_source CHECK (source IS NULL OR source IN ('seed'))
+	CONSTRAINT ck_metrics_source CHECK (source IS NULL OR source IN ('seed')), 
+	CONSTRAINT ck_metrics_dimension_facet CHECK (dimension_facet IS NULL OR dimension_facet IN ('capacity', 'capital', 'cross_cutting', 'demand', 'offer', 'supply', 'throughput'))
 );
 
 CREATE UNIQUE INDEX uq_metric_active ON metrics (vertical, graph_id) WHERE superseded_at IS NULL;

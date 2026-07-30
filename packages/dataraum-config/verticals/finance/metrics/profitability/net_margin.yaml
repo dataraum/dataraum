@@ -4,6 +4,7 @@ metadata:
   name: Net Margin
   description: Net income as a percentage of revenue
   category: profitability
+  dimension_facet: cross_cutting
   source: system
   tags:
   - profitability

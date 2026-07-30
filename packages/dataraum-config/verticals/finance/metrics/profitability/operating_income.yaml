@@ -4,6 +4,7 @@ metadata:
   name: Operating Income
   description: Profit from core operations before interest and taxes
   category: profitability
+  dimension_facet: cross_cutting
   source: system
   tags:
   - profitability

@@ -4,6 +4,7 @@ metadata:
   name: Days Inventory Outstanding
   description: Average days inventory is held before being sold
   category: working_capital
+  dimension_facet: capital
   source: system
   tags:
   - inventory

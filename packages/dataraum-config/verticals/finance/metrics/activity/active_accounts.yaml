@@ -4,6 +4,7 @@ metadata:
   name: Active Accounts
   description: Number of distinct ledger accounts transacted in the period
   category: activity
+  dimension_facet: cross_cutting
   source: system
   tags:
   - activity

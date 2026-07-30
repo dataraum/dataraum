@@ -4,6 +4,7 @@ metadata:
   name: Days Sales Outstanding
   description: Average days to collect payment after sale
   category: working_capital
+  dimension_facet: capital
   source: system
   tags:
   - ar

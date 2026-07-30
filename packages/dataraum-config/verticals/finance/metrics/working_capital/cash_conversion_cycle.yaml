@@ -4,6 +4,7 @@ metadata:
   name: Cash Conversion Cycle
   description: Days between paying suppliers and collecting from customers
   category: working_capital
+  dimension_facet: capital
   source: system
   tags:
   - working-capital

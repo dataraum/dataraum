@@ -4,6 +4,7 @@ metadata:
   name: Average Transaction Value
   description: Mean monetary value per ledger transaction
   category: activity
+  dimension_facet: cross_cutting
   source: system
   tags:
   - activity

@@ -628,6 +628,7 @@ class GraphAgent(LLMFeature):
                 workspace_id=workspace_id,
                 mode=SnippetFailureMode.EXECUTION_FAILED,
                 reason=reason,
+                context=context,
             )
             return Result.fail(reason)
 
@@ -705,6 +706,7 @@ class GraphAgent(LLMFeature):
                 # nulling the just-preserved parts (and with them the row's relation
                 # on current_groundings) while re-writing identical content.
                 skip_steps=set(absent_cached),
+                context=context,
             )
             return Result.fail(reason)
         execution.verification_flags = verdict.unwrap() or []
@@ -1468,6 +1470,7 @@ class GraphAgent(LLMFeature):
                 workspace_id=workspace_id,
                 mode=SnippetFailureMode.PROVENANCE_INVALID,
                 reason=reason,
+                context=context,
             )
             return Result.fail(reason)
 
@@ -1678,8 +1681,11 @@ class GraphAgent(LLMFeature):
         failing step's filter columns are resolved to their typed identity and
         evaluated by ``graphs.groundability`` at the context's pinned catalogue
         run — the SAME deterministic evaluation the metrics phase persists as
-        ``dimension_groundability`` rows, so the failure message and the
-        persisted verdict cannot disagree within a run.
+        ``dimension_groundability`` rows, so for a FRESHLY-MEASURED finding the
+        failure message and the persisted verdict cannot disagree within a run.
+        (A finding CARRIED across a compliant fall-loud refresh is a prior
+        run's measurement — ``_save_failed_snippet``'s sticky branch re-checks
+        it where the pinned reads are available.)
 
         Per failing step the parts + basis come from wherever that step was
         minted: a freshly-AUTHORED step carries its parts on the generated step
@@ -2156,6 +2162,7 @@ class GraphAgent(LLMFeature):
         reason: str,
         no_support: dict[str, NoSupportFinding] | None = None,
         skip_steps: set[str] | None = None,
+        context: ExecutionContext | None = None,
     ) -> None:
         """Retain an authored-but-unusable EXTRACT SQL, flagged (DAT-543).
 
@@ -2187,6 +2194,13 @@ class GraphAgent(LLMFeature):
         (the DAT-658 drift demotion writes the row itself, keeping its sql AND
         parts) — writing them again here from cache-composed step dicts, which
         carry no ``parts``, would null exactly what the demote preserved.
+
+        ``context`` (DAT-620) feeds the sticky-carry branch's re-evaluation of a
+        prior ``ungroundable_dimension`` verdict — the evaluator is cheap and
+        deterministic, so a verdict the workspace has since cleared (a linked
+        reference) is dropped instead of carried stale. ``None`` (or no pinned
+        catalogue run on it) means the carry cannot be re-judged and stands
+        verbatim — never a fail-open drop on missing evidence.
 
         This loops over EVERY extract leaf in the graph (execution/verifier failure is
         graph-level — there is no per-leaf attribution), stamping each with the same
@@ -2224,6 +2238,7 @@ class GraphAgent(LLMFeature):
                 )
                 continue
             finding = (no_support or {}).get(step_id)
+            carry_parts: dict[str, Any] | None = None
             if (
                 finding is None
                 and mode is SnippetFailureMode.VERIFIER_REJECTED
@@ -2237,13 +2252,9 @@ class GraphAgent(LLMFeature):
                 # generic guidance again, resurrecting exactly the churn the
                 # class stops. Compliance is not new evidence, so an UNCLASSIFIED
                 # fall-loud refresh carries the prior row's non-revisable class
-                # (concept_absent / ungroundable_dimension) forward verbatim; any
-                # measured finding above replaces it, and a clean authoring heals
-                # the row entirely (failure_count → 0). For ungroundable_dimension
-                # the escape hatch lives in the GUIDANCE, not here: once a
-                # resolving reference is linked, the served schema shows it, the
-                # model authors real SQL (not fall-loud), and the fresh
-                # classification simply no longer produces the class.
+                # (concept_absent / ungroundable_dimension) forward; any measured
+                # finding above replaces it, and a clean authoring heals the row
+                # entirely (failure_count → 0).
                 prior = library.retained_failure(
                     snippet_type="extract",
                     schema_mapping_id=schema_mapping_id,
@@ -2254,13 +2265,56 @@ class GraphAgent(LLMFeature):
                 )
                 prior_prov = (prior.provenance or {}) if prior else {}
                 prior_class = prior_prov.get("no_support_class")
-                if prior_class in {c.value for c in NON_REVISABLE_NO_SUPPORT} and prior_prov.get(
-                    "no_support_evidence"
+                if (
+                    prior is not None
+                    and prior_class in {c.value for c in NON_REVISABLE_NO_SUPPORT}
+                    and prior_prov.get("no_support_evidence")
                 ):
-                    finding = NoSupportFinding(
-                        NoSupportClass(prior_class),
-                        prior_prov["no_support_evidence"],
-                    )
+                    # PARTS preservation (senior critical): save_snippet's refresh
+                    # branch overwrites the row's parts unconditionally, and the
+                    # fall-loud shape's parts (`from: []`) carry ZERO information
+                    # while destroying the row's filter-column identity — the
+                    # DAT-671 artifact everything downstream keys on: the
+                    # groundability persist's dependency read (`if not relation:
+                    # continue` would silently drop the column, so "absence means
+                    # not-a-dependency" on the read surface becomes a lie) and
+                    # current_groundings' relation column. So a compliant
+                    # fall-loud refresh over EITHER non-revisable class keeps the
+                    # prior row's parts — even when the class carry itself is
+                    # dropped by the re-evaluation below, because the dependency
+                    # identity must survive regardless of the verdict's fate.
+                    carry_parts = prior.parts
+                    keep_carry = True
+                    if (
+                        prior_class == NoSupportClass.UNGROUNDABLE_DIMENSION
+                        and context is not None
+                        and context.catalogue_run_id is not None
+                    ):
+                        # Re-evaluate before forwarding (DAT-620): unlike
+                        # concept_absent (whose escape hatch is the model checking
+                        # the served Value sets), this verdict's evaluator is
+                        # cheap, deterministic, and readable right here — so a
+                        # verdict the workspace has since cleared (reference
+                        # linked) is DROPPED, not carried stale. The un-evaluable
+                        # paths (no context / no pinned catalogue run) keep the
+                        # carry verbatim — absence of evidence is not evidence of
+                        # clearance. A transient evaluator failure degrades to {}
+                        # and drops the carry: the cost is one unclassified
+                        # re-authoring turn, after which a fresh classification
+                        # re-measures the verdict.
+                        keep_carry = bool(
+                            _ungroundable_filter_columns(
+                                session,
+                                prior.parts,
+                                prior_prov.get("column_mappings_basis"),
+                                context,
+                            )
+                        )
+                    if keep_carry:
+                        finding = NoSupportFinding(
+                            NoSupportClass(prior_class),
+                            prior_prov["no_support_evidence"],
+                        )
             provenance = FailedSnippetProvenance(
                 failure_mode=mode,
                 failure_reason=reason,
@@ -2278,7 +2332,7 @@ class GraphAgent(LLMFeature):
                 aggregation=graph_step.aggregation,
                 predicate=graph_step.source.predicate,
                 provenance=provenance,
-                parts=gen_step.get("parts"),
+                parts=carry_parts if carry_parts is not None else gen_step.get("parts"),
                 failed=True,
             )
         logger.debug("saved_failed_snippet", graph_id=graph.graph_id, mode=mode)

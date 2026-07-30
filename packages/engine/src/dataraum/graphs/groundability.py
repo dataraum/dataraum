@@ -43,7 +43,17 @@ vertical's instance; no domain vocabulary lives here.)
    table carries one. **v1 approximation, documented:** "resolving" means the
    reachable table HAS name/description-shaped material (a non-key
    VARCHAR/TEXT column other than the join key) — whether that text actually
-   describes these values is not verified.
+   describes these values is not verified, and a composite-key reference
+   table's SECOND key column reads as text-like material too (the safe
+   direction: it can only make a linked table count as resolving).
+
+Leg 3 measures DETECTED, CONFIRMED edges only — a resolving table may exist
+un-detected or un-confirmed. The trigger deliberately still fires then
+(abstaining on candidates would neuter the class: candidate confidence is
+DAT-839 overlap noise, and judge-DECLINED pairs stay ``candidate`` forever);
+instead, candidate edges that reach text-bearing tables are DISCLOSED on the
+evidence (``candidate_links``) so the user is routed to CONFIRM the
+relationship rather than re-upload a table that is already there.
 
 **No false abstention** (the ticket's third criterion): when the resolving
 table IS linked, leg 3 fails, the verdict is ``groundable`` with the reason
@@ -54,8 +64,11 @@ persists one run-versioned row per evaluated dependency column
 (``dimension_groundability``, read as ``current_dimension_groundability``), and
 the ``classify_no_support`` seam (agent.py) turns an ``ungroundable`` verdict on
 a failing extract's filter column into the ``UNGROUNDABLE_DIMENSION`` no-support
-class. Both consume THIS evaluator, so the persisted row and the failure
-message can never disagree within a run.
+class. Both consume THIS evaluator, so for FRESHLY-MEASURED findings the
+persisted row and the failure message cannot disagree within a run. (A finding
+CARRIED across a compliant fall-loud refresh is a prior run's measurement: the
+sticky carry in ``_save_failed_snippet`` re-evaluates it where the pinned reads
+are available and keeps it verbatim where they are not.)
 """
 
 from __future__ import annotations
@@ -133,7 +146,13 @@ GROUNDABLE_REASONS: frozenset[str] = frozenset(
 
 @dataclass(frozen=True)
 class ColumnGroundability:
-    """One typed discriminator column's verdict (or typed abstention), run-stampable."""
+    """One typed discriminator column's verdict (or typed abstention), run-stampable.
+
+    ``candidate_links`` counts UNCONFIRMED candidate edges from/to this column
+    that reach a text-bearing table — leg 3 does not measure them (see the
+    module note), but the evidence disclosure routes the user to confirm one
+    instead of re-uploading a table that already exists.
+    """
 
     column_id: str
     column_name: str
@@ -143,15 +162,29 @@ class ColumnGroundability:
     verdict: GroundabilityVerdict | None = None
     reason: GroundabilityReason | None = None
     abstain_reason: GroundabilityAbstainReason | None = None
+    candidate_links: int = 0
 
     def evidence(self) -> str:
-        """The UNGROUNDABLE_DIMENSION message: the column, its table, and the generic cure."""
-        return (
+        """The UNGROUNDABLE_DIMENSION message: the column, its table, and the generic cure.
+
+        Honest about what leg 3 measured: no CONFIRMED relationship — not
+        "nothing in the workspace" — and when unconfirmed candidate links to
+        text-bearing tables exist, they are disclosed so confirming one is the
+        first move, not another upload.
+        """
+        base = (
             f"filter column '{self.column_name}' of table '{self.table_name}' holds "
-            "coded values nothing in the workspace resolves (no resolved meaning, no "
-            "ontology match, and no linked reference table); link a reference/lookup "
-            "table that resolves these values"
+            "coded values with no resolved meaning, no ontology match, and no "
+            "confirmed relationship linking them to a reference table; link a "
+            "reference/lookup table that resolves these values (or confirm the "
+            "relationship if the table already exists)"
         )
+        if self.candidate_links:
+            base += (
+                f"; {self.candidate_links} unconfirmed candidate link(s) exist — "
+                "confirming one may resolve these values"
+            )
+        return base
 
 
 def where_predicate_columns(
@@ -166,7 +199,10 @@ def where_predicate_columns(
     filter columns are recovered from its own predicate strings via DuckDB's
     catalog-free parse (``json_serialize_sql`` — the ``parse_aggregate_calls``
     machinery, additivity.py), stripping any table qualifier. A predicate that
-    does not parse contributes nothing (best-effort recovery, warned).
+    does not parse contributes nothing (best-effort recovery, warned). The walk
+    descends into SUBQUERY nodes too — harmless over-collection: a name that
+    belongs to an inner relation simply resolves to no served column and is
+    skipped at resolution.
     """
     columns: set[str] = set()
     for predicate in where:
@@ -312,18 +348,22 @@ def evaluate_groundability(
         if str(run) == heads.get(table_by_column.get(str(cid), "")):
             role_by_column[str(cid)] = role
 
-    # og_references membership at the base table: reference kinds only, defined
-    # catalogue only. The SQL `!=` drops NULL detection_method rows exactly as the
-    # og_references view does (three-valued logic; no writer produces NULL).
+    # Edges at the pinned catalogue run, in two classes. CONFIRMED references are
+    # og_references membership at the base table (reference kinds, defined
+    # catalogue — the Python filter mirrors the view's SQL `!=`, which drops NULL
+    # detection_method rows; no writer produces NULL). CANDIDATE edges
+    # (detection_method='candidate', incl. judge-declined pairs, which stay
+    # candidate — DAT-824) never satisfy leg 3; they feed the disclosure count
+    # only (see the module note).
     edges = session.execute(
         select(
             Relationship.from_column_id,
             Relationship.to_table_id,
             Relationship.to_column_id,
+            Relationship.relationship_type,
+            Relationship.detection_method,
         ).where(
             Relationship.run_id == catalogue_run_id,
-            Relationship.relationship_type.in_(["foreign_key", "hierarchy"]),
-            Relationship.detection_method != "candidate",
             or_(
                 Relationship.from_column_id.in_(column_ids),
                 Relationship.to_column_id.in_(column_ids),
@@ -331,19 +371,32 @@ def evaluate_groundability(
         )
     ).all()
 
-    # (resolving table, columns excluded from the non-key text check) per column.
+    # (resolving table, columns excluded from the non-key text check) per column,
+    # split by edge class.
     evaluated = set(column_ids)
     probe_tables: dict[str, list[tuple[str, set[str]]]] = {}
-    for from_col, to_table, to_col in edges:
+    candidate_probes: dict[str, list[tuple[str, set[str]]]] = {}
+    for from_col, to_table, to_col, rel_type, method in edges:
+        if method == "candidate":
+            target = candidate_probes
+        elif rel_type in ("foreign_key", "hierarchy") and method is not None:
+            target = probe_tables
+        else:
+            continue  # conformed_dimension et al. — neither a reference nor a candidate
         if str(from_col) in evaluated:
             # Child side: the referenced (parent) table would resolve the codes.
-            probe_tables.setdefault(str(from_col), []).append((str(to_table), {str(to_col)}))
+            target.setdefault(str(from_col), []).append((str(to_table), {str(to_col)}))
         if str(to_col) in evaluated:
             # Parent side: the column IS a reference table's key — its own
             # non-key siblings are the resolution.
-            probe_tables.setdefault(str(to_col), []).append((str(to_table), {str(to_col)}))
+            target.setdefault(str(to_col), []).append((str(to_table), {str(to_col)}))
 
-    text_tables = _tables_with_nonkey_text(session, probe_tables)
+    all_probes = [
+        probe
+        for candidates in (*probe_tables.values(), *candidate_probes.values())
+        for probe in candidates
+    ]
+    text_tables = _tables_with_nonkey_text(session, all_probes)
 
     out: list[ColumnGroundability] = []
     for col, table in cols:
@@ -357,6 +410,11 @@ def evaluate_groundability(
         resolved_by_reference = any(
             (probe_table, tuple(sorted(excluded))) in text_tables
             for probe_table, excluded in probe_tables.get(cid, [])
+        )
+        candidate_links = sum(
+            1
+            for probe_table, excluded in candidate_probes.get(cid, [])
+            if (probe_table, tuple(sorted(excluded))) in text_tables
         )
         if not coded:
             verdict, reason = (
@@ -384,20 +442,17 @@ def evaluate_groundability(
                 status=GroundabilityStatus.CLASSIFIED,
                 verdict=verdict,
                 reason=reason,
+                candidate_links=candidate_links,
             )
         )
     return out
 
 
 def _tables_with_nonkey_text(
-    session: Session, probe_tables: Mapping[str, list[tuple[str, set[str]]]]
+    session: Session, all_probes: Iterable[tuple[str, set[str]]]
 ) -> set[tuple[str, tuple[str, ...]]]:
     """Which ``(table, excluded key columns)`` probes carry a non-key text-like column."""
-    probes = {
-        (table_id, tuple(sorted(excluded)))
-        for candidates in probe_tables.values()
-        for table_id, excluded in candidates
-    }
+    probes = {(table_id, tuple(sorted(excluded))) for table_id, excluded in all_probes}
     if not probes:
         return set()
     table_ids = sorted({table_id for table_id, _ in probes})

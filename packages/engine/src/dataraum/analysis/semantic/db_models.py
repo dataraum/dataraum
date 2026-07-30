@@ -790,8 +790,11 @@ class ColumnConcept(Base):
             present — the meaning text states what is undetermined and what
             would settle it (the DAT-769 contract licenses this). NULL on rows
             written before the column existed (no backfill) and on rows without
-            a meaning (a coverage gap is not a judgment). No consumer branches
-            on it — it is queryable state, not a decision surface.
+            a meaning (a coverage gap is not a judgment). One consumer branches
+            on it: the DAT-620 groundability verdict reads ``'ambiguous'`` as
+            the agent's persisted abstention on the meaning
+            (``graphs/groundability.py``, opacity leg) — consuming the declared
+            ignorance, never overriding the judgment (ADR-0009).
         temporal_behavior: the resolved stock/flow ('additive' / 'point_in_time')
             for this column — data-determined (DAT-657): the resolved-layer pass
             writes the LLM claim reconciled with the data-grounded structural

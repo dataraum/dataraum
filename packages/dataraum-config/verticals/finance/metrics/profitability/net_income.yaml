@@ -4,6 +4,7 @@ metadata:
   name: Net Income
   description: Bottom-line profit after all expenses, interest, and taxes
   category: profitability
+  dimension_facet: cross_cutting
   source: system
   tags:
   - profitability

@@ -4,6 +4,7 @@ metadata:
   name: Gross Margin
   description: Gross profit as a percentage of revenue
   category: profitability
+  dimension_facet: offer
   source: system
   tags:
   - profitability

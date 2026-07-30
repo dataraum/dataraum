@@ -25,7 +25,8 @@ concepts:
       - expense
     kind: measure
     unit_from_concept: currency
-    
+    dimension_facet: demand
+
   - name: cost_of_goods_sold
     description: Direct costs attributable to goods sold
     indicators:
@@ -34,7 +35,8 @@ concepts:
       - cost_of_sales
       - direct_cost
     kind: measure
-    
+    dimension_facet: offer
+
   - name: operating_expense
     description: Expenses from normal business operations
     indicators:
@@ -44,7 +46,8 @@ concepts:
       - sga
       - overhead
     kind: measure
-    
+    dimension_facet: cross_cutting
+
   - name: depreciation
     description: Allocation of asset cost over useful life
     indicators:
@@ -53,7 +56,8 @@ concepts:
       - amortization
       - amort
     kind: measure
-    
+    dimension_facet: cross_cutting
+
   - name: interest
     description: Interest income or expense
     indicators:
@@ -62,7 +66,8 @@ concepts:
       - interest_income
       - finance_cost
     kind: measure
-    
+    dimension_facet: capital
+
   - name: tax
     description: Tax expense or benefit
     indicators:
@@ -71,7 +76,8 @@ concepts:
       - tax_expense
       - tax_provision
     kind: measure
-    
+    dimension_facet: cross_cutting
+
   - name: fiscal_period
     kind: dimension
     description: Time period for financial reporting
@@ -84,6 +90,7 @@ concepts:
       - fy
       - month
       - date
+    dimension_facet: cross_cutting
 
   - name: entity
     kind: entity
@@ -96,7 +103,8 @@ concepts:
       - cost_center
       - department
       - business_unit
-    
+    dimension_facet: cross_cutting
+
   - name: account
     kind: entity
     description: Chart of accounts entry
@@ -106,7 +114,8 @@ concepts:
       - account_code
       - account_number
       - coa
-    
+    dimension_facet: cross_cutting
+
   - name: currency
     kind: unit
     description: Currency of monetary values
@@ -114,6 +123,7 @@ concepts:
       - currency
       - ccy
       - curr
+    dimension_facet: cross_cutting
 
   # Balance Sheet Concepts
   - name: accounts_receivable
@@ -129,6 +139,7 @@ concepts:
       - a/r_paid
     kind: measure
     unit_from_concept: currency
+    dimension_facet: capital
 
   - name: accounts_payable
     description: Money owed by the company to suppliers
@@ -143,6 +154,7 @@ concepts:
       - a/p_paid
     kind: measure
     unit_from_concept: currency
+    dimension_facet: capital
 
   - name: inventory
     description: Goods held for sale or production
@@ -154,6 +166,7 @@ concepts:
       - work_in_progress
       - finished_goods
     kind: measure
+    dimension_facet: capital
 
   - name: current_assets
     description: Assets expected to be converted to cash within one year
@@ -162,6 +175,7 @@ concepts:
       - short_term_assets
       - liquid_assets
     kind: measure
+    dimension_facet: capital
 
   - name: current_liabilities
     description: Obligations due within one year
@@ -170,6 +184,7 @@ concepts:
       - short_term_liabilities
       - current_debt
     kind: measure
+    dimension_facet: capital
 
   - name: cash
     description: Cash and cash equivalents
@@ -180,6 +195,7 @@ concepts:
       - cash_equivalents
     kind: measure
     unit_from_concept: currency
+    dimension_facet: capital
 
   - name: open_balance
     description: Outstanding balance on an account or transaction
@@ -191,6 +207,7 @@ concepts:
       - unpaid
     kind: measure
     unit_from_concept: currency
+    dimension_facet: cross_cutting
 
   # Trial-balance / ledger period balances (DAT-405). Without this concept,
   # debit_balance/credit_balance keyword-match the `debit`/`credit` FLOW
@@ -211,6 +228,7 @@ concepts:
       - beginning_balance
     kind: measure
     unit_from_concept: currency
+    dimension_facet: cross_cutting
 
   - name: transaction_amount
     description: Monetary value of a transaction
@@ -222,6 +240,7 @@ concepts:
       - price
     kind: measure
     unit_from_concept: currency
+    dimension_facet: cross_cutting
 
   - name: debit
     description: Debit entry in double-entry accounting
@@ -230,6 +249,7 @@ concepts:
       - dr
     kind: measure
     unit_from_concept: currency
+    dimension_facet: cross_cutting
 
   - name: credit
     description: Credit entry in double-entry accounting
@@ -238,6 +258,7 @@ concepts:
       - cr
     kind: measure
     unit_from_concept: currency
+    dimension_facet: cross_cutting
 
   - name: equity
     description: Owner's equity or shareholders' equity
@@ -251,6 +272,7 @@ concepts:
       - net_assets
     kind: measure
     unit_from_concept: currency
+    dimension_facet: capital
 
 # Domain conventions, piped VERBATIM to any SQL-authoring agent (extraction,
 # validation, qa) — DAT-645. The engine parses only the generic envelope (id /

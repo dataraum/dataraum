@@ -4,6 +4,7 @@ metadata:
   name: Gross Profit
   description: Revenue minus cost of goods sold
   category: profitability
+  dimension_facet: offer
   source: system
   tags:
   - profitability

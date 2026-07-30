@@ -4,6 +4,7 @@ metadata:
   name: EBITDA
   description: Earnings before interest, taxes, depreciation, and amortization
   category: profitability
+  dimension_facet: cross_cutting
   source: system
   tags:
   - profitability

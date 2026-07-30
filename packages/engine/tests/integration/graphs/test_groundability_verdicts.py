@@ -38,7 +38,7 @@ from dataraum.analysis.relationships.db_models import Relationship
 from dataraum.analysis.semantic.db_models import SemanticAnnotation
 from dataraum.analysis.views.db_models import EnrichedView
 from dataraum.core.models.base import Result
-from dataraum.graphs.agent import ExecutionContext, GraphAgent
+from dataraum.graphs.agent import ExecutionContext, GeneratedCode, GraphAgent
 from dataraum.graphs.context_models import (
     ColumnContext,
     GraphExecutionContext,
@@ -52,6 +52,7 @@ from dataraum.graphs.models import (
     GraphStep,
     OutputDef,
     OutputType,
+    SnippetFailureMode,
     StepSource,
     StepType,
     TransformationGraph,
@@ -68,6 +69,7 @@ CAT_RUN = "cat-run-620"
 GEN_RUN = "gen-run-620"
 OM_RUN_1 = "om-run-620-1"
 OM_RUN_2 = "om-run-620-2"
+OM_RUN_3 = "om-run-620-3"
 VIEW = "enriched_coded_ledger"
 
 
@@ -260,6 +262,33 @@ def _authoring_agent() -> GraphAgent:
     return agent
 
 
+def _fall_loud_agent() -> GraphAgent:
+    """A GraphAgent whose mocked LLM COMPLIES with the do-not-guess guidance:
+    the fall-loud shape (empty relation, select_expr NULL, empty basis)."""
+    config = MagicMock()
+    config.limits.max_output_tokens_per_request = 4000
+    config.features.graph_sql_generation = None
+    renderer = MagicMock()
+    renderer.render_split.return_value = ("system", "user")
+    agent = GraphAgent(config=config, provider=MagicMock(), prompt_renderer=renderer)
+    agent.provider.get_model_for_tier.return_value = "test-model"
+    response = MagicMock()
+    response.tool_calls = []
+    response.content = json.dumps(
+        {
+            "grounding": "cannot ground: the filter column's coded values are unresolvable",
+            "relation": "",
+            "where": [],
+            "select_expr": "NULL",
+            "description": "fall-loud: unresolvable coded discriminator",
+            "assumptions": [],
+            "provenance": {"column_mappings_basis": []},
+        }
+    )
+    agent.provider.converse = MagicMock(return_value=Result.ok(response))
+    return agent
+
+
 def _link_reference(session: Session, ids: dict[str, str]) -> None:
     """The cure: a reference table resolving the codes, joined by a defined FK."""
     source = Source(name=f"src_ref_{uuid4().hex[:8]}", source_type="csv")
@@ -300,6 +329,42 @@ def _link_reference(session: Session, ids: dict[str, str]) -> None:
             confidence=0.95,
             detection_method="llm",
             confirmation_source="judge",
+        )
+    )
+    session.commit()
+
+
+def _seed_healthy_snippet(session: Session) -> None:
+    """A HEALTHY grounding row for ``_graph()``'s extract — typed filter_members
+    on the provenance, parts with the coded filter."""
+    from dataraum.query.snippet_models import SQLSnippetRecord
+
+    session.add(
+        SQLSnippetRecord(
+            workspace_id=WS_ID,
+            schema_mapping_id=WS_ID,
+            snippet_type="extract",
+            standard_field="segment_cost",
+            statement="income_statement",
+            aggregation="sum",
+            sql=f"SELECT SUM(amount) AS value FROM {VIEW} WHERE entity_code = '4000'",
+            source="graph:segment_cost",
+            parts={
+                "select": [{"expr": "SUM(amount)", "alias": "value"}],
+                "from": [VIEW],
+                "where": ["entity_code = '4000'"],
+            },
+            provenance={
+                "column_mappings_basis": {
+                    "segment_cost": {
+                        "measure_columns": ["amount"],
+                        "filter_columns": ["entity_code"],
+                        "filter": "entity_code = '4000'",
+                        "filter_members": [{"column": "entity_code", "value": "4000"}],
+                    }
+                },
+                "assumptions": [],
+            },
         )
     )
     session.commit()
@@ -385,9 +450,24 @@ def test_coded_discriminator_fails_honest_and_clears_when_reference_links(
     _promote_om(pg_session, OM_RUN_1)
     assert _current_rows(pg_session) == [("entity_code", "ungroundable", "no_resolving_reference")]
 
-    # 4 — LINK the resolving reference table: the next run's rows clear the
-    # verdict (no false abstention), and the promoted head serves them.
-    _link_reference(pg_session, ids)
+    # 4 — the COMPLIANT FALL-LOUD refresh (senior critical regression): the model
+    # obeys the do-not-guess guidance; the sticky carry must keep the class AND
+    # the prior row's parts through save_snippet's refresh — without the parts,
+    # the dependency read would drop the column and the verdict row (and the
+    # relation on current_groundings) would silently vanish from this run on.
+    fall_loud = _fall_loud_agent()
+    result = fall_loud.execute(pg_session, _graph(), _context(duckdb_conn), workspace_id=WS_ID)
+    assert not result.success
+    pg_session.flush()
+    row = pg_session.execute(
+        text(  # noqa: S608
+            f"SELECT provenance, relation, parts FROM {groundings} WHERE concept = 'segment_cost'"
+        )
+    ).one()
+    assert row[0]["no_support_class"] == "ungroundable_dimension", "compliance must not strip"
+    assert row[1] == VIEW, "the refresh must not wipe the row's relation off the read surface"
+    assert row[2]["where"] == ["entity_code = '4000'"], "the prior parts must survive"
+
     _persist_groundability_verdicts(
         pg_session,
         duckdb_conn,
@@ -400,6 +480,25 @@ def test_coded_discriminator_fails_honest_and_clears_when_reference_links(
     )
     pg_session.commit()
     _promote_om(pg_session, OM_RUN_2)
+    assert _current_rows(pg_session) == [
+        ("entity_code", "ungroundable", "no_resolving_reference")
+    ], "the verdict row must persist across a compliant fall-loud run — absence would lie"
+
+    # 5 — LINK the resolving reference table: the next run's rows clear the
+    # verdict (no false abstention), and the promoted head serves them.
+    _link_reference(pg_session, ids)
+    _persist_groundability_verdicts(
+        pg_session,
+        duckdb_conn,
+        graphs={"segment_cost": _graph()},
+        workspace_id=WS_ID,
+        vertical="financial_reporting",
+        run_id=OM_RUN_3,
+        catalogue_run_id=CAT_RUN,
+        semantic_runs={ids["fact_id"]: GEN_RUN},
+    )
+    pg_session.commit()
+    _promote_om(pg_session, OM_RUN_3)
     assert _current_rows(pg_session) == [
         ("entity_code", "groundable", "resolving_reference_linked")
     ]
@@ -414,37 +513,7 @@ def test_persist_upserts_idempotently_and_isolates_failure(
     ids = _seed_catalog(pg_session)
     # A healthy grounding row whose typed filter_members carry the column (the
     # committed-grounding arm of the dependency read).
-    from dataraum.query.snippet_models import SQLSnippetRecord
-
-    pg_session.add(
-        SQLSnippetRecord(
-            workspace_id=WS_ID,
-            schema_mapping_id=WS_ID,
-            snippet_type="extract",
-            standard_field="segment_cost",
-            statement="income_statement",
-            aggregation="sum",
-            sql=f"SELECT SUM(amount) AS value FROM {VIEW} WHERE entity_code = '4000'",
-            source="graph:segment_cost",
-            parts={
-                "select": [{"expr": "SUM(amount)", "alias": "value"}],
-                "from": [VIEW],
-                "where": ["entity_code = '4000'"],
-            },
-            provenance={
-                "column_mappings_basis": {
-                    "segment_cost": {
-                        "measure_columns": ["amount"],
-                        "filter_columns": ["entity_code"],
-                        "filter": "entity_code = '4000'",
-                        "filter_members": [{"column": "entity_code", "value": "4000"}],
-                    }
-                },
-                "assumptions": [],
-            },
-        )
-    )
-    pg_session.commit()
+    _seed_healthy_snippet(pg_session)
 
     kwargs: dict[str, object] = {
         "graphs": {"segment_cost": _graph()},
@@ -499,3 +568,142 @@ def test_persist_upserts_idempotently_and_isolates_failure(
         .count()
         == 1
     ), "the failed annotation must never roll back unrelated phase-session work"
+
+
+def _mock_agent() -> GraphAgent:
+    """A GraphAgent for LLM-free paths (cache assembly, direct method calls)."""
+    return GraphAgent(config=MagicMock(), provider=MagicMock(), prompt_renderer=MagicMock())
+
+
+def _fall_loud_generated_code() -> GeneratedCode:
+    """The compliant refresh's code object for ``_graph()``'s single extract."""
+    from datetime import UTC, datetime
+
+    return GeneratedCode(
+        code_id="c-fall-loud",
+        graph_id="segment_cost",
+        summary="fall-loud",
+        steps=[
+            {
+                "step_id": "value",
+                "sql": "SELECT NULL AS value",
+                "description": "fall-loud",
+                "parts": {
+                    "select": [{"expr": "NULL", "alias": "value"}],
+                    "from": [],
+                    "where": [],
+                },
+            }
+        ],
+        final_sql="SELECT * FROM value",
+        llm_model="m",
+        prompt_hash="h",
+        generated_at=datetime.now(UTC),
+    )
+
+
+def test_cached_healthy_row_with_firing_verdict_demotes(
+    pg_session: Session,
+    duckdb_conn: duckdb.DuckDBPyConnection,
+) -> None:
+    """Drift demotion through the REAL cache-assembly path (chosen over a
+    seam-mocked unit test — the mocked variant would prove only the mock): a
+    HEALTHY cached extract whose filter column carries a firing verdict NULLs,
+    classifies UNGROUNDABLE_DIMENSION at the live seam, and is demoted with the
+    typed provenance while keeping its parts (the skip_steps protection)."""
+    duckdb_conn.execute(f"CREATE TABLE IF NOT EXISTS {VIEW} (entity_code VARCHAR, amount DOUBLE)")
+    duckdb_conn.execute(f"INSERT INTO {VIEW} VALUES ('4000', NULL), ('5100', 10.0)")
+    _seed_catalog(pg_session)
+    _seed_healthy_snippet(pg_session)
+
+    result = _mock_agent().execute(pg_session, _graph(), _context(duckdb_conn), workspace_id=WS_ID)
+    assert not result.success
+    assert "ungroundable_dimension" in result.error
+    pg_session.flush()
+
+    from dataraum.query.snippet_library import SnippetLibrary
+
+    rec = SnippetLibrary(pg_session).retained_failure(
+        snippet_type="extract",
+        schema_mapping_id=WS_ID,
+        standard_field="segment_cost",
+        statement="income_statement",
+        aggregation="sum",
+        predicate="",
+    )
+    assert rec is not None, "the stale healthy row must be demoted, not served forever"
+    prov = rec.provenance or {}
+    assert prov["failure_mode"] == "verifier_rejected"
+    assert prov["no_support_class"] == "ungroundable_dimension"
+    assert "entity_code" in prov["no_support_evidence"]
+    # Demotion RETAINS: parts survive the follow-up retained-failure write.
+    assert rec.parts is not None
+    assert rec.parts["where"] == ["entity_code = '4000'"]
+
+
+def test_stale_carry_drops_when_the_verdict_clears(
+    pg_session: Session,
+    duckdb_conn: duckdb.DuckDBPyConnection,
+) -> None:
+    """The DAT-620 re-evaluation gate: a compliant fall-loud refresh over an
+    ungroundable row RE-CHECKS the verdict where the pinned reads are available
+    — a since-linked reference drops the stale carry (the row becomes an
+    unclassified failure, so the next authoring gets the generic steer and
+    re-attempts) while the prior parts still survive the refresh."""
+    ids = _seed_catalog(pg_session)
+    _link_reference(pg_session, ids)  # the verdict no longer fires
+    from dataraum.query.snippet_library import SnippetLibrary
+
+    prior_parts = {
+        "select": [{"expr": "SUM(amount)", "alias": "value"}],
+        "from": [VIEW],
+        "where": ["entity_code = '4000'"],
+    }
+    SnippetLibrary(pg_session, workspace_id=WS_ID).save_snippet(
+        snippet_type="extract",
+        sql=f"SELECT SUM(amount) AS value FROM {VIEW} WHERE entity_code = '4000'",
+        description="prior ungroundable attempt",
+        schema_mapping_id=WS_ID,
+        source="graph:segment_cost",
+        standard_field="segment_cost",
+        statement="income_statement",
+        aggregation="sum",
+        provenance={
+            "failure_mode": "verifier_rejected",
+            "failure_reason": "no support (ungroundable_dimension)",
+            "no_support_class": "ungroundable_dimension",
+            "no_support_evidence": "SENTINEL_STALE_EVIDENCE",
+        },
+        parts=prior_parts,
+        failed=True,
+    )
+    pg_session.flush()
+
+    _mock_agent()._save_failed_snippet(
+        pg_session,
+        _graph(),
+        _fall_loud_generated_code(),
+        WS_ID,
+        workspace_id=WS_ID,
+        mode=SnippetFailureMode.VERIFIER_REJECTED,
+        reason="no support: aggregated to NULL",
+        no_support={},  # the fall-loud shape classified as nothing
+        context=_context(duckdb_conn),
+    )
+    pg_session.flush()
+
+    rec = SnippetLibrary(pg_session).retained_failure(
+        snippet_type="extract",
+        schema_mapping_id=WS_ID,
+        standard_field="segment_cost",
+        statement="income_statement",
+        aggregation="sum",
+        predicate="",
+    )
+    assert rec is not None
+    prov = rec.provenance or {}
+    assert prov.get("no_support_class") is None, "a cleared verdict must not be carried stale"
+    assert "SENTINEL_STALE_EVIDENCE" not in (prov.get("no_support_evidence") or "")
+    # The dependency identity still survives the refresh regardless of the
+    # carry's fate — the parts preservation covers the whole sticky branch.
+    assert rec.parts == prior_parts

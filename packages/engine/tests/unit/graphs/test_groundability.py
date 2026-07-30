@@ -177,10 +177,14 @@ class TestTrigger:
         assert v.status is GroundabilityStatus.CLASSIFIED
         assert v.verdict is GroundabilityVerdict.UNGROUNDABLE
         assert v.reason is GroundabilityReason.NO_RESOLVING_REFERENCE
-        # The evidence names the column, its table, and the generic cure.
+        # The evidence names the column, its table, and the generic cure — and
+        # claims only what leg 3 measured: no CONFIRMED relationship, not
+        # "nothing in the workspace" (an unconfirmed candidate may exist).
         assert "entity_code" in v.evidence()
         assert "journal" in v.evidence()
+        assert "no confirmed relationship" in v.evidence()
         assert "link a reference/lookup table" in v.evidence()
+        assert "or confirm the relationship" in v.evidence()
 
     def test_resolved_meaning_breaks_the_trigger(self, session, workspace) -> None:
         code = workspace["code"]
@@ -263,6 +267,26 @@ class TestResolvingReference:
         _reference_edge(session, workspace, detection_method="candidate")
         v = _evaluate(session, workspace)
         assert v.verdict is GroundabilityVerdict.UNGROUNDABLE
+
+    def test_candidate_link_to_text_bearing_table_is_disclosed(self, session, workspace) -> None:
+        """The settled candidate policy: never a resolution (candidate confidence
+        is overlap noise, judge-declined pairs stay candidate), but DISCLOSED —
+        the evidence routes the user to CONFIRM the link, not re-upload."""
+        _reference_edge(session, workspace, detection_method="candidate")
+        v = _evaluate(session, workspace)
+        assert v.verdict is GroundabilityVerdict.UNGROUNDABLE
+        assert v.candidate_links == 1
+        assert "1 unconfirmed candidate link(s) exist" in v.evidence()
+        assert "confirming one may resolve these values" in v.evidence()
+
+    def test_candidate_link_without_text_is_not_disclosed(self, session, workspace) -> None:
+        """A candidate edge to a table with nothing but the key carries no
+        potential resolution — nothing to route the user to."""
+        _reference_edge(session, workspace, detection_method="candidate", with_text=False)
+        v = _evaluate(session, workspace)
+        assert v.verdict is GroundabilityVerdict.UNGROUNDABLE
+        assert v.candidate_links == 0
+        assert "unconfirmed candidate" not in v.evidence()
 
     def test_edge_at_another_run_does_not_resolve(self, session, workspace) -> None:
         _reference_edge(session, workspace, run_id="other-run")
@@ -352,7 +376,7 @@ class TestServedResolution:
 class TestWherePredicateColumns:
     def test_in_list_and_qualified_references(self, conn) -> None:
         cols = where_predicate_columns(
-            ['"entity_code" IN (\'4000\', \'5000\')', "x = 1 AND t.qualified_col > 2"], conn
+            ["\"entity_code\" IN ('4000', '5000')", "x = 1 AND t.qualified_col > 2"], conn
         )
         assert cols == {"entity_code", "x", "qualified_col"}
 

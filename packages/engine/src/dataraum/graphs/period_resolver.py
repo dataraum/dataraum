@@ -39,7 +39,8 @@ circular ``detected_granularity → 30`` label. A single period gives no gap to
 correct against, so it falls loud rather than fabricate a window.
 
 **The axis has one home.** Which column is the flow's time axis is read from
-``og_columns.anchor_time_axis`` (DAT-780 witness-precedence COALESCE), never
+``og_columns.anchor_time_axis`` (DAT-780/DAT-893 witness-precedence COALESCE over the
+witness's MEASURE-side axis), never
 re-derived from ``time_columns`` here. Only the axis IDENTITY and its detected
 cadence come from the Postgres read surface; the span itself is measured live in
 DuckDB over the filtered rows.
@@ -515,11 +516,13 @@ def _read_measure_axes(
       ``source_column_id`` (the identity), and thence its cadence. This is a name KEY into
       a unique set, NOT the DAT-801 first cut's ``(fk)||'__'||col`` reconstruction (which
       collided): the served column already exists; we look it up, we do not rebuild its
-      name. The persisted ``mal.event_time_axis_column_id`` is deliberately NOT consulted
-      — it duplicates the served column's own ``source_column_id`` and is NULL in practice
-      (the witness stores the served name, which never resolves to a typed column), and it
-      could only ever add an anchor that is not served on THIS relation — which has no
-      observable live window regardless.
+      name. The persisted ``mal.measure_time_axis_column_id`` is deliberately NOT
+      consulted — it duplicates the served column's own ``source_column_id`` and is NULL
+      whenever the witness stored a served (dimension-joined) name, which never resolves
+      to a typed column. The witness's ``event_time_axis_column`` is not consulted EITHER,
+      and that is load-bearing (DAT-893): it names a column of the EVIDENCE fact the
+      rollup reconciled against — a different table by construction — so it could only
+      ever add an anchor that is not served on THIS relation.
 
     The joins are LEFT so a flow whose anchor is not a served column of THIS relation (a
     lineage-inherited axis the queried view never joins — no observable live window) or

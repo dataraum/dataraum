@@ -21,7 +21,8 @@ reification).** Vertices/edges:
 
     column_node    (KEY column_id)   props: semantic_role (has_role),
                                             materialization (materializes_as),
-                                            anchor_time_axis (witness axis ▸ declared anchor)
+                                            anchor_time_axis (witness MEASURE-side axis ▸
+                                            declared anchor)
     table_node     (KEY table_id)    props: layer (typed | enriched), table_role
                                             (fact/periodic_snapshot/dimension)
     concept_node   (KEY concept_id)  the typed vocabulary (DAT-728); ``ordering``
@@ -413,14 +414,31 @@ def _element_view_sql(name: str) -> str:
         # #486's positional `tc.ord = 1` pick; nothing reads array position). Computed
         # for EVERY column vertex but only meaningful for a MEASURE (its trend axis) —
         # a non-measure resolves to its table's declared anchor, harmlessly unread:
-        #   1. the DAT-778 lineage-witness event-side axis (mal.event_time_axis_column)
-        #      where a witness reconciled this measure — the data-proven rollup axis;
+        #   1. the DAT-778 lineage-witness MEASURE-side axis (mal.measure_time_axis_column)
+        #      where a witness reconciled this measure — the data-proven rollup axis, as
+        #      it is named ON THE MEASURE'S OWN TABLE;
         #   2. else the table's DECLARED anchor — the one time_columns entry the LLM
         #      committed with role='event' AND is_anchor=true (the typed field, NOT
         #      list position). Read from current_table_entities' JSON interior via a
         #      lateral; the save-time contract guarantees at most one such row.
         # NULL when neither exists. The COALESCE order IS the precedence, exactly like
         # materialization prefers the witness posterior over the concept prior.
+        #
+        # DAT-893 — the witness rung reads the MEASURE side, never the event side. A
+        # `measure_aggregation_lineage` row spans TWO tables by construction (the
+        # processor skips self-pairs and requires a strictly finer event side), so its
+        # `event_time_axis_column` names a column of the EVIDENCE relation — the detail
+        # fact the rollup reconciled against — which is not servable on the measure's
+        # own relation. Both consumers (period_resolver._read_measure_axes,
+        # boundary_resolver._read_stock_axes) key this name against the served columns of
+        # the measure's enriched view, so recording the event axis made every stock
+        # measure on a snapshot table unbindable: balance_sheet.ending_balance anchored to
+        # the journal-lines axis `entry_id__date`, the binder abstained, and the extract
+        # composed `SELECT NULL AS value`. The anchor of a measure is an axis ON ITS OWN
+        # TABLE; the evidence axis keeps its own home on the lineage row, where the audit
+        # trail reads it. `measure_time_axis_column` is the measure table's own declared
+        # event axis that won the competition, and enriched views pass fact columns
+        # through under their original names — so it resolves on the served relation.
         #
         # stored_sign (DAT-875) — the RESOLVED storage convention of a monetary
         # measure ('natural_balance' | 'ledger_signed'), served raw: unlike
@@ -448,7 +466,8 @@ def _element_view_sql(name: str) -> str:
             f"         CASE cc.temporal_behavior WHEN 'additive' THEN 'flow'\n"
             f"                                   WHEN 'point_in_time' THEN 'stock' END\n"
             f"       ) AS materialization,\n"
-            f"       COALESCE(mal.event_time_axis_column, declared_anchor.column_name) AS anchor_time_axis,\n"
+            f"       COALESCE(mal.measure_time_axis_column, declared_anchor.column_name)"
+            f" AS anchor_time_axis,\n"
             f"       cc.stored_sign\n"
             f"FROM {READ_TOKEN}.current_columns c\n"
             f"LEFT JOIN {READ_TOKEN}.current_semantic_annotations sa ON sa.column_id = c.column_id\n"
@@ -471,7 +490,8 @@ def _element_view_sql(name: str) -> str:
             f"         CASE cc.temporal_behavior WHEN 'additive' THEN 'flow'\n"
             f"                                   WHEN 'point_in_time' THEN 'stock' END\n"
             f"       ) AS materialization,\n"
-            f"       COALESCE(mal.event_time_axis_column, declared_anchor.column_name) AS anchor_time_axis,\n"
+            f"       COALESCE(mal.measure_time_axis_column, declared_anchor.column_name)"
+            f" AS anchor_time_axis,\n"
             f"       cc.stored_sign\n"
             f"FROM {READ_TOKEN}.current_enriched_columns ec\n"
             f"LEFT JOIN {READ_TOKEN}.current_semantic_annotations sa ON sa.column_id = ec.source_column_id\n"
@@ -912,7 +932,8 @@ def _element_view_sql(name: str) -> str:
         # ``declared_anchor`` is the time_columns ROLE flag — whether the LLM DECLARED
         # this column the table's anchor — NOT the operating-model anchor. The ONE home
         # of a measure's resolved anchor axis is ``og_columns.anchor_time_axis`` (witness
-        # ▸ declared precedence, DAT-780); a witness can override the declaration there,
+        # MEASURE-side axis ▸ declared precedence, DAT-780/DAT-893); a witness can
+        # override the declaration there,
         # so declared_anchor here and anchor_time_axis there legitimately DIVERGE. Named
         # ``declared_anchor`` (not ``is_anchor``) so the two are impossible to conflate.
         #

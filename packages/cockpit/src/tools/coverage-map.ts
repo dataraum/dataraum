@@ -19,15 +19,30 @@
 //  3. Per-metric grounding EVIDENCE (a failed extract's reason, its resolved period) is
 //     read from `sql_snippets` rows sourced `graph:<this metric's graph_id>` — the
 //     shape `graphs/agent.py::_save_composed_snippets`/`_save_snippets` write. This is
-//     a known v1 approximation: the cross-metric warm pass (DAT-629/DAT-636) can source
-//     a REUSED extract to whichever sibling metric warmed it first, and a metric's own
-//     authoring pass can incidentally leave an unrelated extract under its prefix — so
-//     this cell can occasionally miss or over-attribute one metric's evidence to
-//     another. Getting this exact would mean parsing each metric's persisted DAG
+//     a known v1 approximation, and the risk it carries is NOT symmetric — say so
+//     plainly rather than hedge:
+//       - A metric's OWN evidence can land under a SIBLING's prefix instead of its
+//         own: the cross-metric warm pass (DAT-629/DAT-636) sources a shared, REUSED
+//         extract to "whichever metric warmed it first" (`node_warming.py::
+//         build_mini_graph`'s own docstring), so a metric that only REUSES an
+//         already-grounded concept carries NO row under its own graph_id at all. This
+//         direction is CONSERVATIVE: the metric reads as ungrounded (dark) or its
+//         evidence goes unseen, never as falsely lit — the failure this map exists to
+//         prevent stays prevented.
+//       - The dangerous direction is the reverse: a metric's own FAILING dependency
+//         can be tagged under a DIFFERENT sibling's prefix by the same warm-pass
+//         mechanic (`graphs/agent.py:1505-1507` documents the tag as "whichever
+//         metric warmed it first", not "every metric that depends on it"). When that
+//         happens, THIS metric's `groundingsByGraphId` lookup finds no failure,
+//         `anyFailedGrounding` is false, and the metric can render LIT despite a real,
+//         unresolved failure elsewhere in its own dependency chain — the forbidden
+//         direction, accepted here as a disclosed v1 risk rather than a silent one.
+//     Getting this exact would mean parsing each metric's persisted DAG
 //     (`graph_definition`) to resolve its OWN extract standard_fields, which
 //     `operating-model-graph.ts` already does for the canvas; deliberately not pulled
 //     in here so a facet-coverage read stays independent of that heavier machinery.
-//     "The AVAILABLE text, not an invented taxonomy" — a later lane can tighten this.
+//     "The AVAILABLE text, not an invented taxonomy" — a later lane should close this
+//     specific gap first, since it is the one direction that can lie brighter.
 //  4. Every non-lit cell names WHY (the bus-matrix `blockedReason` discipline): a row
 //     is never rendered dark or partial without a reason a practitioner can act on.
 //  5. Reason TEXT is stripped of src digests HERE, at assembly, not in the loader —
@@ -76,6 +91,14 @@ export interface CoverageMetricInput {
 	graphId: string;
 	name: string;
 	dimensionFacet: string | null;
+	/** The concept name(s) this metric derives from (`metric_derives_from.
+	 *  concept_name`, DAT-732) — the join key for reconciliation-disagreement.
+	 *  `current_concept_reconciliation` is keyed by CONCEPT NAME, a namespace
+	 *  disjoint from a metric's own `graph_id` (a metric slug); looking reconciliation
+	 *  up by `graphId` finds nothing in production. Empty for a metric with no
+	 *  declared derivation edge — the disagreement check then trivially finds
+	 *  nothing, same as "no reconciliation row". */
+	concepts: string[];
 }
 
 /** One `concepts` config row. Read ONLY for the unclassified count — coverage state
@@ -176,8 +199,6 @@ export interface CoverageMap {
 
 // --- Reason text -------------------------------------------------------------
 
-const EXPECTATION_VIOLATION_MARKER = "declared expectation not met";
-
 /** Narrow `sql_snippets.provenance` for its failure text. `FailedSnippetProvenance`
  *  (`graphs/models.py`) is the only shape carrying `failure_reason`; a healthy row's
  *  provenance has no such key and this returns null. */
@@ -190,12 +211,11 @@ function failureReasonOf(provenance: unknown): string | null {
 /** Rank for picking the "most informative" reason among several candidates — lower
  *  sorts first. An unrecognized/absent `kind` ranks last, never crashes a comparison. */
 const REASON_KIND_RANK: Record<string, number> = {
-	expectation_violated: 0,
-	state_reason: 1,
-	failed_grounding: 2,
-	disagreement: 3,
-	not_executed: 4,
-	unknown: 5,
+	state_reason: 0,
+	failed_grounding: 1,
+	disagreement: 2,
+	not_executed: 3,
+	unknown: 4,
 };
 function reasonRank(reason: CoverageReason): number {
 	return REASON_KIND_RANK[reason.kind ?? "unknown"] ?? 99;
@@ -214,11 +234,17 @@ function mostInformativeReason(
 
 /**
  * Why one grounded-but-not-lit metric isn't lit. Priority (most informative first,
- * per the spec): the lifecycle `state_reason` (covers both an expectation violation
- * and a low-confidence-grounding flag — both are joined into the same field by the
- * engine); else a failed grounding's `failure_reason`; else a bare "it failed" when no
- * reason text survived; else a reconciliation disagreement; else a generic
- * state-based fallback.
+ * per the spec): ANY non-null lifecycle `state_reason`, verbatim — the engine's own
+ * born-loud channel, which carries a declared-expectation violation
+ * (`verifier.py::verify_execution`), a malformed validation condition
+ * (`verifier.py:124-127`), or a low-confidence-grounding flag
+ * (`metrics_phase.py:501-519`) alike, all joined into the SAME field. A substring
+ * match on one known phrasing was tried and rejected: it let every OTHER
+ * state_reason shape (there is no closed vocabulary — free text, joined with "; ")
+ * through as a false LIT, which the coverage map exists to never do. Presence is
+ * therefore the whole test — else a failed grounding's `failure_reason`; else a bare
+ * "it failed" when no reason text survived; else a reconciliation disagreement; else
+ * a generic state-based fallback.
  */
 function metricReason(
 	stateReason: string | null,
@@ -227,12 +253,7 @@ function metricReason(
 	hasDisagreement: boolean,
 ): CoverageReason {
 	if (stateReason) {
-		// The marker check runs on the RAW text — a src digest never overlaps this
-		// substring, so stripping first would only cost a redundant pass.
-		const kind = stateReason.includes(EXPECTATION_VIOLATION_MARKER)
-			? "expectation_violated"
-			: "state_reason";
-		return { kind, text: stripSrcDigests(stateReason) };
+		return { kind: "state_reason", text: stripSrcDigests(stateReason) };
 	}
 	const failedWithReason = groundingRows.find(
 		(g) => g.failed && failureReasonOf(g.provenance) !== null,
@@ -304,16 +325,29 @@ function buildRow(
 		const groundingRows = groundingsByGraphId.get(m.graphId) ?? [];
 		const anyFailedGrounding = groundingRows.some((g) => g.failed);
 		const stateReason = lifecycle?.stateReason ?? null;
-		const hasExpectationViolation =
-			stateReason?.includes(EXPECTATION_VIOLATION_MARKER) ?? false;
-		const reconciliationRows = reconciliationByConcept.get(m.graphId) ?? [];
+		// Reconciliation is keyed by CONCEPT NAME, not graph_id — a metric can derive
+		// from several concepts (or none), so every one of them is checked.
+		const reconciliationRows = m.concepts.flatMap(
+			(concept) => reconciliationByConcept.get(concept) ?? [],
+		);
 		const hasDisagreement = reconciliationRows.some(
 			(r) => r.status === "evaluated" && r.verdict === "beyond_tolerance",
 		);
 
+		// `stateReason === null` is the WHOLE test, not a substring match on one
+		// known phrasing — the engine's state_reason is free text with no closed
+		// vocabulary (module header on `metricReason`), so presence alone is the
+		// only signal that can never let an unrecognized flag through as false lit.
+		//
+		// `executed` OR `canonical`: the ArtifactState sequence is declared → grounded
+		// → executed → canonical (an `endorse` transition past executed —
+		// `lifecycle/transitions.py`), dormant today (no stage is authorized to call
+		// it) but real vocabulary. Gating on `=== "executed"` alone would demote an
+		// endorsed metric to partial with the nonsense reason "stuck at lifecycle
+		// state 'canonical'" the moment that transition ships.
 		const lit =
-			state === "executed" &&
-			!hasExpectationViolation &&
+			(state === "executed" || state === "canonical") &&
+			stateReason === null &&
 			!anyFailedGrounding &&
 			!hasDisagreement;
 

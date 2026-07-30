@@ -3,18 +3,25 @@
 // every decision (module header there has the full rationale).
 //
 // Gated on the promoted operating_model head, mirroring `operating-model-load.ts`:
-// `metrics`/`concepts` are vertical-scoped config (visible with or without a run), but
-// `current_lifecycle_artifacts`/`current_concept_reconciliation` are head-joined
-// (ADR-0008) — without a promoted run every metric would look `declared`-with-no-row
-// and the map would render an honest but noisy "nothing grounded anywhere" wall. The
-// `analyzed` flag lets the route show "no operating model yet" instead, the same
-// distinction `LoadOperatingModelResult.analyzed` draws.
+// `metrics`/`concepts`/`metric_derives_from` are vertical-scoped config (visible with
+// or without a run), but `current_lifecycle_artifacts`/`current_concept_reconciliation`
+// are head-joined (ADR-0008) — without a promoted run every metric would look
+// `declared`-with-no-row and the map would render an honest but noisy "nothing
+// grounded anywhere" wall. The `analyzed` flag lets the route show "no operating model
+// yet" instead, the same distinction `LoadOperatingModelResult.analyzed` draws.
+//
+// `metrics`/`concepts`/`metric_derives_from` are supersession-versioned
+// (`superseded_at IS NULL` marks the active row); the raw Drizzle mirror of the
+// underlying table carries EVERY row ever written, superseded or not — unlike the
+// engine's own `og_metrics`/`og_concepts` property-graph views, which filter this
+// explicitly. Every read here must apply `isNull(...supersededAt)` itself, or a
+// retired concept/metric renders as if it were still live.
 //
 // tsc-bounded, test-unexecuted (the convention `operating-model-load.ts` sets): this
 // is thin DB-read glue with no branching of its own; `buildCoverageMap` carries the
 // behaviour and the tests.
 
-import { and, eq, like } from "drizzle-orm";
+import { and, eq, isNull, like } from "drizzle-orm";
 
 import { config } from "../config";
 import { metadataDb } from "../db/metadata/client";
@@ -26,6 +33,7 @@ import {
 	concepts,
 	currentConceptReconciliation,
 	currentGroundings,
+	metricDerivesFrom,
 	metrics,
 	sqlSnippets,
 } from "../db/metadata/schema";
@@ -65,25 +73,43 @@ export async function loadCoverageMap(): Promise<LoadCoverageResult> {
 	const [
 		metricRows,
 		conceptRows,
+		derivesRows,
 		lifecycleRows,
 		snippetRows,
 		groundingRows,
 		reconciliationRows,
 	] = await Promise.all([
+		// ACTIVE rows only: `metrics`/`concepts` are supersession-versioned
+		// (uq_metric_active/uq_concept_active, `superseded_at IS NULL` marks the live
+		// row — schema.sql:81,321). The engine's own og_metrics/og_concepts filter
+		// this explicitly; the raw Drizzle mirror does not, so it must be applied
+		// here or a superseded row (e.g. a retired concept) is counted as if live.
 		metadataDb
 			.select({
 				graphId: metrics.graphId,
 				name: metrics.name,
 				dimensionFacet: metrics.dimensionFacet,
 			})
-			.from(metrics),
+			.from(metrics)
+			.where(isNull(metrics.supersededAt)),
 		metadataDb
 			.select({
 				name: concepts.name,
 				kind: concepts.kind,
 				dimensionFacet: concepts.dimensionFacet,
 			})
-			.from(concepts),
+			.from(concepts)
+			.where(isNull(concepts.supersededAt)),
+		// Metric → concept derivation (DAT-732) — the join `buildCoverageMap` needs to
+		// check reconciliation disagreement, which is keyed by CONCEPT NAME, a
+		// namespace disjoint from a metric's own graph_id.
+		metadataDb
+			.select({
+				graphId: metricDerivesFrom.graphId,
+				conceptName: metricDerivesFrom.conceptName,
+			})
+			.from(metricDerivesFrom)
+			.where(isNull(metricDerivesFrom.supersededAt)),
 		readLifecycleArtifactRows("metric"),
 		// The metric's own grounding evidence: every graph:%-sourced snippet, grouped
 		// by its graph_id in the pure builder (module header there, point 3).
@@ -130,6 +156,14 @@ export async function loadCoverageMap(): Promise<LoadCoverageResult> {
 			.map((r) => [r.snippetId, r]),
 	);
 
+	const conceptsByGraphId = new Map<string, string[]>();
+	for (const r of derivesRows) {
+		if (!r.graphId || !r.conceptName) continue;
+		const list = conceptsByGraphId.get(r.graphId) ?? [];
+		list.push(r.conceptName);
+		conceptsByGraphId.set(r.graphId, list);
+	}
+
 	const groundings: CoverageGroundingInput[] = snippetRows
 		.filter((r): r is typeof r & { source: string } => Boolean(r.source))
 		.map((r) => {
@@ -153,6 +187,7 @@ export async function loadCoverageMap(): Promise<LoadCoverageResult> {
 				graphId: r.graphId,
 				name: r.name ?? r.graphId,
 				dimensionFacet: r.dimensionFacet,
+				concepts: conceptsByGraphId.get(r.graphId) ?? [],
 			})),
 		concepts: conceptRows
 			.filter((r): r is typeof r & { name: string } => Boolean(r.name))

@@ -485,6 +485,15 @@ ON CONFLICT DO NOTHING;
  *
  * `state: null` omits the lifecycle_artifacts row entirely (the "never even
  * declared into a run" case); any other value inserts one row at that state.
+ *
+ * `superseded: true` (DAT-855 B2 spec-compliance fix) inserts the `metrics` row
+ * with a NON-NULL `superseded_at` — the retired-row regression fixture: `metrics`
+ * is supersession-versioned (`uq_metric_active`, active row = `superseded_at IS
+ * NULL`), and the raw Drizzle mirror `coverage-map-load.ts` reads carries every row
+ * ever written, so the loader itself must filter to the active one. Mints a
+ * DISTINCT `metric_id` (`..._superseded`) so calling this twice for the SAME
+ * `graphId` — a superseded row plus its live successor, possibly under a
+ * DIFFERENT facet — inserts two rows rather than colliding on conflict.
  */
 export interface CoverageMetricSeedOptions {
 	graphId: string;
@@ -493,6 +502,7 @@ export interface CoverageMetricSeedOptions {
 	state?: "declared" | "grounded" | "executed" | "canonical" | null;
 	stateReason?: string | null;
 	runId?: string;
+	superseded?: boolean;
 }
 
 export function coverageMetricSeedSql(opts: CoverageMetricSeedOptions): string {
@@ -503,8 +513,13 @@ export function coverageMetricSeedSql(opts: CoverageMetricSeedOptions): string {
 		state = null,
 		stateReason = null,
 		runId = RUN_ID,
+		superseded = false,
 	} = opts;
+	const metricId = superseded
+		? `mtr_cov_${graphId}_superseded`
+		: `mtr_cov_${graphId}`;
 	const facetSql = dimensionFacet === null ? "NULL" : `'${dimensionFacet}'`;
+	const supersededAtSql = superseded ? ts : "NULL";
 	const stateReasonSql =
 		stateReason === null ? "NULL" : `'${stateReason.replaceAll("'", "''")}'`;
 	const lifecycleSql =
@@ -524,9 +539,9 @@ ON CONFLICT DO NOTHING;
 SET search_path TO engine;
 
 INSERT INTO metrics (metric_id, vertical, graph_id, name, dimension_facet,
-                     source, created_at)
-VALUES ('mtr_cov_${graphId}', '_adhoc', '${graphId}', '${name}', ${facetSql},
-        'seed', ${ts})
+                     source, created_at, superseded_at)
+VALUES ('${metricId}', '_adhoc', '${graphId}', '${name}', ${facetSql},
+        'seed', ${ts}, ${supersededAtSql})
 ON CONFLICT DO NOTHING;
 ${lifecycleSql}`;
 }
@@ -582,6 +597,28 @@ VALUES (
   '${workspaceId}', 'SELECT 1', 'coverage-map fixture snippet',
   'graph:${graphId}', '${provenance.replaceAll("'", "''")}'::json,
   0, ${failed ? 1 : 0}, ${ts}, ${ts})
+ON CONFLICT DO NOTHING;
+`;
+}
+
+/**
+ * ONE `metric_derives_from` row (DAT-732) — the metric-graph_id → concept-name
+ * bridge `coverage-map-load.ts` reads to check reconciliation disagreement (DAT-855
+ * B2 spec-compliance fix: `current_concept_reconciliation` is keyed by CONCEPT
+ * NAME, a namespace disjoint from a metric's own `graph_id`; without this edge the
+ * loader has no way to know which concept(s) a metric derives from).
+ */
+export function metricDerivesFromSeedSql(
+	graphId: string,
+	conceptName: string,
+): string {
+	const edgeId = `mdf_cov_${graphId}_${conceptName}`;
+	return `
+SET search_path TO engine;
+
+INSERT INTO metric_derives_from (edge_id, vertical, graph_id, concept_name,
+                                 created_at)
+VALUES ('${edgeId}', '_adhoc', '${graphId}', '${conceptName}', ${ts})
 ON CONFLICT DO NOTHING;
 `;
 }

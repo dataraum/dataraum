@@ -110,6 +110,7 @@ const LOADER_DATA = {
 						graphId: "dso",
 						name: "Days Sales Outstanding",
 						dimensionFacet: "capital",
+						concepts: [],
 					},
 				],
 				concepts: [],

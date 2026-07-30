@@ -15,13 +15,22 @@ import {
 // DimensionFacet`), `lifecycle_artifacts.state` (`lifecycle/db_models.py::
 // ArtifactState`: declared/grounded/executed/canonical), and `sql_snippets.
 // provenance` (`graphs/models.py`: `{failure_mode, failure_reason}` on a failed row).
+//
+// DE-ALIASED ON PURPOSE: a metric's `graphId` (e.g. `dso`) and a concept's `name`
+// (e.g. `accounts_receivable`) are DISJOINT namespaces in production —
+// `current_concept_reconciliation` is keyed by concept name, never by graph_id (a
+// review finding: an earlier draft of this suite used "dso" as BOTH, which made the
+// reconciliation join look correct while testing nothing about the actual key it
+// runs on in production). Every fixture below that touches reconciliation uses two
+// visibly different strings and wires them together via `metric()`'s `concepts`
+// override, exactly as `coverage-map-load.ts` populates it from `metric_derives_from`.
 
 function metric(
 	graphId: string,
 	dimensionFacet: string | null,
 	over: Partial<CoverageMetricInput> = {},
 ): CoverageMetricInput {
-	return { graphId, name: graphId, dimensionFacet, ...over };
+	return { graphId, name: graphId, dimensionFacet, concepts: [], ...over };
 }
 
 function lifecycle(
@@ -138,7 +147,7 @@ describe("buildCoverageMap (DAT-855 B2)", () => {
 		expect(row.reason?.text).toBe("grounded but not yet executed");
 	});
 
-	it("is partial with the declared-expectation-violation text, verbatim, when executed carries a violation", () => {
+	it("is partial with the declared-expectation-violation text, verbatim, when executed carries one", () => {
 		const violation =
 			"declared expectation not met for 'margin': Margin cannot exceed 100% (value=1.4, severity=error)";
 		const map = buildCoverageMap({
@@ -149,8 +158,81 @@ describe("buildCoverageMap (DAT-855 B2)", () => {
 		});
 		const row = rowOf(map, "offer");
 		expect(row.state).toBe("partial");
-		expect(row.reason?.kind).toBe("expectation_violated");
+		expect(row.reason?.kind).toBe("state_reason");
 		expect(row.reason?.text).toBe(violation);
+	});
+
+	it("is partial with the low-confidence-grounding text, verbatim, when executed carries one", () => {
+		// metrics_phase.py:501-519's OWN phrasing — a shape the marker-substring
+		// approach this gate used to run on would have missed entirely (it only
+		// matched "declared expectation not met"), rendering this metric falsely lit.
+		const lowConfidence =
+			"low-confidence grounding (0.30 < 0.50): the extracted concept's basis is weakly supported";
+		const map = buildCoverageMap({
+			...EMPTY,
+			metrics: [metric("dso", "capital")],
+			lifecycle: [lifecycle("dso", "executed", lowConfidence)],
+			groundings: [grounding("dso")],
+		});
+		const row = rowOf(map, "capital");
+		expect(row.state).toBe("partial");
+		expect(row.reason?.kind).toBe("state_reason");
+		expect(row.reason?.text).toBe(lowConfidence);
+	});
+
+	it("is partial with a malformed-validation-condition text, verbatim, when executed carries one", () => {
+		// verifier.py:124-127's OWN phrasing — a THIRD state_reason shape, proving the
+		// gate is "any non-null state_reason", not a list of known phrasings.
+		const malformed =
+			"declared expectation for 'margin' is malformed: condition 'margin <=' failed to parse";
+		const map = buildCoverageMap({
+			...EMPTY,
+			metrics: [metric("dso", "capital")],
+			lifecycle: [lifecycle("dso", "executed", malformed)],
+			groundings: [grounding("dso")],
+		});
+		const row = rowOf(map, "capital");
+		expect(row.state).toBe("partial");
+		expect(row.reason?.kind).toBe("state_reason");
+		expect(row.reason?.text).toBe(malformed);
+	});
+
+	it("is lit when executed carries a NULL state_reason (the whole gate, not a substring match)", () => {
+		const map = buildCoverageMap({
+			...EMPTY,
+			metrics: [metric("dso", "capital")],
+			lifecycle: [lifecycle("dso", "executed", null)],
+			groundings: [grounding("dso")],
+		});
+		expect(rowOf(map, "capital").state).toBe("lit");
+	});
+
+	it("is lit when a CANONICAL metric (past executed) has a NULL state_reason", () => {
+		// declared → grounded → executed → canonical (an `endorse` transition,
+		// dormant today — lifecycle/transitions.py). Gating lit on `state ===
+		// "executed"` alone would demote a canonical metric to partial with the
+		// nonsense reason "stuck at lifecycle state 'canonical'".
+		const map = buildCoverageMap({
+			...EMPTY,
+			metrics: [metric("dso", "capital")],
+			lifecycle: [lifecycle("dso", "canonical", null)],
+			groundings: [grounding("dso")],
+		});
+		const row = rowOf(map, "capital");
+		expect(row.state).toBe("lit");
+		expect(row.metrics[0]).toMatchObject({ lit: true, reason: null });
+	});
+
+	it("still demotes a canonical metric to partial when it DOES carry a state_reason", () => {
+		const map = buildCoverageMap({
+			...EMPTY,
+			metrics: [metric("dso", "capital")],
+			lifecycle: [lifecycle("dso", "canonical", "some flag")],
+			groundings: [grounding("dso")],
+		});
+		const row = rowOf(map, "capital");
+		expect(row.state).toBe("partial");
+		expect(row.reason?.text).toBe("some flag");
 	});
 
 	it("is partial with the provenance failure_reason when a grounding failed", () => {
@@ -196,13 +278,24 @@ describe("buildCoverageMap (DAT-855 B2)", () => {
 		expect(row.reason?.text).toBe("a grounding attempt for this metric failed");
 	});
 
-	it("is partial when the concept's own groundings disagree on reconciliation", () => {
+	it("is partial when a DERIVED CONCEPT's groundings disagree on reconciliation — graphId ≠ concept name", () => {
+		// The regression case: the metric's graph_id ("dso") is NOT the concept name
+		// reconciliation is keyed by ("accounts_receivable") — exactly the disjoint
+		// namespaces `metric_derives_from` bridges in production. A lookup keyed on
+		// `graphId` (the bug this fixture used to mask by aliasing the two strings)
+		// would find nothing here and wrongly stay lit.
 		const reconciliation: CoverageReconciliationInput[] = [
-			{ concept: "dso", status: "evaluated", verdict: "beyond_tolerance" },
+			{
+				concept: "accounts_receivable",
+				status: "evaluated",
+				verdict: "beyond_tolerance",
+			},
 		];
 		const map = buildCoverageMap({
 			...EMPTY,
-			metrics: [metric("dso", "capital")],
+			metrics: [
+				metric("dso", "capital", { concepts: ["accounts_receivable"] }),
+			],
 			lifecycle: [lifecycle("dso", "executed")],
 			groundings: [grounding("dso")],
 			reconciliation,
@@ -212,30 +305,81 @@ describe("buildCoverageMap (DAT-855 B2)", () => {
 		expect(row.reason?.kind).toBe("disagreement");
 	});
 
+	it("checks disagreement across EVERY concept a metric derives from", () => {
+		const map = buildCoverageMap({
+			...EMPTY,
+			metrics: [
+				metric("cash_conversion_cycle", "capital", {
+					concepts: ["accounts_receivable", "inventory", "accounts_payable"],
+				}),
+			],
+			lifecycle: [lifecycle("cash_conversion_cycle", "executed")],
+			groundings: [grounding("cash_conversion_cycle")],
+			// Only the SECOND derived concept disagrees — proves every concept in the
+			// array is checked, not just the first.
+			reconciliation: [
+				{
+					concept: "accounts_receivable",
+					status: "evaluated",
+					verdict: "within_tolerance",
+				},
+				{
+					concept: "inventory",
+					status: "evaluated",
+					verdict: "beyond_tolerance",
+				},
+			],
+		});
+		expect(rowOf(map, "capital").state).toBe("partial");
+	});
+
 	it("stays lit when reconciliation exists but agrees (within_tolerance)", () => {
 		const map = buildCoverageMap({
 			...EMPTY,
-			metrics: [metric("dso", "capital")],
+			metrics: [
+				metric("dso", "capital", { concepts: ["accounts_receivable"] }),
+			],
 			lifecycle: [lifecycle("dso", "executed")],
 			groundings: [grounding("dso")],
 			reconciliation: [
-				{ concept: "dso", status: "evaluated", verdict: "within_tolerance" },
+				{
+					concept: "accounts_receivable",
+					status: "evaluated",
+					verdict: "within_tolerance",
+				},
 			],
 		});
 		expect(rowOf(map, "capital").state).toBe("lit");
 	});
 
-	it("ignores a partner-edge reconciliation naming a DIFFERENT concept", () => {
-		// The loader is documented to only pass SELF-LOOP rows through — this proves
-		// the builder does not need to re-derive that filter to stay correct.
+	it("ignores a reconciliation row for a concept the metric does NOT derive from", () => {
 		const map = buildCoverageMap({
 			...EMPTY,
-			metrics: [metric("dso", "capital")],
+			metrics: [
+				metric("dso", "capital", { concepts: ["accounts_receivable"] }),
+			],
 			lifecycle: [lifecycle("dso", "executed")],
 			groundings: [grounding("dso")],
 			reconciliation: [
 				{
 					concept: "some_other_concept",
+					status: "evaluated",
+					verdict: "beyond_tolerance",
+				},
+			],
+		});
+		expect(rowOf(map, "capital").state).toBe("lit");
+	});
+
+	it("finds nothing (never crashes) when a metric derives from no concept at all", () => {
+		const map = buildCoverageMap({
+			...EMPTY,
+			metrics: [metric("dso", "capital")], // concepts: [] via the default
+			lifecycle: [lifecycle("dso", "executed")],
+			groundings: [grounding("dso")],
+			reconciliation: [
+				{
+					concept: "accounts_receivable",
 					status: "evaluated",
 					verdict: "beyond_tolerance",
 				},
@@ -262,7 +406,7 @@ describe("buildCoverageMap (DAT-855 B2)", () => {
 				}),
 			],
 		});
-		expect(rowOf(map, "capital").reason?.kind).toBe("expectation_violated");
+		expect(rowOf(map, "capital").reason?.kind).toBe("state_reason");
 	});
 
 	it("is lit as soon as ONE metric of the facet is lit, even with a partial sibling", () => {
@@ -302,7 +446,7 @@ describe("buildCoverageMap (DAT-855 B2)", () => {
 			groundings: [grounding("dso"), grounding("dpo")],
 		});
 		const row = rowOf(map, "capital");
-		expect(row.reason?.kind).toBe("expectation_violated");
+		expect(row.reason?.kind).toBe("state_reason");
 	});
 
 	it("treats cross_cutting as no row at all — not demand/offer/etc, not unclassified", () => {

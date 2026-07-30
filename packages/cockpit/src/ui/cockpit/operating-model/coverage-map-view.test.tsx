@@ -62,6 +62,7 @@ describe("CoverageMapView (DAT-855 B2)", () => {
 					graphId: "dso",
 					name: "Days Sales Outstanding",
 					dimensionFacet: "capital",
+					concepts: [],
 				},
 			],
 			lifecycle: [{ graphId: "dso", state: "executed", stateReason: null }],
@@ -92,6 +93,7 @@ describe("CoverageMapView (DAT-855 B2)", () => {
 					graphId: "dso",
 					name: "Days Sales Outstanding",
 					dimensionFacet: "capital",
+					concepts: [],
 				},
 			],
 			lifecycle: [{ graphId: "dso", state: "grounded", stateReason: null }],
@@ -119,7 +121,14 @@ describe("CoverageMapView (DAT-855 B2)", () => {
 	it("distinguishes 'no metric declared' from 'declared but never grounded'", () => {
 		renderMap({
 			...EMPTY,
-			metrics: [{ graphId: "dso", name: "DSO", dimensionFacet: "capital" }],
+			metrics: [
+				{
+					graphId: "dso",
+					name: "DSO",
+					dimensionFacet: "capital",
+					concepts: [],
+				},
+			],
 			lifecycle: [{ graphId: "dso", state: "declared", stateReason: null }],
 		});
 		expect(
@@ -137,7 +146,14 @@ describe("CoverageMapView (DAT-855 B2)", () => {
 	it("summarises how many dimensions are lit/partial/dark", () => {
 		renderMap({
 			...EMPTY,
-			metrics: [{ graphId: "dso", name: "DSO", dimensionFacet: "capital" }],
+			metrics: [
+				{
+					graphId: "dso",
+					name: "DSO",
+					dimensionFacet: "capital",
+					concepts: [],
+				},
+			],
 			lifecycle: [{ graphId: "dso", state: "executed", stateReason: null }],
 			groundings: [
 				{
@@ -159,7 +175,12 @@ describe("CoverageMapView (DAT-855 B2)", () => {
 		renderMap({
 			...EMPTY,
 			metrics: [
-				{ graphId: "mystery", name: "Mystery Metric", dimensionFacet: null },
+				{
+					graphId: "mystery",
+					name: "Mystery Metric",
+					dimensionFacet: null,
+					concepts: [],
+				},
 			],
 			concepts: [{ name: "revenue", kind: "measure", dimensionFacet: null }],
 		});
@@ -190,7 +211,14 @@ describe("CoverageMapView (DAT-855 B2)", () => {
 	it("renders the failed-grounding reason verbatim for a partial cell", () => {
 		renderMap({
 			...EMPTY,
-			metrics: [{ graphId: "dso", name: "DSO", dimensionFacet: "capital" }],
+			metrics: [
+				{
+					graphId: "dso",
+					name: "DSO",
+					dimensionFacet: "capital",
+					concepts: [],
+				},
+			],
 			lifecycle: [{ graphId: "dso", state: "executed", stateReason: null }],
 			groundings: [
 				{

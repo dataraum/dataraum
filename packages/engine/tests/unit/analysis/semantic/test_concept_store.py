@@ -148,6 +148,64 @@ def test_seed_born_loud_on_invalid_ordering(
         ensure_concepts_seeded(session, "x")
 
 
+def test_seed_passes_dimension_facet_through(
+    session: Session, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A seed MAY declare ``dimension_facet`` on any concept; it lands typed (DAT-855).
+
+    Absent ⇒ NULL ⇒ "no writer classified yet"; never inferred. Uses a mock
+    definition so no engine code carries a domain name.
+    """
+    definition = OntologyDefinition(
+        name="x",
+        concepts=[
+            OntologyConcept(name="revenue", kind="measure", dimension_facet="demand"),
+            OntologyConcept(name="unclassified", kind="measure"),  # no facet ⇒ NULL
+        ],
+    )
+    loader = MagicMock()
+    loader.load.return_value = definition
+    monkeypatch.setattr("dataraum.analysis.semantic.concept_store.OntologyLoader", lambda: loader)
+
+    assert ensure_concepts_seeded(session, "x") == 2
+    rows = {
+        r.name: r.dimension_facet
+        for r in session.execute(select(Concept).where(Concept.vertical == "x")).scalars()
+    }
+    assert rows == {"revenue": "demand", "unclassified": None}
+    # The round-trip read preserves it.
+    read = {c.name: c.dimension_facet for c in load_workspace_concepts(session, "x").concepts}
+    assert read["revenue"] == "demand"
+    assert read["unclassified"] is None
+
+
+def test_seed_born_loud_on_invalid_dimension_facet(
+    session: Session, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    bad = OntologyDefinition(
+        name="x",
+        concepts=[OntologyConcept(name="revenue", kind="measure", dimension_facet="growth")],
+    )
+    loader = MagicMock()
+    loader.load.return_value = bad
+    monkeypatch.setattr("dataraum.analysis.semantic.concept_store.OntologyLoader", lambda: loader)
+    with pytest.raises(ValueError, match="invalid dimension_facet"):
+        ensure_concepts_seeded(session, "x")
+
+
+def test_finance_seed_has_zero_null_dimension_facets(session: Session) -> None:
+    """The shipped finance vertical assigns every concept a facet (DAT-855) — NULL
+    is reserved for a framed vertical mid-authoring, never a resting state here."""
+    ensure_concepts_seeded(session, "finance")
+    facets = {
+        r.name: r.dimension_facet
+        for r in session.execute(select(Concept).where(Concept.vertical == "finance")).scalars()
+    }
+    assert len(facets) == 22
+    nulls = [name for name, facet in facets.items() if facet is None]
+    assert nulls == []
+
+
 def test_load_workspace_concepts_reads_typed_rows(session: Session) -> None:
     ensure_concepts_seeded(session, "finance")
     ensure_conventions_seeded(session, "finance")

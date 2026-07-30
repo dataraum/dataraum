@@ -495,16 +495,17 @@ def _metric_dag_stmts() -> list[str]:
       (``ghost_concept``) — the og_derives_from INNER JOIN must DROP it (the graph
       never dangles, the og_grounded_by discipline);
     * carries a ``days_in_period`` parameter whose ``derivation`` marker is
-      ``period_grain`` and whose declared default (30) round-trips as a property.
+      ``period_grain`` and whose declared default (30) round-trips as a property;
+    * carries dimension_facet='capital' (DAT-855), projected on the metric_node vertex.
 
     All rows are ``vertical='finance'`` so the _VERTICAL_SCOPED read views (bound to
     finance in this seed) surface them.
     """
     return [
         "INSERT INTO metrics (metric_id, vertical, graph_id, name, category, unit, "
-        " output_type, version, source, created_at) "
+        " output_type, version, dimension_facet, source, created_at) "
         f"VALUES ('m_wc', 'finance', 'working_capital_metric', 'Working Capital Metric', "
-        f"'working_capital', 'days', 'scalar', '1.0', 'seed', '{TS}')",
+        f"'working_capital', 'days', 'scalar', '1.0', 'capital', 'seed', '{TS}')",
         "INSERT INTO metric_parameters (parameter_id, vertical, graph_id, name, param_type, "
         " default_value, options, description, derivation, source, created_at) "
         f"VALUES ('mp_dip', 'finance', 'working_capital_metric', 'days_in_period', 'integer', "
@@ -578,7 +579,8 @@ def _coverage_and_rollup_stmts() -> list[str]:
     - a ``drilldown`` dimension_hierarchies row over c_k1→c_k2→c_k3 (levels 2→1→0,
       finer→coarser) plus a level-3 member with NO catalog column ('') to prove the
       skip, and an ``alias`` row to prove kind!='drilldown' emits no rolls_up_to.
-    - a ``dimension`` concept carrying ordering='ordered' (the DAT-730 typed fact).
+    - a ``dimension`` concept carrying ordering='ordered' (the DAT-730 typed fact)
+      and dimension_facet='capital' (the DAT-855 typed fact).
     """
     import json
 
@@ -649,10 +651,13 @@ def _coverage_and_rollup_stmts() -> list[str]:
         f"VALUES ('dh_2', '{RUN}', 't4', 'alias', '{alias_members}'::json, "
         f"'division_id', 'alias:t4:division', 'g3', false, '{TS}')"
     )
-    # A dimension concept carrying the DAT-730 ordering fact (og_concepts.ordering).
+    # A dimension concept carrying the DAT-730 ordering fact (og_concepts.ordering)
+    # and the DAT-855 dimension_facet fact (og_concepts.dimension_facet).
     stmts.append(
-        "INSERT INTO concepts (concept_id, vertical, name, kind, ordering, created_at) "
-        f"VALUES ('con_sev', 'finance', 'severity', 'dimension', 'ordered', '{TS}')"
+        "INSERT INTO concepts (concept_id, vertical, name, kind, ordering, "
+        "dimension_facet, created_at) "
+        f"VALUES ('con_sev', 'finance', 'severity', 'dimension', 'ordered', "
+        f"'capital', '{TS}')"
     )
     return stmts
 
@@ -2211,6 +2216,22 @@ def test_concept_ordering_property_is_queryable(graph_engine: Engine) -> None:
     assert rows["accounts_payable"] is None
 
 
+def test_concept_dimension_facet_property_is_queryable(graph_engine: Engine) -> None:
+    """dimension_facet (DAT-855): the operating-model axis fact rides the concept
+    vertex — a declared value where classified, NULL (⇒ "no writer classified yet")
+    otherwise."""
+    sql = (
+        f"SELECT name, dimension_facet FROM GRAPH_TABLE ({_graph_ref()} "
+        "MATCH (c IS concept_node) "
+        "COLUMNS (c.name AS name, c.dimension_facet AS dimension_facet))"
+    )
+    with graph_engine.connect() as conn:
+        rows = {r.name: r.dimension_facet for r in conn.execute(text(sql))}
+    assert rows["severity"] == "capital"
+    # A concept with no declared facet carries NULL.
+    assert rows["accounts_payable"] is None
+
+
 # --- DAT-731: additivity projection + measured_in units ---------------------------
 
 
@@ -2351,16 +2372,19 @@ def test_measured_in_edge_resolves_the_unit_column(graph_engine: Engine) -> None
 
 
 def test_metric_node_carries_its_declared_metadata(graph_engine: Engine) -> None:
-    """metric_node: one vertex per declared metric, over the typed home."""
+    """metric_node: one vertex per declared metric, over the typed home. Also carries
+    the DAT-855 dimension_facet fact."""
     sql = (
-        f"SELECT gid, name, unit, otype FROM GRAPH_TABLE ({_graph_ref()} "
+        f"SELECT gid, name, unit, otype, facet FROM GRAPH_TABLE ({_graph_ref()} "
         "MATCH (m IS metric_node) "
         "COLUMNS (m.graph_id AS gid, m.name AS name, m.unit AS unit, "
-        "m.output_type AS otype))"
+        "m.output_type AS otype, m.dimension_facet AS facet))"
     )
     with graph_engine.connect() as conn:
-        rows = {(r.gid, r.name, r.unit, r.otype) for r in conn.execute(text(sql))}
-    assert rows == {("working_capital_metric", "Working Capital Metric", "days", "scalar")}
+        rows = {(r.gid, r.name, r.unit, r.otype, r.facet) for r in conn.execute(text(sql))}
+    assert rows == {
+        ("working_capital_metric", "Working Capital Metric", "days", "scalar", "capital")
+    }
 
 
 def test_derives_from_binds_metric_to_its_extracted_concepts(graph_engine: Engine) -> None:

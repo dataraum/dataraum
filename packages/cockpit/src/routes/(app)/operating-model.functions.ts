@@ -8,6 +8,7 @@
 import { createServerFn } from "@tanstack/react-start";
 import { loadBusMatrix } from "#/tools/bus-matrix-load";
 import { loadConceptGraph } from "#/tools/concept-graph-load";
+import { loadCoverageMap } from "#/tools/coverage-map-load";
 import { loadOperatingModelGraph } from "#/tools/operating-model-load";
 
 export const loadModel = createServerFn({ method: "GET" }).handler(() =>
@@ -29,4 +30,16 @@ export const loadConcepts = createServerFn({ method: "GET" }).handler(() =>
 // operating_model stage and carries its own empty state.
 export const loadBus = createServerFn({ method: "GET" }).handler(() =>
 	loadBusMatrix(),
+);
+
+// The coverage map (DAT-855 B2) — a FOURTH independent server fn, and a fourth
+// independent lifecycle: it reads the `metrics`/`concepts` VOCABULARY (frame-time,
+// present with or without a run — same as `loadConcepts`) fused with the promoted
+// operating_model run's lifecycle/grounding/reconciliation state (present only once
+// that run exists — same as `loadModel`). Neither `loadModel`, `loadConcepts`, nor
+// `loadBus` reads that fusion, so folding coverage into any of them would make ITS
+// failure blank a pane that has nothing to do with it — the exact fault-isolation
+// concern this route's header documents for the first three.
+export const loadCoverage = createServerFn({ method: "GET" }).handler(() =>
+	loadCoverageMap(),
 );

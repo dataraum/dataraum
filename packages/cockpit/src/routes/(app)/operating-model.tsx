@@ -44,12 +44,19 @@ import {
 } from "@tanstack/react-router";
 import type { BusMatrix } from "#/tools/bus-matrix";
 import type { ConceptGraph } from "#/tools/concept-graph";
+import type { LoadCoverageResult } from "#/tools/coverage-map-load";
 import type { LoadOperatingModelResult } from "#/tools/operating-model-load";
 import { BusMatrixView } from "#/ui/cockpit/operating-model/bus-matrix-view";
 import { ConceptGraphView } from "#/ui/cockpit/operating-model/concept-graph-view";
+import { CoverageMapView } from "#/ui/cockpit/operating-model/coverage-map-view";
 import { ModelIcon } from "#/ui/cockpit/operating-model/nodes";
 import { OperatingModelCanvas } from "#/ui/cockpit/operating-model/operating-model-canvas";
-import { loadBus, loadConcepts, loadModel } from "./operating-model.functions";
+import {
+	loadBus,
+	loadConcepts,
+	loadCoverage,
+	loadModel,
+} from "./operating-model.functions";
 
 /** One pane's independent read outcome — never let one pane's failure blank
  *  the other or get mislabeled as the other's error. */
@@ -67,30 +74,38 @@ function toPaneResult<T>(settled: PromiseSettledResult<T>): PaneResult<T> {
 	};
 }
 
-type ViewMode = "metrics" | "concepts" | "bus";
+type ViewMode = "metrics" | "concepts" | "bus" | "coverage";
 
 export const Route = createFileRoute("/(app)/operating-model")({
 	validateSearch: (
 		search: Record<string, unknown>,
-	): { view?: "concepts" | "bus" } =>
+	): { view?: "concepts" | "bus" | "coverage" } =>
 		// The KEY itself is omitted (not present-with-undefined) at the default
 		// "metrics" tab — mirrors the reports `?drill=` convention of not
 		// cluttering the URL with the no-op state, and keeps `view` a truly
 		// OPTIONAL search param so a bare `{ to: "/operating-model" }` link
 		// (governance.tsx) stays valid without threading a search object.
-		search.view === "concepts" || search.view === "bus"
+		search.view === "concepts" ||
+		search.view === "bus" ||
+		search.view === "coverage"
 			? { view: search.view }
 			: {},
 	loader: async () => {
-		const [modelResult, conceptsResult, busResult] = await Promise.allSettled([
-			loadModel(),
-			loadConcepts(),
-			loadBus(),
-		]);
+		// NEVER Promise.all (see the fault-isolation header above): a fourth
+		// independent read joins the same way the first three do — one failure
+		// must not blank the other three panes.
+		const [modelResult, conceptsResult, busResult, coverageResult] =
+			await Promise.allSettled([
+				loadModel(),
+				loadConcepts(),
+				loadBus(),
+				loadCoverage(),
+			]);
 		return {
 			model: toPaneResult(modelResult),
 			concepts: toPaneResult(conceptsResult),
 			bus: toPaneResult(busResult),
+			coverage: toPaneResult(coverageResult),
 		};
 	},
 	component: ModelSection,
@@ -215,12 +230,37 @@ function BusView({ bus }: { bus: PaneResult<BusMatrix> }) {
 	return <BusMatrixView matrix={bus.data} />;
 }
 
+function CoverageView({
+	coverage,
+}: {
+	coverage: PaneResult<LoadCoverageResult>;
+}) {
+	if (coverage.status === "error") {
+		return (
+			<PaneError
+				title="Couldn't load the coverage map"
+				message={coverage.message}
+			/>
+		);
+	}
+	const { analyzed, map } = coverage.data;
+	if (!analyzed) {
+		return (
+			<EmptyState
+				title="No operating model yet"
+				detail="Run the operating model over a framed session to populate the coverage map — which operating-model dimensions a real, grounded metric covers, and why the rest don't yet."
+			/>
+		);
+	}
+	return <CoverageMapView map={map} />;
+}
+
 // Exported for the route-level test (the `create.tsx` precedent): the TAB WIRING
 // is this route's actual deliverable — which pane a `view` value mounts — and
 // nothing else in the suite covers it, so deleting a tab used to leave the suite
 // green. Rendered directly with `Route`'s hooks spied, no router needed.
 export function ModelSection() {
-	const { model, concepts, bus } = Route.useLoaderData();
+	const { model, concepts, bus, coverage } = Route.useLoaderData();
 	const search = Route.useSearch();
 	const navigateSearch = Route.useNavigate();
 	const view: ViewMode = search.view ?? "metrics";
@@ -241,7 +281,10 @@ export function ModelSection() {
 						// The comparison already narrows `v`; a cast here would only
 						// hide a future widening of the union.
 						search: {
-							view: v === "concepts" || v === "bus" ? v : undefined,
+							view:
+								v === "concepts" || v === "bus" || v === "coverage"
+									? v
+									: undefined,
 						},
 						replace: true,
 						resetScroll: false,
@@ -251,6 +294,7 @@ export function ModelSection() {
 					{ label: "Metrics", value: "metrics" },
 					{ label: "Concepts", value: "concepts" },
 					{ label: "Bus matrix", value: "bus" },
+					{ label: "Coverage", value: "coverage" },
 				]}
 				style={{ alignSelf: "flex-start" }}
 			/>
@@ -285,6 +329,16 @@ export function ModelSection() {
 					data-testid="pane-bus"
 				>
 					<BusView bus={bus} />
+				</Box>
+				<Box
+					style={{
+						display: view === "coverage" ? "block" : "none",
+						height: "100%",
+						overflowY: "auto",
+					}}
+					data-testid="pane-coverage"
+				>
+					<CoverageView coverage={coverage} />
 				</Box>
 			</Box>
 		</Stack>

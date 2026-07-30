@@ -131,6 +131,14 @@ class GeneratedCode:
     provenance: GraphProvenanceOutput | None = None
     assumptions: list[GraphAssumptionOutput] = field(default_factory=list)
 
+    # Why composition ABSTAINED, when it did (DAT-893). An abstained extract is composed
+    # as `SELECT NULL AS value`: it executes clean and the verifier then rejects it for
+    # having no support, so without this the true cause never reaches the persisted
+    # failure — it lived only on a sub-floor assumption that the failure path drops.
+    # Carried on the generated code (not passed per call site) because every writer of a
+    # retained failure already holds this object, so no path can forget it.
+    composition_abstain: str | None = None
+
 
 @dataclass
 class ExecutionContext:
@@ -1137,6 +1145,10 @@ class GraphAgent(LLMFeature):
             llm_model=model,
             prompt_hash=prompt_hash,
             generated_at=datetime.now(UTC),
+            # DAT-893: the abstain reason rides the code object so the retained-failure
+            # writer keeps it. The sub-floor assumption above stays exactly as it was —
+            # this is the same fact reaching the surface that survives the failure path.
+            composition_abstain=composed.abstain,
         )
 
         if violations:
@@ -1777,9 +1789,14 @@ class GraphAgent(LLMFeature):
         cannot ground ``uses`` edges on an unenforced column enumeration).
         We persist THIS node's own generated extract SQL with
         ``failed=True`` (``failure_count=1`` → ``find_by_key`` keeps it OUT of reuse)
-        plus ``{failure_mode, failure_reason}`` in provenance, so
+        plus ``{failure_mode, failure_reason, composition_abstain}`` in provenance, so
         ``_build_prior_context`` can feed the exact prior SQL + reason to the next
         authoring, and the cockpit can surface it on the ungroundable node.
+
+        ``composition_abstain`` (DAT-893) comes off the ``generated_code`` rather than the
+        call site: when composition abstained, the SQL persisted here is the fall-loud
+        ``SELECT NULL AS value`` and ``reason`` is whatever rejected THAT — so the cause
+        would otherwise be unrecoverable from the row.
 
         This loops over EVERY extract leaf in the graph (execution/verifier failure is
         graph-level — there is no per-leaf attribution), stamping each with the same
@@ -1798,9 +1815,11 @@ class GraphAgent(LLMFeature):
         generated_steps = {
             s.get("step_id", ""): s for s in generated_code.steps if s.get("step_id")
         }
-        provenance = FailedSnippetProvenance(failure_mode=mode, failure_reason=reason).model_dump(
-            mode="json"
-        )
+        provenance = FailedSnippetProvenance(
+            failure_mode=mode,
+            failure_reason=reason,
+            composition_abstain=generated_code.composition_abstain,
+        ).model_dump(mode="json")
         for step_id, graph_step in graph.steps.items():
             if graph_step.step_type != StepType.EXTRACT or not graph_step.source:
                 continue
@@ -2109,8 +2128,20 @@ class GraphAgent(LLMFeature):
                             "operands with row-guarded NULL-safety per the empty-aggregation "
                             "rule)."
                         )
+                    # DAT-893: when the prior failure was an ABSTENTION, `why` describes
+                    # the symptom the verifier saw (a NULL with no support) and the
+                    # guidance above would send this turn chasing its own SQL. Name the
+                    # actual cause first — the system withheld composition, the authored
+                    # grounding may have been fine.
+                    abstained = prov.get("composition_abstain")
+                    cause = (
+                        f"\nThe system ABSTAINED from composing it: {abstained}\n"
+                        f"That, not the SQL, is why the value was NULL."
+                        if abstained
+                        else ""
+                    )
                     parts.append(
-                        f"Your prior attempt to ground this extract was {mode}: {why}\n"
+                        f"Your prior attempt to ground this extract was {mode}: {why}{cause}\n"
                         f"Prior SQL (do NOT re-emit unchanged):\n{rec.sql}\n{guidance}"
                     )
         except Exception as e:

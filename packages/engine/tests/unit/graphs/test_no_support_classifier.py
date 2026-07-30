@@ -44,6 +44,12 @@ def _parts(where: list[str], relation: str | None = "ledger") -> dict[str, objec
     }
 
 
+def _fall_loud_parts() -> dict[str, object]:
+    """The system-composed fall-loud shape, exactly as ``extract_parts_dict("NULL",
+    None, [])`` persists it — the ONLY shape the graph-level abstain applies to."""
+    return {"select": [{"expr": "NULL", "alias": "value"}], "from": [], "where": []}
+
+
 def _basis(members: list[tuple[str, str]]) -> dict[str, object]:
     """The persisted MAP shape (``HealthySnippetProvenance``) both paths feed."""
     return {
@@ -66,7 +72,7 @@ class TestClassifier:
         probe), and the class is the composition one, never an absence claim."""
         finding = classify_no_support(
             duckdb.connect(":memory:"),
-            parts=_parts([], relation=None),
+            parts=_fall_loud_parts(),
             column_mappings_basis=None,
             served_values={},
             composition_abstain="SENTINEL_ANCHOR_MISMATCH",
@@ -74,6 +80,25 @@ class TestClassifier:
         assert finding is not None
         assert finding.reason_class is NoSupportClass.COMPOSITION_ABSTAINED
         assert finding.evidence == "SENTINEL_ANCHOR_MISMATCH"
+
+    def test_graph_level_abstain_ignored_for_a_step_with_real_parts(
+        self, conn: duckdb.DuckDBPyConnection
+    ) -> None:
+        """The abstain reason is GRAPH-level; only the step whose own parts ARE the
+        system's fall-loud shape may claim it. A step that authored real SQL in a
+        code object carrying an abstain (a hypothetical multi-extract compose)
+        classifies by measurement — structural, not reliant on ``execute`` failing
+        loud on multi-extract graphs."""
+        finding = classify_no_support(
+            conn,
+            parts=_parts(["category = 'Salaries'"]),
+            column_mappings_basis=_basis([("category", "Salaries")]),
+            served_values=_SERVED,
+            composition_abstain="SENTINEL_OTHER_LEAFS_ABSTAIN",
+        )
+        assert finding is not None
+        assert finding.reason_class is NoSupportClass.OPERAND_ALL_NULL
+        assert "SENTINEL_OTHER_LEAFS_ABSTAIN" not in finding.evidence
 
     def test_rows_matched_is_operand_all_null(self, conn: duckdb.DuckDBPyConnection) -> None:
         """Rows match the filter but the aggregate was NULL ⇒ the operand is entirely
@@ -173,8 +198,31 @@ class TestClassifier:
         assert (
             classify_no_support(
                 duckdb.connect(":memory:"),
-                parts=_parts([], relation=None),
+                parts=_fall_loud_parts(),
                 column_mappings_basis=None,
+                served_values=_SERVED,
+            )
+            is None
+        )
+
+    def test_multi_relation_parts_are_unclassifiable(
+        self, conn: duckdb.DuckDBPyConnection
+    ) -> None:
+        """No engine path composes a multi-FROM extract today, but the parts schema
+        allows one — and the single-relation COUNT probe cannot mirror its scan (a
+        WHERE touching only the first relation's columns would count unjoined rows
+        and misclassify a zero-support join as operand_all_null). No faithful probe
+        → no claim."""
+        parts = {
+            "select": [{"expr": "SUM(amount)", "alias": "value"}],
+            "from": ["ledger", "other_rel"],
+            "where": ["category = 'Rent'"],
+        }
+        assert (
+            classify_no_support(
+                conn,
+                parts=parts,
+                column_mappings_basis=_basis([("category", "Rent")]),
                 served_values=_SERVED,
             )
             is None

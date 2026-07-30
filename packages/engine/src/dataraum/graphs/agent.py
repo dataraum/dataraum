@@ -263,11 +263,14 @@ def classify_no_support(
     finding the verifier's message, the retained row, and the next authoring's
     guidance all carry. In order:
 
-    1. ``composition_abstain`` set — the SYSTEM composed the fall-loud
-       ``SELECT NULL`` (DAT-893): the abstain reason IS the cause; nothing to
-       probe.
-    2. No relation in the parts — the model's own fall-loud shape, or a
-       pre-parts snippet: there is no probe to run and no claim to make →
+    1. ``composition_abstain`` set AND this step's own parts are the
+       system-composed fall-loud shape (``SELECT NULL``, no relation, no
+       filter — DAT-893): the abstain reason IS the cause; nothing to probe.
+       The abstain is graph-level, so a step with real parts ignores it and
+       classifies by measurement below.
+    2. No relation in the parts (the model's own fall-loud shape, or a
+       pre-parts snippet), or MORE than one relation (the probe cannot mirror
+       a multi-relation scan): there is no probe to run and no claim to make →
        ``None`` (the caller keeps the honest possibility-space message).
     3. The row-count probe: ``SELECT COUNT(*) FROM <relation> WHERE <where>``
        over the SAME relation text and the SAME AND-composed predicate the
@@ -304,15 +307,33 @@ def classify_no_support(
     """
     from dataraum.graphs.formula_composer import compose_where_predicate
 
-    if composition_abstain:
-        return NoSupportFinding(NoSupportClass.COMPOSITION_ABSTAINED, composition_abstain)
-
     from_list = (parts or {}).get("from") or []
+    where = [str(p) for p in (parts or {}).get("where") or [] if p and str(p).strip()]
+
+    if composition_abstain:
+        # The abstain reason is GRAPH-level (one field on GeneratedCode), so it is
+        # applied only to the step whose OWN parts are the system-composed fall-loud
+        # shape (`extract_parts_dict("NULL", None, [])` — SELECT NULL, no relation,
+        # no filter). A step that authored real SQL classifies by measurement below,
+        # so a hypothetical multi-extract code object cannot smear one leaf's
+        # abstention over its siblings' NULLs — structural, not reliant on
+        # `execute` failing loud on multi-extract graphs.
+        select = (parts or {}).get("select") or []
+        select_expr = str(select[0].get("expr", "")).strip() if select else ""
+        if not from_list and not where and select_expr == "NULL":
+            return NoSupportFinding(NoSupportClass.COMPOSITION_ABSTAINED, composition_abstain)
+
     relation = from_list[0] if from_list else None
     if not relation:
         return None
+    if len(from_list) > 1:
+        # A multi-relation extract (no engine path composes one today, but the parts
+        # schema allows it): the COUNT probe below scans ONE relation, so a WHERE
+        # touching only that relation's columns would count unjoined rows and
+        # misclassify a zero-support join as operand_all_null. No probe that cannot
+        # mirror the executed scan → no claim.
+        return None
 
-    where = [str(p) for p in (parts or {}).get("where") or [] if p and str(p).strip()]
     probe = f"SELECT COUNT(*) FROM {relation}"  # noqa: S608 - the extract's own served relation
     clause = compose_where_predicate(where)
     if clause:
@@ -586,6 +607,12 @@ class GraphAgent(LLMFeature):
                 mode=SnippetFailureMode.VERIFIER_REJECTED,
                 reason=reason,
                 no_support=findings,
+                # The demote above already wrote these rows COMPLETELY (typed
+                # provenance, sql + parts retained). The generic write would refresh
+                # them from cache-COMPOSED step dicts, which carry no "parts" key —
+                # nulling the just-preserved parts (and with them the row's relation
+                # on current_groundings) while re-writing identical content.
+                skip_steps=set(absent_cached),
             )
             return Result.fail(reason)
         execution.verification_flags = verdict.unwrap() or []
@@ -2027,6 +2054,7 @@ class GraphAgent(LLMFeature):
         mode: SnippetFailureMode,
         reason: str,
         no_support: dict[str, NoSupportFinding] | None = None,
+        skip_steps: set[str] | None = None,
     ) -> None:
         """Retain an authored-but-unusable EXTRACT SQL, flagged (DAT-543).
 
@@ -2054,6 +2082,11 @@ class GraphAgent(LLMFeature):
         (``classify_no_support`` reads it off the ``generated_code`` before probing),
         so the cause of a system-composed ``SELECT NULL`` still survives the row.
 
+        ``skip_steps`` names leaves a caller ALREADY retained with fuller content
+        (the DAT-658 drift demotion writes the row itself, keeping its sql AND
+        parts) — writing them again here from cache-composed step dicts, which
+        carry no ``parts``, would null exactly what the demote preserved.
+
         This loops over EVERY extract leaf in the graph (execution/verifier failure is
         graph-level — there is no per-leaf attribution), stamping each with the same
         graph-level ``reason`` and its OWN finding (a leaf that had support carries no
@@ -2075,6 +2108,8 @@ class GraphAgent(LLMFeature):
         for step_id, graph_step in graph.steps.items():
             if graph_step.step_type != StepType.EXTRACT or not graph_step.source:
                 continue
+            if skip_steps and step_id in skip_steps:
+                continue  # already retained by the caller, with sql + parts intact
             gen_step = generated_steps.get(step_id)
             if not gen_step:
                 # Ambiguous drift (multi-step output or multi-leaf graph) — a

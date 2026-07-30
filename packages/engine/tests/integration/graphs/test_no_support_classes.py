@@ -222,7 +222,10 @@ def test_drifted_absent_concept_demotes_to_typed_non_revisable_provenance(
     pg_session.flush()
 
     row = pg_session.execute(
-        text(f"SELECT failed, provenance FROM {groundings} WHERE concept = 'cost_of_goods_sold'")  # noqa: S608
+        text(  # noqa: S608
+            f"SELECT failed, provenance, relation, parts FROM {groundings} "
+            f"WHERE concept = 'cost_of_goods_sold'"
+        )
     ).one()
     assert row[0] is True, "the stale healthy row must be demoted, not served forever"
     provenance = row[1]
@@ -232,3 +235,10 @@ def test_drifted_absent_concept_demotes_to_typed_non_revisable_provenance(
     # reader (and the next authoring turn) can verify the verdict against the data.
     assert "'COGS'" in provenance["no_support_evidence"]
     assert "Rent" in provenance["no_support_evidence"]
+    # Demotion RETAINS, it does not degrade: the row keeps its sql AND its parts
+    # through the follow-up retained-failure write (whose cache-composed step dicts
+    # carry no parts — a naive refresh nulled them, wiping the row's relation off
+    # this very view; the demoted rows are skipped by that write instead).
+    assert row[2] == "drift_ledger"
+    assert row[3] is not None
+    assert row[3]["where"] == ["category = 'COGS'"]

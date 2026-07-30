@@ -30,6 +30,7 @@ from dataraum.analysis.semantic.db_models import (
     DimensionOrdering,
     WorkspaceSettings,
 )
+from dataraum.analysis.semantic.entity_store import load_workspace_entities
 from dataraum.analysis.semantic.envelope_store import load_workspace_envelope
 from dataraum.analysis.semantic.ontology import (
     OntologyConcept,
@@ -242,14 +243,20 @@ def load_workspace_concepts(session: Session, vertical: str) -> OntologyDefiniti
     # — the active concept set is a legitimate SUBSET (a superseded concept a
     # convention still names is stale text, not an authoring error), and
     # re-validation would crash the runtime read the moment a referenced concept is
-    # superseded. This bypass covers the DB conventions (DAT-789) and the DB envelope
-    # (DAT-883) alike: both are served verbatim, never re-linted at read time.
+    # superseded. This bypass covers the DB conventions (DAT-789), the DB envelope
+    # (DAT-883) and the DB entity taxonomy (DAT-724) alike: all served verbatim, never
+    # re-linted at read time — an entity naming a since-superseded concept is stale
+    # text, exactly as a convention naming one is.
     return OntologyDefinition.model_construct(
         name=envelope.name if envelope else effective,
         version=envelope.version if envelope else None,
         description=envelope.description if envelope else None,
         concepts=concepts,
         conventions=load_workspace_conventions(session, effective),
+        # Table-entity taxonomy (DAT-724): lifted here rather than at each consumer so
+        # the two table-grain agents, which already call this function for their
+        # concepts, receive it without a second read or a second scoping decision.
+        entities=load_workspace_entities(session, effective),
     )
 
 

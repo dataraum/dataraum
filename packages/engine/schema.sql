@@ -411,6 +411,25 @@ CREATE TABLE validations (
 
 CREATE UNIQUE INDEX uq_validation_active ON validations (vertical, validation_id) WHERE superseded_at IS NULL;
 
+CREATE TABLE vertical_entities (
+	vertical_entity_id VARCHAR NOT NULL, 
+	vertical VARCHAR NOT NULL, 
+	name VARCHAR NOT NULL, 
+	role VARCHAR, 
+	description TEXT, 
+	concepts JSON, 
+	cycles JSON, 
+	aliases JSON, 
+	source VARCHAR, 
+	created_at TIMESTAMP WITHOUT TIME ZONE NOT NULL, 
+	superseded_at TIMESTAMP WITHOUT TIME ZONE, 
+	CONSTRAINT pk_vertical_entities PRIMARY KEY (vertical_entity_id), 
+	CONSTRAINT ck_vertical_entities_role CHECK (role IS NULL OR role IN ('dimension', 'fact', 'periodic_snapshot')), 
+	CONSTRAINT ck_vertical_entities_source CHECK (source IS NULL OR source IN ('seed'))
+);
+
+CREATE UNIQUE INDEX uq_vertical_entity_active ON vertical_entities (vertical, name) WHERE superseded_at IS NULL;
+
 CREATE TABLE vertical_envelopes (
 	envelope_id VARCHAR NOT NULL, 
 	vertical VARCHAR NOT NULL, 

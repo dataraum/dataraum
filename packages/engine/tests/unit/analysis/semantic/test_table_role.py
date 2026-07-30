@@ -329,3 +329,41 @@ def test_attribute_date_in_grain_does_not_flip_a_fact() -> None:
         relationships=[],
     )
     assert _role_of(synthesis, "invoices", {}) == TableRole.FACT
+
+
+# --- DAT-724: the declaration is evidence, never an override ------------------
+#
+# The entity taxonomy grounds the LLM's fact/dimension answer. It reaches the MODEL,
+# through the prompt — it does not reach this function, so the structural refinement
+# still runs on top of whatever the model concluded. These pin that boundary.
+
+
+def test_derive_table_role_takes_no_declaration() -> None:
+    """The guard against the override this feature must not become.
+
+    If a later change threads the declared role in here, the declaration stops being
+    evidence and starts overriding structural evidence — which is exactly the line
+    DAT-724 draws. Signature-level because that is where the mistake would be made.
+    """
+    import inspect
+
+    assert list(inspect.signature(derive_table_role).parameters) == [
+        "is_fact",
+        "grain_columns",
+        "period_axis_columns",
+    ]
+
+
+def test_structure_demotes_a_declared_snapshot_without_a_period_in_grain() -> None:
+    """A vertical may declare an entity ``periodic_snapshot`` (trial_balance does),
+    but a physical table whose grain carries no period is not one — structure decides
+    the subtype, and the declaration cannot manufacture it."""
+    assert derive_table_role(True, ["txn_id"], ["period"]) == TableRole.FACT
+
+
+def test_structure_promotes_a_declared_fact_with_a_period_in_grain() -> None:
+    """The other direction: a table declared plainly ``fact`` still becomes a
+    periodic snapshot when its grain contains the reporting period."""
+    assert derive_table_role(True, ["account_id", "period"], ["period"]) == (
+        TableRole.PERIODIC_SNAPSHOT
+    )

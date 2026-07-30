@@ -18,6 +18,8 @@ from dataraum.graphs.models import (
     GraphMetadata,
     GraphSource,
     GraphStep,
+    NoSupportClass,
+    NoSupportFinding,
     OutputDef,
     OutputType,
     StepResult,
@@ -136,6 +138,50 @@ class TestSupportGate:
         execution = _execution({"revenue": 1000.0}, output_value=0.0)
 
         assert verify_execution(graph, execution).success
+
+    @pytest.mark.parametrize(
+        "reason_class",
+        [
+            NoSupportClass.PREDICATE_MATCHED_NO_ROWS,
+            NoSupportClass.OPERAND_ALL_NULL,
+            NoSupportClass.CONCEPT_ABSENT,
+            NoSupportClass.COMPOSITION_ABSTAINED,
+        ],
+    )
+    def test_classified_null_names_the_class_not_the_possibility_space(
+        self, reason_class: NoSupportClass
+    ) -> None:
+        """DAT-658: a classified no-support rejection names the ONE measured cause.
+
+        The classification is computed upstream (classify_no_support — the verifier
+        stays blind and IO-free; it receives data) and the message carries the class
+        token plus its evidence. The possibility-space enumeration is for the
+        UNCLASSIFIED case only — serving both would re-open the decision the system
+        already measured."""
+        graph = _graph({"cogs": _extract("cogs")})
+        execution = _execution({"cogs": None}, output_value=None)
+        finding = NoSupportFinding(reason_class, "SENTINEL_EVIDENCE")
+
+        result = verify_execution(graph, execution, no_support={"cogs": finding})
+
+        assert not result.success
+        assert str(reason_class) in result.error
+        assert "SENTINEL_EVIDENCE" in result.error
+        assert "no support" in result.error
+        assert "either its filter matched no rows" not in result.error
+
+    def test_a_finding_for_another_step_does_not_leak(self) -> None:
+        """The classification is per step — a sibling's finding must not relabel
+        this step's NULL; the honest enumeration stays."""
+        graph = _graph({"revenue": _extract("revenue"), "cogs": _extract("cogs")})
+        execution = _execution({"revenue": 1000.0, "cogs": None}, output_value=100.0)
+        finding = NoSupportFinding(NoSupportClass.CONCEPT_ABSENT, "SENTINEL_EVIDENCE")
+
+        result = verify_execution(graph, execution, no_support={"revenue": finding})
+
+        assert not result.success
+        assert "SENTINEL_EVIDENCE" not in result.error
+        assert "either its filter matched no rows" in result.error
 
 
 class TestDeclaredConditions:

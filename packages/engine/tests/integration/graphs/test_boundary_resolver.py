@@ -44,6 +44,7 @@ from dataraum.graphs.models import (
     ExtractGroundingOutput,
     FailedSnippetProvenance,
     GraphProvenanceOutput,
+    NoSupportClass,
     SnippetFailureMode,
 )
 from dataraum.query.snippet_models import SQLSnippetRecord
@@ -766,7 +767,11 @@ def test_an_anchor_from_another_relation_persists_the_named_reason(
             provenance=FailedSnippetProvenance(
                 failure_mode=SnippetFailureMode.VERIFIER_REJECTED,
                 failure_reason="no support: aggregation returned NULL",
-                composition_abstain=composed.abstain,
+                # DAT-658 folded DAT-893's composition_abstain into the no-support
+                # vocabulary: the abstention is the typed cause class, its reason
+                # the evidence — one read for "why did this grounding fail".
+                no_support_class=NoSupportClass.COMPOSITION_ABSTAINED,
+                no_support_evidence=composed.abstain,
             ).model_dump(mode="json"),
             parts=extract_parts_dict("NULL", None, [], None),
         )
@@ -785,4 +790,5 @@ def test_an_anchor_from_another_relation_persists_the_named_reason(
     # The verifier's generic text alone would send a reader hunting the SQL; the cause
     # rides beside it, unchanged, on the same row.
     assert row[1]["failure_reason"] == "no support: aggregation returned NULL"
-    assert row[1]["composition_abstain"] == reason
+    assert row[1]["no_support_class"] == "composition_abstained"
+    assert row[1]["no_support_evidence"] == reason

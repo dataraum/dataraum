@@ -202,10 +202,6 @@ user_prompt: |
   </ontology>
 
   <entity_taxonomy>
-  Table kinds this domain declares, with the concepts each normally carries and
-  the names it commonly appears under. Evidence for entity_type, not a menu: a
-  table that matches none of these is described in your own words.
-
   {entity_taxonomy}
   </entity_taxonomy>
 

@@ -6,8 +6,8 @@ into typed :class:`~dataraum.analysis.semantic.db_models.VerticalEntity` rows on
 per workspace; runtime consumers read the typed rows, so a *framed* vertical — whose
 taxonomy would exist only as rows — is served identically to a builtin.
 
-**Why this exists.** The finance vertical declared a rich column-concept vocabulary
-and nothing at all about what a *table* can be. ``table_entities.detected_entity_type``
+**Why this exists.** The vertical declared a rich column-concept vocabulary and
+nothing at all about what a *table* can be. ``table_entities.detected_entity_type``
 was therefore unconstrained LLM free text, ``is_fact_table`` was answered against no
 declared alternative, and the eval's roles oracle could only grade entity_type
 report-only because there was nothing to ground against. These rows are the missing

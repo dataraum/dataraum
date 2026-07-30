@@ -248,6 +248,19 @@ class OntologyLoader:
     Loads ontologies from config/verticals/<vertical>/ontology.yaml.
     """
 
+    # The <entity_taxonomy> slot's two framings (DAT-724). Phase-neutral by
+    # construction: one formatter serves both a structural classifier and a naming
+    # turn, so neither may presume the consumer's task. Both carry the same guard —
+    # the declaration is evidence the model weighs, never a menu it must pick from.
+    _TAXONOMY_INTRO = (
+        "Table kinds this domain declares, with the role each normally takes, the "
+        "concepts it carries and the names it commonly appears under. Evidence, not a "
+        "menu: a table matching none of these is judged on its own data — an "
+        "undeclared table is a normal case, not an error. A declaration never "
+        "overrides what a table's own structure plainly shows."
+    )
+    _NO_TAXONOMY = "No table entity taxonomy declared — judge each table on its own data."
+
     def __init__(self, verticals_dir: Path | None = None):
         """Initialize ontology loader.
 
@@ -347,15 +360,22 @@ class OntologyLoader:
         ``entity_type``). Both already receive ``ontology_concepts``; this is its
         table-grain sibling.
 
-        Returns the "nothing declared" sentence when a vertical declares no taxonomy
-        (every framed vertical today, and any builtin that hasn't authored one). The
-        sentence is deliberately explicit that free-text detection is the mode in that
-        case — the prompt slot must not read as an empty list of *permitted* answers.
+        The block carries its OWN intro rather than leaving one in the prompt YAML,
+        because the two cases need different framing and the template engine has no
+        conditionals: a static "Table kinds this domain declares…" sitting above the
+        nothing-declared sentence contradicts it. Emitting intro-plus-entries or the
+        bare sentence keeps the slot coherent either way.
+
+        Both strings are phase-neutral — this one formatter feeds a classifier working
+        against a structured schema (``is_fact_table``) and a naming turn
+        (``entity_type``), so "describe each table" would misaddress the first. Their
+        shared instruction is: judge the table on its own data. The phase-specific
+        steer lives in each prompt's own instructions, not here.
         """
         if ontology is None or not ontology.entities:
-            return "No table entity taxonomy declared — describe each table in your own words."
+            return self._NO_TAXONOMY
 
-        lines = []
+        lines = [self._TAXONOMY_INTRO, ""]
         for entity in ontology.entities:
             role = f" [{entity.role}]" if entity.role else ""
             header = f"- {entity.name}{role}"

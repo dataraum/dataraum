@@ -369,6 +369,29 @@ class TestEntities:
         assert by_name["fx_rate"].role == "dimension"
         assert by_name["trial_balance"].role == "periodic_snapshot"
 
+    def test_sales_order_does_not_claim_the_bare_orders_name(self) -> None:
+        """A deliberate omission, easily "fixed" back: the corpus ships a role-play
+        probe skeleton literally named ``orders`` (order_id x order_date plus injected
+        FK-role columns). It is genuinely a fact, but carries neither fiscal_period nor
+        order_to_cash — so claiming the bare name would misattach this declaration to
+        it. An alias is a recognition hint; a wrong one is worse than none."""
+        ontology = OntologyLoader().load("finance")
+        sales_order = next(e for e in ontology.entities if e.name == "sales_order")
+        assert "orders" not in sales_order.aliases
+        assert "sales_orders" in sales_order.aliases
+
+    def test_no_alias_is_claimed_by_two_entities(self) -> None:
+        """Two kinds answering to one physical name makes the hint ambiguous exactly
+        where it is supposed to disambiguate."""
+        ontology = OntologyLoader().load("finance")
+        claimed: dict[str, str] = {}
+        for entity in ontology.entities:
+            for alias in entity.aliases:
+                assert alias not in claimed, (
+                    f"alias {alias!r} claimed by both {claimed.get(alias)!r} and {entity.name!r}"
+                )
+                claimed[alias] = entity.name
+
     def test_every_declared_role_is_a_table_role_value(self) -> None:
         """The declaration reuses the persisted vocabulary rather than a parallel one."""
         from dataraum.analysis.semantic.db_models import TableRole
@@ -456,16 +479,38 @@ class TestFormatEntitiesForPrompt:
         # never an engine-side string match.
         assert "Commonly named: journal_lines, postings" in rendered
 
+    def test_the_non_empty_block_carries_its_own_framing(self) -> None:
+        """The intro belongs to the FORMATTER, not the prompt YAML: the template
+        engine has no conditionals, so a static intro would sit above the
+        nothing-declared sentence and contradict it. Both guards are pinned here —
+        'not a menu' keeps the taxonomy from reading as a closed list of permitted
+        answers, and 'never overrides' keeps a declaration from displacing structural
+        evidence (which ``derive_table_role`` owns and never sees this value)."""
+        ont = OntologyDefinition(name="t", entities=[{"name": "widget", "role": "dimension"}])
+        rendered = OntologyLoader().format_entities_for_prompt(ont)
+        assert rendered.startswith("Table kinds this domain declares")
+        assert "Evidence, not a menu" in rendered
+        assert "an undeclared table is a normal case, not an error" in rendered
+        assert (
+            "A declaration never overrides what a table's own structure plainly shows" in rendered
+        )
+
     def test_omits_the_lines_a_sparse_entity_has_nothing_for(self) -> None:
         ont = OntologyDefinition(name="t", entities=[{"name": "widget", "role": "dimension"}])
         rendered = OntologyLoader().format_entities_for_prompt(ont)
-        assert rendered == "- widget [dimension]"
+        assert rendered.endswith("\n\n- widget [dimension]")
 
-    def test_an_undeclared_taxonomy_names_free_text_as_the_mode(self) -> None:
+    def test_an_undeclared_taxonomy_defers_to_the_data(self) -> None:
         """The empty case must not read as an empty list of PERMITTED answers — a
-        framed vertical declares no taxonomy and must keep free-text detection."""
+        framed vertical declares no taxonomy and must keep undeclared detection.
+
+        Phase-NEUTRAL wording: one formatter feeds a structural classifier working
+        against a schema (``is_fact_table``) and a naming turn (``entity_type``), so
+        'describe each table' would misaddress the first. Their shared instruction is
+        to judge the table on its own data."""
         for ontology in (None, OntologyDefinition(name="t")):
             rendered = OntologyLoader().format_entities_for_prompt(ontology)
             assert rendered == (
-                "No table entity taxonomy declared — describe each table in your own words."
+                "No table entity taxonomy declared — judge each table on its own data."
             )
+            assert "Table kinds this domain declares" not in rendered

@@ -59,9 +59,10 @@ class TestCataloguePrompt:
         assert "Where the declared entity taxonomy names a kind this table IS" in system
         assert "answer with that entity's name verbatim" in system
         assert "Where none fits, name the entity in your own words" in system
-        user = _flat(catalogue.user_prompt)
-        assert "<entity_taxonomy>" in user
-        assert "Evidence for entity_type, not a menu" in user
+        # The slot exists; its framing is the FORMATTER's, not the template's — the
+        # engine has no conditionals, so a static intro here would contradict the
+        # nothing-declared case (pinned in TestFormatEntitiesForPrompt instead).
+        assert "<entity_taxonomy>" in _flat(catalogue.user_prompt)
 
     def test_carries_the_ambiguous_contract(self, catalogue: PromptTemplate) -> None:
         """'ambiguous' is declared ignorance WITH a meaning present (DAT-769/823)."""
@@ -105,19 +106,16 @@ class TestPerTablePromptShrink:
         self, per_table: PromptTemplate
     ) -> None:
         """DAT-724: the declared role is EVIDENCE for is_fact_table, never a
-        substitute for structure. Both halves are pinned — softening the
-        'strong evidence' steer makes the taxonomy inert, and dropping the
-        'never overrides' guard turns a declaration into an override, which
-        ``derive_table_role``'s structural periodic_snapshot refinement (which
-        this value never reaches) is there to keep owning."""
+        substitute for structure. Softening the 'strong evidence' steer makes the
+        taxonomy inert; dropping the escape hatch forces a novel table into a
+        declared kind. The 'never overrides' guard lives with the formatter that
+        emits it (TestFormatEntitiesForPrompt), since only the non-empty case
+        should assert it."""
         system = _flat(per_table.system_prompt)
         assert "Where the declared entity taxonomy names a table kind this table" in system
         assert "strong evidence for that answer" in system
         assert "where none matches, decide on the data" in system
-        user = _flat(per_table.user_prompt)
-        assert "<entity_taxonomy>" in user
-        assert "Evidence, not a menu" in user
-        assert "A declaration never overrides what a table's own structure plainly shows" in user
+        assert "<entity_taxonomy>" in _flat(per_table.user_prompt)
 
     def test_identity_note_is_structural_only(self, per_table: PromptTemplate) -> None:
         """The lead-adjacent ruling (DAT-823): identity notes are STRUCTURAL

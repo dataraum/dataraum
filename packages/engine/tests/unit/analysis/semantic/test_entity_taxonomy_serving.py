@@ -151,10 +151,13 @@ def test_both_agents_receive_the_same_taxonomy(session: Session) -> None:
 # --- (b) an undeclared vertical keeps free-text behaviour --------------------
 
 
-def test_a_vertical_with_no_taxonomy_still_runs_and_names_free_text(session: Session) -> None:
+def test_a_vertical_with_no_taxonomy_still_runs_and_defers_to_the_data(session: Session) -> None:
     """The framed-vertical / novel-table case, which is the COMMON one. Declaring no
     taxonomy must not fail the turn and must not read as an empty list of permitted
-    answers — the slot says free text is the mode."""
+    answers — the slot says the data decides.
+
+    The intro is absent here, not merely contradicted: it rides inside the formatted
+    block, so BOTH agents' <entity_taxonomy> reads coherently with zero entities."""
     ensure_concepts_seeded(session, "finance")  # concepts only: no entities seeded
 
     for context in (
@@ -162,7 +165,7 @@ def test_a_vertical_with_no_taxonomy_still_runs_and_names_free_text(session: Ses
         _catalogue_context(session, "finance"),
     ):
         assert context["entity_taxonomy"] == (
-            "No table entity taxonomy declared — describe each table in your own words."
+            "No table entity taxonomy declared — judge each table on its own data."
         )
         # Every other evidence surface is untouched — this is an ADDITION to the
         # context, not a reshaping of it.

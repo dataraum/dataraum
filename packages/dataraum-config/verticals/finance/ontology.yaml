@@ -599,8 +599,11 @@ entities:
     cycles:
       - order_to_cash
     aliases:
+      # NOT "orders": the corpus ships a role-play probe skeleton literally named
+      # `orders` (order_id x order_date plus injected FK-role columns). It is
+      # genuinely a fact, but carries neither fiscal_period nor order_to_cash, so
+      # the alias would misattach this declaration to it.
       - sales_orders
-      - orders
       - customer_orders
       - so_header
       - order_header

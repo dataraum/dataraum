@@ -272,13 +272,6 @@ user_prompt: |
   </ontology>
 
   <entity_taxonomy>
-  Table kinds this domain declares, each with the role it normally takes and the
-  names it commonly appears under. Evidence, not a menu: where a table clearly IS
-  one of these, let the declared role inform your fact/dimension answer rather
-  than re-deriving it from column shapes alone. Where a table matches none,
-  classify it on the data — an undeclared table is a normal case, not an error.
-  A declaration never overrides what a table's own structure plainly shows.
-
   {entity_taxonomy}
   </entity_taxonomy>
 

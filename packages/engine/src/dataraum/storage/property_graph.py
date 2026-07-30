@@ -494,7 +494,8 @@ def _element_view_sql(name: str) -> str:
         # `concept_edge` edge below (DAT-729) and `grounded_by` (DAT-727).
         return (
             f"CREATE VIEW {READ_TOKEN}.og_concepts AS\n"
-            f"SELECT concept_id::text AS concept_id, vertical, name, kind, ordering\n"
+            f"SELECT concept_id::text AS concept_id, vertical, name, kind, ordering,\n"
+            f"       dimension_facet\n"
             f"FROM {READ_TOKEN}.concepts\n"
             f"WHERE superseded_at IS NULL;"
         )
@@ -1139,7 +1140,8 @@ def _element_view_sql(name: str) -> str:
         # stable identity AND the key the derives_from / has_parameter edges carry.
         return (
             f"CREATE VIEW {READ_TOKEN}.og_metrics AS\n"
-            f"SELECT graph_id::text AS graph_id, vertical, name, category, unit, output_type\n"
+            f"SELECT graph_id::text AS graph_id, vertical, name, category, unit, output_type,\n"
+            f"       dimension_facet\n"
             f"FROM {READ_TOKEN}.metrics\n"
             f"WHERE superseded_at IS NULL;"
         )
@@ -1279,7 +1281,7 @@ def _property_graph_sql() -> str:
         f"      PROPERTIES (column_id, table_id, column_name, semantic_role, materialization,\n"
         f"                  anchor_time_axis, stored_sign),\n"
         f"    {READ_TOKEN}.og_concepts KEY (concept_id) LABEL concept_node\n"
-        f"      PROPERTIES (concept_id, vertical, name, kind, ordering),\n"
+        f"      PROPERTIES (concept_id, vertical, name, kind, ordering, dimension_facet),\n"
         f"    {READ_TOKEN}.og_grounding KEY (snippet_id) LABEL grounding_node\n"
         f"      PROPERTIES (snippet_id, concept, statement, aggregation,\n"
         f"                  relation, select_expr, where_predicates, description, failed,\n"
@@ -1290,7 +1292,8 @@ def _property_graph_sql() -> str:
         f"      PROPERTIES (additivity_id, target_kind, target_key, axis_kind, axis_key,\n"
         f"                  status, verdict, reason, abstain_reason, bucket_grain),\n"
         f"    {READ_TOKEN}.og_metrics KEY (graph_id) LABEL metric_node\n"
-        f"      PROPERTIES (graph_id, vertical, name, category, unit, output_type),\n"
+        f"      PROPERTIES (graph_id, vertical, name, category, unit, output_type,\n"
+        f"                  dimension_facet),\n"
         f"    {READ_TOKEN}.og_metric_parameters KEY (parameter_id) LABEL parameter_node\n"
         f"      PROPERTIES (parameter_id, graph_id, name, param_type, default_value,\n"
         f"                  options, derivation, description),\n"

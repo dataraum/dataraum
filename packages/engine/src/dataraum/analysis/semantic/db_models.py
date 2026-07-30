@@ -97,6 +97,46 @@ class DimensionOrdering(StrEnum):
     NOMINAL = "nominal"
 
 
+class DimensionFacet(StrEnum):
+    """The operating-model axis a concept (or metric) classifies onto (DAT-855).
+
+    A typed fact on BOTH a concept and a metric — the same enum, one home, shared
+    across the two writers (``concept_store.py`` / ``graphs/metric_store.py``): which
+    side of the operating model a concept or metric belongs to, independent of its
+    ``kind``/``category``. Single-valued: a concept or metric names exactly one facet,
+    never a set — a measure that genuinely spans two facets is ``cross_cutting``, a
+    POSITIVE classification (not an "I couldn't decide" bucket).
+
+    - ``DEMAND`` — revenue-side: what customers buy (revenue).
+    - ``OFFER`` — cost-of-the-offer side: what it costs to produce/deliver
+      (cost_of_goods_sold).
+    - ``SUPPLY`` — reserved for a future supply-side classification (no shipped
+      finance concept maps here yet; the vocabulary slot exists so a later vertical
+      need not widen the CHECK).
+    - ``CAPACITY`` — reserved for a future capacity classification (same as SUPPLY).
+    - ``THROUGHPUT`` — reserved for a future throughput classification (same as SUPPLY).
+    - ``CAPITAL`` — balance-sheet / working-capital positions (accounts_receivable,
+      cash, equity, …).
+    - ``CROSS_CUTTING`` — applies across every facet rather than one (operating_expense,
+      fiscal_period, entity, tax, …) — a POSITIVE classification, not a default.
+
+    NULL means ONLY "no writer has classified this concept/metric yet" (a framed
+    vertical mid-authoring) — it is never a resting state for a shipped vertical: the
+    finance vertical assigns every concept and metric a facet, so NULL never appears
+    there. Seed-declarable via the vertical ontology (``OntologyConcept.
+    dimension_facet``) and the metric YAML's ``metadata.dimension_facet``; the cockpit
+    ``frame`` authoring path is a later lane.
+    """
+
+    DEMAND = "demand"
+    OFFER = "offer"
+    SUPPLY = "supply"
+    CAPACITY = "capacity"
+    THROUGHPUT = "throughput"
+    CAPITAL = "capital"
+    CROSS_CUTTING = "cross_cutting"
+
+
 class ConceptEdgePredicate(StrEnum):
     """The typed relation a concept edge asserts (DAT-729).
 
@@ -132,6 +172,7 @@ _CONCEPT_EDGE_PREDICATE_VALUES: tuple[str, ...] = tuple(
     sorted(v.value for v in ConceptEdgePredicate)
 )
 _DIMENSION_ORDERING_VALUES: tuple[str, ...] = tuple(sorted(v.value for v in DimensionOrdering))
+_DIMENSION_FACET_VALUES: tuple[str, ...] = tuple(sorted(v.value for v in DimensionFacet))
 
 
 def derive_table_role(
@@ -229,6 +270,16 @@ class Concept(Base):
             + ")",
             name="ordering",
         ),
+        # Dimension-facet vocabulary (DAT-855): derived from :class:`DimensionFacet` so
+        # the CHECK and enum can never drift. NULL-or-IN: NULL means ONLY "no writer has
+        # classified this concept yet" (a framed vertical mid-authoring) — the shipped
+        # finance vertical assigns every concept a facet, so NULL never appears there.
+        CheckConstraint(
+            "dimension_facet IS NULL OR dimension_facet IN ("
+            + ", ".join(f"'{v}'" for v in _DIMENSION_FACET_VALUES)
+            + ")",
+            name="dimension_facet",
+        ),
     )
 
     concept_id: Mapped[str] = mapped_column(String, primary_key=True, default=lambda: str(uuid4()))
@@ -246,6 +297,15 @@ class Concept(Base):
     # a wrong window. Time dimensions carry no fact (ordered by construction). Closed
     # vocab: see ck_concepts_ordering. Exposed as the ``og_concepts.ordering`` property.
     ordering: Mapped[str | None] = mapped_column(String)  # DimensionOrdering
+    # Operating-model axis (DAT-855): which side of the operating model this concept
+    # classifies onto — demand | offer | supply | capacity | throughput | capital |
+    # cross_cutting (see :class:`DimensionFacet`). Single-valued, never a set. NULL
+    # means ONLY "no writer classified yet" — never a resting state for a shipped
+    # vertical (finance assigns every concept a facet). ``cross_cutting`` is a
+    # POSITIVE classification (applies across every facet), not an "undecided"
+    # bucket. Closed vocab: see ck_concepts_dimension_facet. Exposed as the
+    # ``og_concepts.dimension_facet`` property.
+    dimension_facet: Mapped[str | None] = mapped_column(String)  # DimensionFacet
 
     # Lifecycle: workspace-persistent with supersession (NULL superseded_at = active).
     # Closed vocab: see ck_concepts_source — 'seed' | 'frame' are the two live writers.
@@ -931,6 +991,7 @@ __all__ = [
     "ConceptEdgePredicate",
     "ConceptKind",
     "Convention",
+    "DimensionFacet",
     "DimensionOrdering",
     "SemanticAnnotation",
     "TableEntity",

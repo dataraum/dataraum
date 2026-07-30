@@ -40,6 +40,12 @@ class OntologyConcept(BaseModel):
     # ``Concept.ordering`` at seed (never inferred); absent ⇒ NULL ⇒ nominal (windows
     # withheld). The cockpit ``frame`` authoring path is a later lane.
     ordering: str | None = None
+    # Operating-model axis (DAT-855): OPTIONAL seed declaration — demand | offer |
+    # supply | capacity | throughput | capital | cross_cutting | None. Passed through
+    # to ``Concept.dimension_facet`` at seed (never inferred); absent ⇒ NULL ⇒ "no
+    # writer classified yet" (a framed vertical mid-authoring — the shipped finance
+    # vertical declares one for every concept, so this stays populated there).
+    dimension_facet: str | None = None
 
 
 class OntologyConvention(BaseModel):

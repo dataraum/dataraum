@@ -26,6 +26,7 @@ from dataraum.analysis.semantic.convention_store import load_workspace_conventio
 from dataraum.analysis.semantic.db_models import (
     Concept,
     ConceptKind,
+    DimensionFacet,
     DimensionOrdering,
     WorkspaceSettings,
 )
@@ -43,6 +44,7 @@ logger = get_logger(__name__)
 
 _VALID_KINDS: frozenset[str] = frozenset(k.value for k in ConceptKind)
 _VALID_ORDERINGS: frozenset[str] = frozenset(o.value for o in DimensionOrdering)
+_VALID_FACETS: frozenset[str] = frozenset(f.value for f in DimensionFacet)
 
 
 def _active_vertical(session: Session) -> str | None:
@@ -147,6 +149,15 @@ def ensure_concepts_seeded(session: Session, vertical: str) -> int:
                 f"concept '{c.name}' in vertical '{vertical}' declares an invalid ordering "
                 f"(got {c.ordering!r}); one of {sorted(_VALID_ORDERINGS)} or omit it."
             )
+        # dimension_facet (DAT-855): OPTIONAL, and if present must be a valid
+        # DimensionFacet value — born-loud, the same discipline as ``kind``/``ordering``.
+        # None ⇒ NULL ⇒ "no writer classified yet"; never inferred here.
+        if c.dimension_facet is not None and c.dimension_facet not in _VALID_FACETS:
+            raise ValueError(
+                f"concept '{c.name}' in vertical '{vertical}' declares an invalid "
+                f"dimension_facet (got {c.dimension_facet!r}); one of "
+                f"{sorted(_VALID_FACETS)} or omit it."
+            )
         rows.append(
             {
                 "vertical": vertical,
@@ -157,6 +168,7 @@ def ensure_concepts_seeded(session: Session, vertical: str) -> int:
                 "exclude_patterns": c.exclude_patterns or None,
                 "unit_from_concept": c.unit_from_concept,
                 "ordering": c.ordering,
+                "dimension_facet": c.dimension_facet,
                 "source": "seed",
             }
         )
@@ -220,6 +232,7 @@ def load_workspace_concepts(session: Session, vertical: str) -> OntologyDefiniti
             exclude_patterns=list(r.exclude_patterns or []),
             unit_from_concept=r.unit_from_concept,
             ordering=r.ordering,
+            dimension_facet=r.dimension_facet,
         )
         for r in rows
     ]

@@ -418,8 +418,15 @@ def test_the_abstain_reason_reaches_the_persisted_failure_provenance(monkeypatch
     and the verifier rejects it for having no support — so the persisted row's
     ``failure_reason`` describes the symptom and the real cause (no reporting instant
     could be placed on the served relation) was dropped with the discarded assumption.
-    This drives the real ``_save_failed_snippet`` and reads the provenance it wrote.
+    Since DAT-658 the reason travels the classification wire: ``classify_no_support``
+    reads it off the ``GeneratedCode`` (the SELECT NULL fixture — no relation, so
+    nothing to probe) and the retained row persists the typed
+    ``composition_abstained`` finding. This drives the real classifier and the real
+    ``_save_failed_snippet`` and reads the provenance they wrote.
     """
+    from dataraum.graphs.agent import classify_no_support
+    from dataraum.graphs.models import NoSupportClass
+
     abstain = "anchor time axis 'entry_id__date' is not a column of relation 'x'"
     _patch_context(monkeypatch)
     monkeypatch.setattr(
@@ -427,6 +434,17 @@ def test_the_abstain_reason_reaches_the_persisted_failure_provenance(monkeypatch
     )
     agent = _agent_with(_provider(_output_response(_VALID_OUTPUT)))
     generated = _generate(agent).unwrap()
+
+    finding = classify_no_support(
+        duckdb.connect(":memory:"),
+        parts=generated.steps[0]["parts"],
+        column_mappings_basis=None,
+        served_values={},
+        composition_abstain=generated.composition_abstain,
+    )
+    assert finding is not None
+    assert finding.reason_class is NoSupportClass.COMPOSITION_ABSTAINED
+    assert finding.evidence == abstain
 
     saved: list[dict] = []
     monkeypatch.setattr(
@@ -443,24 +461,28 @@ def test_the_abstain_reason_reaches_the_persisted_failure_provenance(monkeypatch
         # failure mode (the message taxonomy is not this ticket's to extend).
         mode=SnippetFailureMode.VERIFIER_REJECTED,
         reason="no support: aggregation returned NULL",
+        no_support={"revenue": finding},
     )
 
     assert len(saved) == 1
     provenance = saved[0]["provenance"]
     assert provenance["failure_mode"] == "verifier_rejected"
     assert provenance["failure_reason"] == "no support: aggregation returned NULL"
-    assert provenance["composition_abstain"] == abstain
+    assert provenance["no_support_class"] == "composition_abstained"
+    assert provenance["no_support_evidence"] == abstain
 
 
 def test_the_abstain_reason_stays_off_other_failure_modes(monkeypatch) -> None:
-    """A non-verifier failure never carries the composition abstain.
+    """A non-verifier failure never carries the no-support cause vocabulary.
 
     A generation can both violate the grounding contract AND resolve to a stock whose
     binding abstains — ``composition_abstain`` is stamped on ``GeneratedCode``
-    unconditionally, but the retained ``PROVENANCE_INVALID`` row must not carry it:
-    the grounding failed for its own reason, and ``_build_prior_context``'s abstain
-    branch ("this is NOT a grounding defect to revise around") would directly
-    contradict the mode's own ``why`` text on the next authoring turn.
+    unconditionally, but the retained ``PROVENANCE_INVALID`` row must not carry a
+    cause class: the grounding failed for its own reason, and
+    ``_build_prior_context``'s abstain branch ("this is NOT a grounding defect to
+    revise around") would directly contradict the mode's own ``why`` text on the next
+    authoring turn. The call site passes no findings on that path, and the
+    ``FailedSnippetProvenance`` validator would raise if it ever did.
     """
     abstain = "anchor time axis 'entry_id__date' is not a column of relation 'x'"
     _patch_context(monkeypatch)
@@ -489,7 +511,8 @@ def test_the_abstain_reason_stays_off_other_failure_modes(monkeypatch) -> None:
     assert len(saved) == 1
     provenance = saved[0]["provenance"]
     assert provenance["failure_mode"] == "provenance_invalid"
-    assert provenance["composition_abstain"] is None
+    assert provenance["no_support_class"] is None
+    assert provenance["no_support_evidence"] is None
 
 
 def test_resolved_binding_reaches_the_composed_parts(monkeypatch) -> None:

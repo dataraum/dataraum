@@ -27,8 +27,11 @@ from dataraum.graphs.models import (
     GraphMetadata,
     GraphSource,
     GraphStep,
+    NoSupportClass,
+    NoSupportFinding,
     OutputDef,
     OutputType,
+    SnippetFailureMode,
     StepSource,
     StepType,
     TransformationGraph,
@@ -622,12 +625,21 @@ class TestGraphAgentVerifier:
 
         assert not result.success
         assert "no support" in result.error
+        # DAT-658: the rejection names the MEASURED cause (the classifier probed the
+        # extract's own parts on the same connection: id = 999 matches nothing, and no
+        # filter values were declared, so absence could not be screened) instead of
+        # enumerating the possibility space.
+        assert "predicate_matched_no_rows" in result.error
+        assert "either its filter matched no rows" not in result.error
         # The bad SQL is retained as a DECAYED failure, never a reusable snippet.
         snippets = list(session.execute(select(SQLSnippetRecord)).scalars().all())
         assert len(snippets) == 1
         retained = snippets[0]
         assert retained.failure_count > 0
         assert retained.provenance.get("failure_mode") == "verifier_rejected"
+        # The same finding rides the retained row, evidence-paired.
+        assert retained.provenance.get("no_support_class") == "predicate_matched_no_rows"
+        assert "0 rows" in retained.provenance.get("no_support_evidence")
 
     def test_genuine_zero_metric_executes(self, session: Session, duckdb_with_data, sample_graph):
         """A metric that genuinely computes 0 (rows matched, summing to 0) passes.
@@ -1414,7 +1426,10 @@ class TestPriorContextFeedback:
             provenance={
                 "failure_mode": "verifier_rejected",
                 "failure_reason": "SENTINEL_NO_SUPPORT",
-                "composition_abstain": "SENTINEL_ANCHOR_MISMATCH",
+                # The DAT-893 abstention as DAT-658 persists it: folded into the
+                # no-support vocabulary, evidence = the abstain reason.
+                "no_support_class": "composition_abstained",
+                "no_support_evidence": "SENTINEL_ANCHOR_MISMATCH",
             },
             failed=True,
         )
@@ -1432,6 +1447,117 @@ class TestPriorContextFeedback:
         # branch already keeps.
         assert "one-sided data" not in out
         assert "concept has no supporting rows" not in out
+
+    def _retain(self, session: Session, provenance: dict) -> None:
+        """One retained-failure row under ``sample_graph``'s EXTRACT key."""
+        from dataraum.query.snippet_library import SnippetLibrary
+
+        SnippetLibrary(session, workspace_id=baseline_run_id()).save_snippet(
+            snippet_type="extract",
+            sql="SELECT SUM(amount) AS value FROM enriched_gl WHERE category = 'COGS'",
+            description="prior attempt",
+            schema_mapping_id="default",
+            source="graph:test_metric",
+            standard_field="test_field",
+            statement="test_table",
+            aggregation="sum",
+            provenance=provenance,
+            failed=True,
+        )
+        session.flush()
+
+    def test_concept_absent_gets_do_not_reauthor_guidance(
+        self, session: Session, sample_graph
+    ) -> None:
+        """DAT-658, the churn stop: a NON-REVISABLE absence must not be served the
+        generic "Revise…or abstain" steer — that re-opens a decision the system
+        already measured, and the model re-authors superficially different SQL
+        against the absent concept every run. Its branch says do-not-re-author,
+        carries the evidence (so the model can check the CURRENT Value sets for a
+        data change — the one honest escape hatch), and steers to the fall-loud
+        shape."""
+        self._retain(
+            session,
+            {
+                "failure_mode": "verifier_rejected",
+                "failure_reason": "SENTINEL_NO_SUPPORT",
+                "no_support_class": "concept_absent",
+                "no_support_evidence": "SENTINEL_ABSENCE_EVIDENCE",
+            },
+        )
+
+        out = self._agent()._build_prior_context(session, sample_graph, None, "default")
+
+        assert "Do NOT re-author" in out
+        assert "SENTINEL_ABSENCE_EVIDENCE" in out
+        assert "fall loud" in out
+        # The data-change escape hatch keeps the verdict honest across runs.
+        assert "the data has changed" in out
+        # The revisable steers must not ride along.
+        assert "Revise to address the reason" not in out
+        assert "one-sided data" not in out
+
+    def test_predicate_zero_rows_gets_predicate_revision_guidance(
+        self, session: Session, sample_graph
+    ) -> None:
+        """DAT-658: the measured zero-rows cause steers at the PREDICATE — the
+        concept was not shown absent — and drops the operand-NULL half of the old
+        dual steer (that case was measured away)."""
+        self._retain(
+            session,
+            {
+                "failure_mode": "verifier_rejected",
+                "failure_reason": "SENTINEL_NO_SUPPORT",
+                "no_support_class": "predicate_matched_no_rows",
+                "no_support_evidence": "SENTINEL_ZERO_ROWS",
+            },
+        )
+
+        out = self._agent()._build_prior_context(session, sample_graph, None, "default")
+
+        assert "SENTINEL_ZERO_ROWS" in out
+        assert "PREDICATE" in out
+        assert "NOT shown to be absent" in out
+        assert "one-sided data" not in out
+        assert "Do NOT re-author" not in out
+
+    def test_operand_all_null_gets_null_safety_guidance(
+        self, session: Session, sample_graph
+    ) -> None:
+        """DAT-658: rows exist and the filter is right — the steer is row-guarded
+        NULL-safety, never abstention and never a filter hunt."""
+        self._retain(
+            session,
+            {
+                "failure_mode": "verifier_rejected",
+                "failure_reason": "SENTINEL_NO_SUPPORT",
+                "no_support_class": "operand_all_null",
+                "no_support_evidence": "SENTINEL_MATCHED_ROWS",
+            },
+        )
+
+        out = self._agent()._build_prior_context(session, sample_graph, None, "default")
+
+        assert "SENTINEL_MATCHED_ROWS" in out
+        assert "one-sided data" in out
+        assert "NULL-safety" in out
+        assert "do NOT abstain" in out
+        assert "Do NOT re-author" not in out
+
+    def test_unclassified_row_keeps_the_honest_dual_steer(
+        self, session: Session, sample_graph
+    ) -> None:
+        """A pre-DAT-658 row (or one whose evidence-gathering could not run) carries
+        no class — the system measured nothing, so the dual steer stays."""
+        self._retain(
+            session,
+            {"failure_mode": "verifier_rejected", "failure_reason": "SENTINEL_NO_SUPPORT"},
+        )
+
+        out = self._agent()._build_prior_context(session, sample_graph, None, "default")
+
+        assert "concept has no supporting rows (abstain" in out
+        assert "one-sided data" in out
 
     def test_retained_failure_reuse_excluded_but_fed_back(
         self, session: Session, sample_graph
@@ -1473,3 +1599,133 @@ class TestPriorContextFeedback:
         # …but prior_context must.
         out = self._agent()._build_prior_context(session, sample_graph, None, "default")
         assert "boom" in out
+
+
+class TestNoSupportRetention:
+    """DAT-658: the retained row's typed cause across re-attempts.
+
+    The absence verdict is only worth persisting if it SURVIVES being obeyed:
+    the do-not-re-author guidance makes the next attempt the fall-loud shape,
+    which classifies as nothing (no relation → no probe, no claim) — and a
+    plain refresh would strip the class, resurrecting the generic guidance and
+    with it the churn one run later.
+    """
+
+    @staticmethod
+    def _agent() -> GraphAgent:
+        return GraphAgent(config=MagicMock(), provider=MagicMock(), prompt_renderer=MagicMock())
+
+    @staticmethod
+    def _fall_loud_code() -> GeneratedCode:
+        """The compliant next attempt: the model followed the guidance."""
+        return GeneratedCode(
+            code_id="c1",
+            graph_id="test_metric",
+            summary="fall-loud",
+            steps=[
+                {
+                    "step_id": "value",
+                    "sql": "SELECT NULL AS value",
+                    "description": "fall-loud",
+                    "parts": {
+                        "select": [{"expr": "NULL", "alias": "value"}],
+                        "from": [],
+                        "where": [],
+                    },
+                }
+            ],
+            final_sql="SELECT * FROM value",
+            llm_model="m",
+            prompt_hash="h",
+            generated_at=datetime.now(UTC),
+        )
+
+    def _seed_absent_row(self, session: Session) -> None:
+        from dataraum.query.snippet_library import SnippetLibrary
+
+        SnippetLibrary(session, workspace_id=baseline_run_id()).save_snippet(
+            snippet_type="extract",
+            sql="SELECT SUM(amount) AS value FROM t WHERE category = 'COGS'",
+            description="absent attempt",
+            schema_mapping_id="default",
+            source="graph:test_metric",
+            standard_field="test_field",
+            statement="test_table",
+            aggregation="sum",
+            provenance={
+                "failure_mode": "verifier_rejected",
+                "failure_reason": "no support (concept_absent)",
+                "no_support_class": "concept_absent",
+                "no_support_evidence": "SENTINEL_ABSENCE_EVIDENCE",
+            },
+            failed=True,
+        )
+        session.flush()
+
+    def _read_provenance(self, session: Session) -> dict:
+        from dataraum.query.snippet_library import SnippetLibrary
+
+        rec = SnippetLibrary(session).retained_failure(
+            snippet_type="extract",
+            schema_mapping_id="default",
+            standard_field="test_field",
+            statement="test_table",
+            aggregation="sum",
+            predicate="",
+        )
+        assert rec is not None
+        return rec.provenance or {}
+
+    def test_compliant_fall_loud_refresh_keeps_concept_absent(
+        self, session: Session, sample_graph
+    ) -> None:
+        """Compliance is not new evidence — an UNCLASSIFIED fall-loud refresh
+        carries the prior absence verdict forward verbatim."""
+        self._seed_absent_row(session)
+
+        self._agent()._save_failed_snippet(
+            session,
+            sample_graph,
+            self._fall_loud_code(),
+            "default",
+            workspace_id=baseline_run_id(),
+            mode=SnippetFailureMode.VERIFIER_REJECTED,
+            reason="no support: aggregated to NULL",
+            no_support={},  # the fall-loud shape classified as nothing
+        )
+
+        prov = self._read_provenance(session)
+        assert prov.get("no_support_class") == "concept_absent"
+        assert prov.get("no_support_evidence") == "SENTINEL_ABSENCE_EVIDENCE"
+
+    def test_measured_finding_replaces_concept_absent(
+        self, session: Session, sample_graph
+    ) -> None:
+        """A NEW measured finding is new evidence — it replaces the carried verdict
+        (the sticky rule protects compliance, never contradicts a measurement)."""
+        self._seed_absent_row(session)
+        code = self._fall_loud_code()
+        # A real re-authored attempt over a relation, classified by measurement.
+        code.steps[0]["sql"] = "SELECT SUM(amount) AS value\nFROM t\nWHERE category = 'Rent'"
+        code.steps[0]["parts"] = {
+            "select": [{"expr": "SUM(amount)", "alias": "value"}],
+            "from": ["t"],
+            "where": ["category = 'Rent'"],
+        }
+
+        self._agent()._save_failed_snippet(
+            session,
+            sample_graph,
+            code,
+            "default",
+            workspace_id=baseline_run_id(),
+            mode=SnippetFailureMode.VERIFIER_REJECTED,
+            reason="no support: aggregated to NULL",
+            no_support={
+                "value": NoSupportFinding(NoSupportClass.OPERAND_ALL_NULL, "SENTINEL_MEASURED")
+            },
+        )
+
+        prov = self._read_provenance(session)
+        assert prov.get("no_support_class") == "operand_all_null"
+        assert prov.get("no_support_evidence") == "SENTINEL_MEASURED"

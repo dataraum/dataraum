@@ -206,3 +206,123 @@ def test_window_from_profile_falls_loud_without_a_persisted_profile() -> None:
     """Defensive: a missing persisted span yields a reason (the caller falls back to live)."""
     out = _window_from_profile(_axis(persisted_span_days=None))
     assert isinstance(out, str)
+
+
+# ---------------------------------------------------------------------------
+# The flow-side anchor-mismatch guard (DAT-893)
+#
+# ``_observe_flow_step``'s three-way reason split for an unobservable flow —
+# the mirror of the stock-side tests in test_boundary_resolver.py. Three
+# distinct facts arrive as axis/grain ``None``, and each must be NAMED, never
+# collapsed onto the first: a designated-but-unservable anchor (the live
+# DAT-893 defect — the fix is at whoever recorded it), a genuine absence, and
+# a missing temporal profile. The reads that need Postgres are replaced with
+# constructed ``_MeasureAxis`` rows; everything after them is the real path.
+# ---------------------------------------------------------------------------
+
+
+def _flow_step() -> GraphStep:
+    return GraphStep(
+        step_id="cost_of_goods_sold",
+        step_type=StepType.EXTRACT,
+        source=StepSource(standard_field="cost_of_goods_sold"),
+        aggregation="sum",
+    )
+
+
+def _observe_with_measures(
+    monkeypatch: pytest.MonkeyPatch, measures: list[_MeasureAxis]
+) -> list | str:
+    """Drive ``_observe_flow_step`` past its read surface with constructed measures.
+
+    ``grounded_select`` serves an UNFILTERED extract over ``enriched_journal`` so a
+    resolvable flow collapses to the persisted profile (``_window_from_profile``,
+    pure) and the mismatch cases return before any live scan — no DB is touched,
+    which the MagicMock connection enforces.
+    """
+    from unittest.mock import MagicMock
+
+    from dataraum.graphs import period_resolver
+    from dataraum.graphs.additivity_resolver import ServedRelation
+
+    monkeypatch.setattr(
+        period_resolver,
+        "grounded_select",
+        lambda _library, _ws, _step: ("SUM(amount)", "enriched_journal", []),
+    )
+    monkeypatch.setattr(
+        period_resolver,
+        "served_relation",
+        lambda _session, _relation: ServedRelation(
+            columns_table_id="view_1", fact_table_id="fact_1"
+        ),
+    )
+    calls = MagicMock()
+    calls.columns = {"amount"}
+    monkeypatch.setattr(period_resolver, "parse_aggregate_calls", lambda _expr, _conn: [calls])
+    monkeypatch.setattr(
+        period_resolver, "_read_measure_axes", lambda _session, _schema, _view, _cols: measures
+    )
+    return period_resolver._observe_flow_step(
+        MagicMock(), MagicMock(), MagicMock(), "ws_test_read", _flow_step(), "ws"
+    )
+
+
+def test_a_flow_anchor_not_served_on_the_relation_names_the_mismatch(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """THE DAT-893 shape on the flow side: a designated anchor of a DIFFERENT relation.
+
+    The live defect recorded the reconciliation evidence's axis (journal lines'
+    ``entry_id__date``) as the measure's anchor. The reason must name the axis AND the
+    relation — a reader who sees only "no anchor time axis" goes hunting the table's
+    ``time_columns``, which are fine; the fault is at whoever recorded it.
+    """
+    reason = _observe_with_measures(
+        monkeypatch, [_axis(axis=None, grain=None, recorded="entry_id__date")]
+    )
+
+    assert isinstance(reason, str)
+    assert "entry_id__date" in reason
+    assert "enriched_journal" in reason
+    # It must NOT degrade to the absence message — that is a different fact.
+    assert "no anchor time axis" not in reason
+
+
+def test_no_flow_anchor_designated_at_all_still_reports_an_absence(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """The mirror: nothing was ever designated, so there is no mismatch to name."""
+    reason = _observe_with_measures(monkeypatch, [_axis(axis=None, grain=None, recorded=None)])
+
+    assert (
+        reason == "flow 'cost_of_goods_sold' has no anchor time axis to observe a span on"
+    )
+
+
+def test_a_served_flow_anchor_without_a_profile_names_that_fact(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """The third way: the anchor IS served, its cadence was never profiled."""
+    reason = _observe_with_measures(monkeypatch, [_axis(grain=None)])
+
+    assert isinstance(reason, str)
+    assert "no temporal profile" in reason
+    assert "'period_date'" in reason
+
+
+def test_one_flows_unservable_anchor_is_not_hidden_by_anothers_good_one(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A second flow measure's unservable anchor must not ride along on the first's.
+
+    Averaging in (or silently dropping) the unobservable window would misstate the
+    metric's accumulation span.
+    """
+    reason = _observe_with_measures(
+        monkeypatch,
+        [_axis(), _axis(axis=None, grain=None, recorded="entry_id__date")],
+    )
+
+    assert isinstance(reason, str)
+    assert "entry_id__date" in reason

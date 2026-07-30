@@ -25,6 +25,7 @@ from dataraum.analysis.semantic.concept_store import (
     require_active_vertical,
 )
 from dataraum.analysis.semantic.convention_store import ensure_conventions_seeded
+from dataraum.analysis.semantic.entity_store import ensure_entities_seeded
 from dataraum.analysis.semantic.envelope_store import ensure_envelope_seeded
 from dataraum.analysis.semantic.processor import ground_columns
 from dataraum.analysis.validation.validation_store import ensure_validations_seeded
@@ -201,6 +202,13 @@ class SemanticPerColumnPhase(BasePhase):
         # add_source so the operating_model cycles phase serves the families to the judge
         # and resolves the emitted direction against them at save.
         ensure_cycle_families_seeded(ctx.session, ontology)
+        # Table-entity taxonomy (DAT-724): seed the vertical's declared entity kinds
+        # into the typed `vertical_entities` home — same idempotent config→DB seed.
+        # MUST follow `ensure_cycle_types_seeded`: an entity's declared `cycles` are
+        # validated born-loud against that vocabulary, which this transaction just
+        # wrote. Committed in add_source so both table-grain agents (per-table
+        # `is_fact_table`, catalogue `entity_type`) read the taxonomy as evidence.
+        ensure_entities_seeded(ctx.session, ontology)
         # Cold-start fail-loud (DAT-382, generalized): grounding against zero
         # concepts is a silent no-op. Refuse it, naming the missing step.
         if not load_workspace_concepts(ctx.session, ontology).concepts:

@@ -84,6 +84,48 @@ class OntologyComposition(BaseModel):
     parts: list[str] = Field(default_factory=list)  # concepts that compose the whole
 
 
+class OntologyEntity(BaseModel):
+    """A declared TABLE-level entity kind — the vertical's entity taxonomy (DAT-724).
+
+    The table-grain sibling of :class:`OntologyConcept`. A vertical's concept
+    vocabulary says what a *column* can mean; nothing said what a *table* can be, so
+    ``table_entities.detected_entity_type`` was unconstrained LLM free text and the
+    fact/dimension bit was inferred blind. An entity declares the kinds of table the
+    domain actually has, so both become ontology-graded.
+
+    The declaration **proposes, never suppresses**: a table matching no declared
+    entity keeps free-text detection. That is the framed-vertical / novel-table case
+    and it is the common one — the taxonomy is evidence served into the classifier's
+    context, never a filter applied to its answer.
+
+    ``role`` reuses the existing :class:`~dataraum.analysis.semantic.db_models.TableRole`
+    vocabulary (fact | periodic_snapshot | dimension) rather than inventing a parallel
+    one — it is a declaration ABOUT the same column the pipeline persists. It is a
+    *label source and tiebreaker*, never an override: ``derive_table_role`` still owns
+    the structural ``periodic_snapshot`` refinement, and this value never reaches it.
+    """
+
+    name: str
+    # The table role this entity kind takes in the operating model — a TableRole value
+    # (fact | periodic_snapshot | dimension). Validated born-loud at SEED, not here, so
+    # an empty/mid-authoring framed vertical still parses (the OntologyConcept.kind
+    # discipline).
+    role: str | None = None
+    description: str | None = None
+    # Concepts an instance of this entity is expected to carry. Every name must resolve
+    # to a DECLARED concept (linted below) — a typo'd or renamed concept is an authoring
+    # error, not a runtime surprise. An empty list is legitimate and informative: it says
+    # the vertical's concept vocabulary has nothing at this table's grain yet.
+    concepts: list[str] = Field(default_factory=list)
+    # Business cycles this entity participates in. Validated at seed against the typed
+    # ``cycle_types`` vocabulary (DAT-881), which is seeded earlier in the same phase.
+    cycles: list[str] = Field(default_factory=list)
+    # Matching hints — the physical table names/synonyms this entity kind shows up as.
+    # Served to the classifier as evidence; never used for an engine-side string match
+    # (no algorithmic pre-pass — the LLM decides whether a table IS this entity).
+    aliases: list[str] = Field(default_factory=list)
+
+
 class OntologyDefinition(BaseModel):
     """A complete ontology definition from YAML."""
 
@@ -98,6 +140,43 @@ class OntologyDefinition(BaseModel):
     concepts: list[OntologyConcept] = Field(default_factory=list)
     conventions: list[OntologyConvention] = Field(default_factory=list)
     compositions: list[OntologyComposition] = Field(default_factory=list)
+    entities: list[OntologyEntity] = Field(default_factory=list)
+
+    @model_validator(mode="after")
+    def _validate_entities(self) -> OntologyDefinition:
+        """Lint the entity taxonomy against the concept vocabulary (DAT-724), born-loud.
+
+        The same authoring-time reference lint the conventions and compositions get,
+        and for the same reason: an entity naming a concept that does not exist is a
+        typo or a rename that silently degrades the evidence served to the classifier.
+
+        Names must also be unique — two entities sharing a name would collide on the
+        ``vertical_entities`` active-row partial-unique index at seed, which is a far
+        worse place to discover it.
+
+        ``role`` and ``cycles`` are deliberately NOT checked here: ``role`` is a closed
+        vocabulary (validated born-loud at seed, the ``OntologyConcept.kind``
+        discipline) and ``cycles`` resolves against a vocabulary that lives in another
+        family's table entirely — neither is answerable from this document.
+        """
+        if not self.entities:
+            return self
+        concept_names = {c.name for c in self.concepts}
+        seen: set[str] = set()
+        for ent in self.entities:
+            if ent.name in seen:
+                raise ValueError(
+                    f"entity '{ent.name}' is declared twice — entity names must be unique "
+                    f"within a vertical"
+                )
+            seen.add(ent.name)
+            for concept in ent.concepts:
+                if concept not in concept_names:
+                    raise ValueError(
+                        f"entity '{ent.name}' references concept '{concept}', "
+                        f"which is not a declared concept"
+                    )
+        return self
 
     @model_validator(mode="after")
     def _validate_conventions(self) -> OntologyDefinition:
@@ -259,6 +338,41 @@ class OntologyLoader:
 
         return "\n".join(lines)
 
+    def format_entities_for_prompt(self, ontology: OntologyDefinition | None) -> str:
+        """Format the declared table-entity taxonomy for LLM prompts (DAT-724).
+
+        Renders the vertical's declared entity kinds as EVIDENCE for the two agents
+        that answer table-grain questions — the per-table structural agent (which
+        answers ``is_fact_table``) and the catalogue agent (which authors
+        ``entity_type``). Both already receive ``ontology_concepts``; this is its
+        table-grain sibling.
+
+        Returns the "nothing declared" sentence when a vertical declares no taxonomy
+        (every framed vertical today, and any builtin that hasn't authored one). The
+        sentence is deliberately explicit that free-text detection is the mode in that
+        case — the prompt slot must not read as an empty list of *permitted* answers.
+        """
+        if ontology is None or not ontology.entities:
+            return "No table entity taxonomy declared — describe each table in your own words."
+
+        lines = []
+        for entity in ontology.entities:
+            role = f" [{entity.role}]" if entity.role else ""
+            header = f"- {entity.name}{role}"
+            if entity.description:
+                header += f": {entity.description}"
+            lines.append(header)
+            if entity.concepts:
+                lines.append(f"  Carries concepts: {', '.join(entity.concepts)}")
+            if entity.cycles:
+                lines.append(f"  Business cycles: {', '.join(entity.cycles)}")
+            # "Commonly named" not "matches": these are hints for the model's judgment,
+            # never an engine-side string match (no algorithmic pre-pass).
+            if entity.aliases:
+                lines.append(f"  Commonly named: {', '.join(entity.aliases)}")
+
+        return "\n".join(lines)
+
     def format_conventions_for_prompt(
         self,
         ontology: OntologyDefinition | None,
@@ -319,5 +433,6 @@ __all__ = [
     "OntologyConcept",
     "OntologyConvention",
     "OntologyDefinition",
+    "OntologyEntity",
     "OntologyLoader",
 ]

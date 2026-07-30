@@ -346,3 +346,126 @@ class TestCompositions:
     def test_no_compositions_is_valid(self) -> None:
         ont = OntologyDefinition(name="t", concepts=[OntologyConcept(name="x")])
         assert ont.compositions == []
+
+
+class TestEntities:
+    """The table-entity taxonomy (DAT-724) — parse + the authoring lint."""
+
+    @staticmethod
+    def _ontology(entities: list[dict]) -> dict:
+        return {
+            "name": "t",
+            "concepts": [{"name": "debit"}, {"name": "credit"}],
+            "entities": entities,
+        }
+
+    def test_finance_ships_a_taxonomy_covering_the_corpus_kinds(self) -> None:
+        ontology = OntologyLoader().load("finance")
+        by_name = {e.name: e for e in ontology.entities}
+        assert len(by_name) == 15
+        # The ledger spine and the two ticket-named ambiguity cases.
+        assert by_name["gl_line"].role == "fact"
+        assert by_name["gl_entry"].role == "fact"
+        assert by_name["fx_rate"].role == "dimension"
+        assert by_name["trial_balance"].role == "periodic_snapshot"
+
+    def test_every_declared_role_is_a_table_role_value(self) -> None:
+        """The declaration reuses the persisted vocabulary rather than a parallel one."""
+        from dataraum.analysis.semantic.db_models import TableRole
+
+        valid = {r.value for r in TableRole}
+        ontology = OntologyLoader().load("finance")
+        assert {e.role for e in ontology.entities} <= valid
+
+    def test_round_trips_every_field(self) -> None:
+        ont = OntologyDefinition(
+            **self._ontology(
+                [
+                    {
+                        "name": "gl_line",
+                        "role": "fact",
+                        "description": "a posting line",
+                        "concepts": ["debit", "credit"],
+                        "cycles": ["journal_entry_cycle"],
+                        "aliases": ["journal_lines"],
+                    }
+                ]
+            )
+        )
+        (entity,) = ont.entities
+        assert entity.role == "fact"
+        assert entity.concepts == ["debit", "credit"]
+        assert entity.cycles == ["journal_entry_cycle"]
+        assert entity.aliases == ["journal_lines"]
+
+    def test_lint_rejects_an_unknown_concept_reference(self) -> None:
+        """An entity naming a concept that does not exist is a typo or a rename that
+        would silently degrade the served evidence."""
+        with pytest.raises(ValueError, match="not a declared concept"):
+            OntologyDefinition(
+                **self._ontology([{"name": "gl_line", "role": "fact", "concepts": ["revenue"]}])
+            )
+
+    def test_lint_rejects_a_duplicate_entity_name(self) -> None:
+        """Two entities sharing a name would collide on the active-row unique index at
+        seed — a far worse place to discover it."""
+        with pytest.raises(ValueError, match="declared twice"):
+            OntologyDefinition(
+                **self._ontology(
+                    [{"name": "gl_line", "role": "fact"}, {"name": "gl_line", "role": "dimension"}]
+                )
+            )
+
+    def test_role_and_cycles_are_not_linted_here(self) -> None:
+        """Both resolve against vocabularies this document cannot see — they are
+        born-loud at SEED instead (the OntologyConcept.kind discipline)."""
+        ont = OntologyDefinition(
+            **self._ontology([{"name": "gl_line", "role": "nonsense", "cycles": ["nope"]}])
+        )
+        assert ont.entities[0].role == "nonsense"
+
+    def test_no_entities_is_valid(self) -> None:
+        """A framed vertical mid-authoring declares none and must still parse."""
+        ont = OntologyDefinition(name="t", concepts=[OntologyConcept(name="x")])
+        assert ont.entities == []
+
+
+class TestFormatEntitiesForPrompt:
+    """What the two table-grain agents actually receive as evidence (DAT-724)."""
+
+    def test_renders_role_concepts_cycles_and_aliases(self) -> None:
+        ont = OntologyDefinition(
+            name="t",
+            concepts=[OntologyConcept(name="debit")],
+            entities=[
+                {
+                    "name": "gl_line",
+                    "role": "fact",
+                    "description": "a posting line",
+                    "concepts": ["debit"],
+                    "cycles": ["journal_entry_cycle"],
+                    "aliases": ["journal_lines", "postings"],
+                }
+            ],
+        )
+        rendered = OntologyLoader().format_entities_for_prompt(ont)
+        assert "- gl_line [fact]: a posting line" in rendered
+        assert "Carries concepts: debit" in rendered
+        assert "Business cycles: journal_entry_cycle" in rendered
+        # "Commonly named", not "matches": these are hints for the model's judgment,
+        # never an engine-side string match.
+        assert "Commonly named: journal_lines, postings" in rendered
+
+    def test_omits_the_lines_a_sparse_entity_has_nothing_for(self) -> None:
+        ont = OntologyDefinition(name="t", entities=[{"name": "widget", "role": "dimension"}])
+        rendered = OntologyLoader().format_entities_for_prompt(ont)
+        assert rendered == "- widget [dimension]"
+
+    def test_an_undeclared_taxonomy_names_free_text_as_the_mode(self) -> None:
+        """The empty case must not read as an empty list of PERMITTED answers — a
+        framed vertical declares no taxonomy and must keep free-text detection."""
+        for ontology in (None, OntologyDefinition(name="t")):
+            rendered = OntologyLoader().format_entities_for_prompt(ontology)
+            assert rendered == (
+                "No table entity taxonomy declared — describe each table in your own words."
+            )

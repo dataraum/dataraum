@@ -50,9 +50,7 @@ class TestCataloguePrompt:
         system, user = renderer.render_split("catalogue_semantics", context)
         assert system and user
 
-    def test_grounds_entity_type_on_the_declared_taxonomy(
-        self, catalogue: PromptTemplate
-    ) -> None:
+    def test_grounds_entity_type_on_the_declared_taxonomy(self, catalogue: PromptTemplate) -> None:
         """DAT-724: entity_type was free text answered against no declared
         alternative. The taxonomy PROPOSES — the escape hatch for a table matching
         no declared kind is part of the contract, not a nicety: without it the
@@ -120,7 +118,6 @@ class TestPerTablePromptShrink:
         assert "<entity_taxonomy>" in user
         assert "Evidence, not a menu" in user
         assert "A declaration never overrides what a table's own structure plainly shows" in user
-
 
     def test_identity_note_is_structural_only(self, per_table: PromptTemplate) -> None:
         """The lead-adjacent ruling (DAT-823): identity notes are STRUCTURAL

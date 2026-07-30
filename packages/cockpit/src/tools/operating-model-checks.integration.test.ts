@@ -19,7 +19,16 @@
 import { beforeAll, describe, expect, it } from "vitest";
 
 import { attachFixtureWorkspace } from "#/test/fixture";
-import { VIEW_TABLE_ID } from "#/test/seed-catalog";
+import { DERIVED_METRIC, VIEW_TABLE_ID } from "#/test/seed-catalog";
+
+// The metric node id this suite's own fixture (`metricArtifactSeedSql`) declares —
+// `gross_margin`, the same graph_id `DERIVED_METRIC` names elsewhere. A bare
+// `.find(n => n.data.kind === "metric")` silently relied on being the ONLY
+// artifact_type='metric' row in the whole SHARED fixture; a sibling lane's own
+// metric fixture (DAT-855 B2's `coverage-map-load.integration.test.ts`) legitimately
+// adds more, in unspecified row order, and the bare find then non-deterministically
+// picks one of THOSE instead — pin the id so this suite only ever asserts its own.
+const GROSS_MARGIN_NODE_ID = `metric:${DERIVED_METRIC}`;
 
 const fx = attachFixtureWorkspace();
 
@@ -41,7 +50,7 @@ describe.skipIf(!fx.available)(
 
 		it("builds a metric node from the persisted graph_definition", async () => {
 			const { graph } = await loadOperatingModelGraph();
-			const metric = graph.nodes.find((n) => n.data.kind === "metric");
+			const metric = graph.nodes.find((n) => n.id === GROSS_MARGIN_NODE_ID);
 			expect(metric).toBeDefined();
 			expect(metric?.data.kind).toBe("metric");
 			if (metric?.data.kind !== "metric") throw new Error("unreachable");
@@ -57,7 +66,7 @@ describe.skipIf(!fx.available)(
 
 		it("carries every step's checks — including non-output steps", async () => {
 			const { graph } = await loadOperatingModelGraph();
-			const metric = graph.nodes.find((n) => n.data.kind === "metric");
+			const metric = graph.nodes.find((n) => n.id === GROSS_MARGIN_NODE_ID);
 			if (metric?.data.kind !== "metric") throw new Error("no metric node");
 
 			const checks = metric.data.validation;

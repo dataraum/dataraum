@@ -24,10 +24,12 @@ vi.mock("#/routes/(app)/operating-model.functions", () => ({
 	loadModel: vi.fn(),
 	loadConcepts: vi.fn(),
 	loadBus: vi.fn(),
+	loadCoverage: vi.fn(),
 }));
 
 import type { BusMatrixRow } from "#/tools/bus-matrix";
 import { buildBusMatrix } from "#/tools/bus-matrix";
+import { buildCoverageMap } from "#/tools/coverage-map";
 import { theme } from "#/ui/theme";
 import { ModelSection, Route } from "./operating-model";
 
@@ -98,9 +100,38 @@ const LOADER_DATA = {
 			],
 		}),
 	},
+	coverage: {
+		status: "ok" as const,
+		data: {
+			analyzed: true,
+			map: buildCoverageMap({
+				metrics: [
+					{
+						graphId: "dso",
+						name: "Days Sales Outstanding",
+						dimensionFacet: "capital",
+						concepts: [],
+					},
+				],
+				concepts: [],
+				lifecycle: [{ graphId: "dso", state: "executed", stateReason: null }],
+				groundings: [
+					{
+						graphId: "dso",
+						snippetType: "formula",
+						failed: false,
+						provenance: null,
+						resolvedPeriod: null,
+						calendarSource: null,
+					},
+				],
+				reconciliation: [],
+			}),
+		},
+	},
 };
 
-function renderAt(view: "metrics" | "concepts" | "bus") {
+function renderAt(view: "metrics" | "concepts" | "bus" | "coverage") {
 	// biome-ignore lint/suspicious/noExplicitAny: loader shape is route-internal
 	vi.spyOn(Route, "useLoaderData").mockReturnValue(LOADER_DATA as any);
 	vi.spyOn(Route, "useSearch").mockReturnValue(
@@ -121,13 +152,14 @@ afterEach(() => {
 	vi.restoreAllMocks();
 });
 
-describe("operating-model tab wiring (DAT-740 / DAT-737)", () => {
-	it("offers all three panes in the toggle", () => {
+describe("operating-model tab wiring (DAT-740 / DAT-737 / DAT-855)", () => {
+	it("offers all four panes in the toggle", () => {
 		renderAt("metrics");
 		const toggle = screen.getByTestId("operating-model-view-toggle");
 		expect(toggle.textContent).toContain("Metrics");
 		expect(toggle.textContent).toContain("Concepts");
 		expect(toggle.textContent).toContain("Bus matrix");
+		expect(toggle.textContent).toContain("Coverage");
 	});
 
 	// Both panes stay MOUNTED always (owner ruling: an unmount would reset the
@@ -137,9 +169,15 @@ describe("operating-model tab wiring (DAT-740 / DAT-737)", () => {
 		["metrics", "pane-metrics"],
 		["concepts", "pane-concepts"],
 		["bus", "pane-bus"],
+		["coverage", "pane-coverage"],
 	] as const)("view=%s shows only its own pane", (view, visible) => {
 		renderAt(view);
-		for (const pane of ["pane-metrics", "pane-concepts", "pane-bus"]) {
+		for (const pane of [
+			"pane-metrics",
+			"pane-concepts",
+			"pane-bus",
+			"pane-coverage",
+		]) {
 			const el = screen.getByTestId(pane);
 			expect(el.style.display).toBe(pane === visible ? "block" : "none");
 		}
@@ -161,11 +199,20 @@ describe("operating-model tab wiring (DAT-740 / DAT-737)", () => {
 		expect(pane.style.display).toBe("block");
 	});
 
+	it("view=coverage renders the coverage map grid inside its pane", () => {
+		renderAt("coverage");
+		const pane = screen.getByTestId("pane-coverage");
+		expect(
+			pane.querySelector('[data-testid="coverage-map-grid"]'),
+		).toBeTruthy();
+		expect(pane.style.display).toBe("block");
+	});
+
 	it("surfaces a bus-pane read failure without blanking the others", () => {
-		// biome-ignore lint/suspicious/noExplicitAny: loader shape is route-internal
 		vi.spyOn(Route, "useLoaderData").mockReturnValue({
 			...LOADER_DATA,
 			bus: { status: "error", message: "metadata read refused" },
+			// biome-ignore lint/suspicious/noExplicitAny: loader shape is route-internal
 		} as any);
 		// biome-ignore lint/suspicious/noExplicitAny: search shape is route-internal
 		vi.spyOn(Route, "useSearch").mockReturnValue({ view: "bus" } as any);
@@ -177,6 +224,27 @@ describe("operating-model tab wiring (DAT-740 / DAT-737)", () => {
 			</MantineProvider>,
 		);
 		expect(screen.getByText("Couldn't load the bus matrix")).toBeTruthy();
+		expect(screen.getByText("metadata read refused")).toBeTruthy();
+		// The other panes are still mounted — fault isolation, not a blanked page.
+		expect(screen.getByTestId("operating-model-view-toggle")).toBeTruthy();
+	});
+
+	it("coverage-pane read failure doesn't blank the others", () => {
+		vi.spyOn(Route, "useLoaderData").mockReturnValue({
+			...LOADER_DATA,
+			coverage: { status: "error", message: "metadata read refused" },
+			// biome-ignore lint/suspicious/noExplicitAny: loader shape is route-internal
+		} as any);
+		// biome-ignore lint/suspicious/noExplicitAny: search shape is route-internal
+		vi.spyOn(Route, "useSearch").mockReturnValue({ view: "coverage" } as any);
+		// biome-ignore lint/suspicious/noExplicitAny: navigate is unused here
+		vi.spyOn(Route, "useNavigate").mockReturnValue(vi.fn() as any);
+		render(
+			<MantineProvider theme={theme} env="test">
+				<ModelSection />
+			</MantineProvider>,
+		);
+		expect(screen.getByText("Couldn't load the coverage map")).toBeTruthy();
 		expect(screen.getByText("metadata read refused")).toBeTruthy();
 		// The other panes are still mounted — fault isolation, not a blanked page.
 		expect(screen.getByTestId("operating-model-view-toggle")).toBeTruthy();

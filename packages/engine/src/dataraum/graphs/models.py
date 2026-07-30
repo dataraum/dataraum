@@ -593,6 +593,18 @@ class FailedSnippetProvenance(BaseModel):
     failure_mode: SnippetFailureMode
     failure_reason: str
 
+    # The COMPOSITION's abstain reason, when the extract that failed was one composition
+    # ABSTAINED on (DAT-893). ``failure_reason`` then describes the symptom, not the
+    # cause: an abstained extract composes ``SELECT NULL AS value``, runs clean, and is
+    # rejected by the verifier for having no support — so the persisted row said "no
+    # support" while the real cause (e.g. no reporting instant could be placed on the
+    # served relation) existed only as a sub-floor assumption on an object that is
+    # discarded on the failure path. One typed field, not a failure-mode vocabulary: the
+    # MODE is still the verifier's rejection, honestly; this records what made the value
+    # NULL in the first place, so the next authoring and the ungroundable-node detail
+    # both see the cause. ``None`` for every failure that was not an abstention.
+    composition_abstain: str | None = None
+
 
 class ValueSearchInput(BaseModel):
     """Input for the grounding agent's bounded catalog search (DAT-699).

@@ -53,8 +53,20 @@ class MeasureAggregationLineage(Base):
     # table's typed ``columns`` and is NULLABLE: ``TimeColumn.column`` is
     # unvalidated LLM output (DAT-780 adds the event/attribute rule + a
     # real-column check at save) and can name a column that isn't in ``columns``
-    # — an honest NULL then, never a sentinel string. Consumed by the anchor
-    # designation: a witness axis overrides where a witness exists.
+    # — an honest NULL then, never a sentinel string.
+    #
+    # The two sides name columns on TWO DIFFERENT tables: the processor never pairs a
+    # table with itself and requires a strictly finer event side. Only the MEASURE side
+    # feeds the anchor designation (``og_columns.anchor_time_axis``, DAT-893) — an
+    # anchor is the axis a measure trends by on ITS OWN relation, and the event side
+    # names a column of the evidence fact, which the measure's served view does not
+    # carry.
+    #
+    # ``event_time_axis_column`` has NO code reader as of DAT-893 (it is written here and
+    # projected into the cockpit's Drizzle mirror; nothing selects it). It is retained as
+    # the audit record of which axis the reconciliation actually ran against — the
+    # reproducibility claim DAT-778 added these fields for. Stated plainly so the next
+    # reader reaches for a real consumer instead of inferring one from this comment.
     measure_time_axis_column: Mapped[str] = mapped_column(String, nullable=False)
     measure_time_axis_column_id: Mapped[str | None] = mapped_column(
         ForeignKey("columns.column_id"), nullable=True

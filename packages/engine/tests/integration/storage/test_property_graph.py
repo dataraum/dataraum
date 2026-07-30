@@ -228,8 +228,14 @@ def _seed(engine: Engine) -> None:
     # fixture doesn't seed a TableEntity.time_columns axis, so there is nothing to
     # resolve (DAT-778's honest-NULL case). measure_slice_column_id /
     # event_slice_column_id are NOT NULL (sourced from SliceDefinition.column_id in
-    # the real writer): 'c_k1' stands in for both, same as the real writer would use
-    # when measure_table_id == event_table_id.
+    # the real writer): 'c_k1'/'c_k4' stand in for the two sides' physical slice columns.
+    #
+    # The two sides carry DIFFERENT axis names on DIFFERENT tables, which is the only
+    # shape the real processor can produce (it skips self-pairs and requires a strictly
+    # finer event side) and the only shape that can tell the two fields apart. DAT-893:
+    # the anchor must resolve the MEASURE side ('period_date', an axis of t1 — the table
+    # carrying the measure), never the event side ('posted_at', an axis of the evidence
+    # fact t4, which t1's own relation does not serve).
     stmts.append(
         "INSERT INTO measure_aggregation_lineage "
         "(lineage_id, run_id, measure_table_id, measure_column_id, event_table_id, "
@@ -238,8 +244,8 @@ def _seed(engine: Engine) -> None:
         " slice_dimension, convention_sql, period_grain, pattern, match_rate, "
         " r_flow_median, r_stock_median, n_entities, n_entities_fired, "
         " sign_fired_primary, sign_fired_mirror, sign_fired_both, created_at) "
-        f"VALUES ('mal_amt', '{RUN}', 't1', 'c_amt', 't1', "
-        f"'period_date', 'period_date', 'c_k1', 'c_k1', "
+        f"VALUES ('mal_amt', '{RUN}', 't1', 'c_amt', 't4', "
+        f"'period_date', 'posted_at', 'c_k1', 'c_k4', "
         f"'month', 'SUM(amount)', "
         f"'month', 'per_period', 1.0, 0.9, 0.1, 10, 10, 10, 0, 0, '{TS}')"
     )
@@ -1186,9 +1192,14 @@ def test_measure_column_matches_its_materialization(graph_engine: Engine) -> Non
 
 
 def test_measure_anchor_time_axis_prefers_the_witness(graph_engine: Engine) -> None:
-    """DAT-780 Gap 2: a measure's anchor is the DAT-778 witness event-side axis where
-    a witness exists — precedence over the table's declared anchor, expressed by the
-    COALESCE order (mirrors materialization's witness-over-claim precedence)."""
+    """DAT-780 Gap 2: a measure's anchor is the DAT-778 witness axis where a witness
+    exists — precedence over the table's declared anchor, expressed by the COALESCE
+    order (mirrors materialization's witness-over-claim precedence).
+
+    DAT-893 pins WHICH witness axis: the MEASURE side. The fixture's witness row spans
+    two tables with two different axis names, so this discriminates — reading the event
+    side would return 'posted_at' here.
+    """
     sql = (
         f"SELECT anchor FROM GRAPH_TABLE ({_graph_ref()} "
         # Scope to the typed fact vertex: DAT-811 adds an enriched 'amount' vertex on
@@ -1198,9 +1209,36 @@ def test_measure_anchor_time_axis_prefers_the_witness(graph_engine: Engine) -> N
     )
     with graph_engine.connect() as conn:
         rows = conn.execute(text(sql)).all()
-    # c_amt's witness row set event_time_axis_column='period_date'; it wins over t1's
-    # declared anchor 'txn_date'.
+    # c_amt's witness row set measure_time_axis_column='period_date' (an axis of t1, the
+    # measure's own table); it wins over t1's declared anchor 'txn_date'.
     assert rows == [("period_date",)]
+
+
+def test_measure_anchor_time_axis_is_never_the_evidence_relations_axis(
+    graph_engine: Engine,
+) -> None:
+    """DAT-893: the witness's EVENT-side axis must never become the measure's anchor.
+
+    A lineage row spans two tables, so its event axis names a column of the EVIDENCE
+    fact. Both anchor consumers key the name against the served columns of the measure's
+    own relation, so recording it there makes the measure unbindable — the live defect:
+    balance_sheet.ending_balance anchored to journal-lines 'entry_id__date', the period
+    binder abstained, and the extract composed SELECT NULL AS value.
+
+    Asserted on BOTH vertices: the typed measure and the enriched served column that
+    resolves its semantics through the same source (DAT-811).
+    """
+    sql = (
+        f"SELECT table_id, anchor FROM GRAPH_TABLE ({_graph_ref()} "
+        "MATCH (c IS column_node WHERE c.column_name = 'amount') "
+        "COLUMNS (c.table_id AS table_id, c.anchor_time_axis AS anchor))"
+    )
+    with graph_engine.connect() as conn:
+        # A LIST, not a dict: a duplicate vertex would collapse silently into a dict and
+        # the KEY-uniqueness this view must hold would go unasserted.
+        rows = sorted(conn.execute(text(sql)).all())
+    # 'posted_at' — the event side — must appear on neither.
+    assert rows == [("t1", "period_date"), ("t_enr", "period_date")]
 
 
 def test_measure_anchor_time_axis_falls_back_to_declared_anchor(graph_engine: Engine) -> None:

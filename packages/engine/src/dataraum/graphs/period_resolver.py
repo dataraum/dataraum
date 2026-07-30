@@ -39,7 +39,8 @@ circular ``detected_granularity → 30`` label. A single period gives no gap to
 correct against, so it falls loud rather than fabricate a window.
 
 **The axis has one home.** Which column is the flow's time axis is read from
-``og_columns.anchor_time_axis`` (DAT-780 witness-precedence COALESCE), never
+``og_columns.anchor_time_axis`` (DAT-780/DAT-893 witness-precedence COALESCE over the
+witness's MEASURE-side axis), never
 re-derived from ``time_columns`` here. Only the axis IDENTITY and its detected
 cadence come from the Postgres read surface; the span itself is measured live in
 DuckDB over the filtered rows.
@@ -134,6 +135,12 @@ class _MeasureAxis:
     never temporally profiled, in which case a ``flow`` measure falls loud (its window
     can't be observed) while a non-``flow`` measure is simply excluded.
 
+    ``recorded`` is the anchor name as ``og_columns`` RECORDED it, before resolution
+    against this relation's served columns (DAT-893). It exists so the fall-loud reason
+    can tell "no anchor was ever designated" from "an anchor was designated that this
+    relation does not carry" — the second is a defect at whoever recorded it, and
+    reporting it as a null anchor states something false about the read surface.
+
     ``persisted_span_days`` / ``persisted_actual_periods`` are the axis's WHOLE-COLUMN
     coverage from ``temporal_column_profiles`` (DAT-812): the exact window an
     UNFILTERED (empty-WHERE) flow whose axis is VIEW-OWN would live-scan, so it is read
@@ -150,6 +157,7 @@ class _MeasureAxis:
     materialization: str | None
     axis: str | None
     grain: str | None
+    recorded: str | None
     persisted_span_days: float | None
     persisted_actual_periods: int | None
     axis_is_view_own: bool
@@ -312,9 +320,22 @@ def _observe_flow_step(
     windows: list[_AxisWindow] = []
     for measure in flows:
         if measure.axis is None or measure.grain is None:
+            # DAT-893: three distinct facts arrive here as axis/grain None, and the old
+            # single message asserted the first of them about all three — so the live
+            # defect (an anchor naming a column of the reconciliation's EVIDENCE
+            # relation) was disclosed as "null anchor time axis" about a name that was
+            # sitting in og_columns. Same discipline as boundary_resolver._resolve: a
+            # mismatch is NAMED, never reported as an absence.
+            if measure.axis is None and measure.recorded:
+                return (
+                    f"flow '{field_name}' has no observable anchor-axis span — its anchor "
+                    f"axis {measure.recorded!r} is not a column of relation {relation!r}"
+                )
+            if measure.axis is None:
+                return f"flow '{field_name}' has no anchor time axis to observe a span on"
             return (
-                f"flow '{field_name}' has no observable anchor-axis span "
-                f"(null anchor time axis or no temporal profile)"
+                f"flow '{field_name}' has no observable anchor-axis span — anchor axis "
+                f"{measure.axis!r} has no temporal profile"
             )
         # DAT-812 profile-read collapse: an UNFILTERED flow whose axis is the relation's
         # OWN column (a fact ``f.*`` passthrough) has a window equal to the axis's
@@ -515,11 +536,13 @@ def _read_measure_axes(
       ``source_column_id`` (the identity), and thence its cadence. This is a name KEY into
       a unique set, NOT the DAT-801 first cut's ``(fk)||'__'||col`` reconstruction (which
       collided): the served column already exists; we look it up, we do not rebuild its
-      name. The persisted ``mal.event_time_axis_column_id`` is deliberately NOT consulted
-      — it duplicates the served column's own ``source_column_id`` and is NULL in practice
-      (the witness stores the served name, which never resolves to a typed column), and it
-      could only ever add an anchor that is not served on THIS relation — which has no
-      observable live window regardless.
+      name. The persisted ``mal.measure_time_axis_column_id`` is deliberately NOT
+      consulted — it duplicates the served column's own ``source_column_id`` and is NULL
+      whenever the witness stored a served (dimension-joined) name, which never resolves
+      to a typed column. The witness's ``event_time_axis_column`` is not consulted EITHER,
+      and that is load-bearing (DAT-893): it names a column of the EVIDENCE fact the
+      rollup reconciled against — a different table by construction — so it could only
+      ever add an anchor that is not served on THIS relation.
 
     The joins are LEFT so a flow whose anchor is not a served column of THIS relation (a
     lineage-inherited axis the queried view never joins — no observable live window) or
@@ -556,6 +579,11 @@ def _read_measure_axes(
         f"  WHERE m.table_id = :view_id AND m.column_name IN :measure_cols"
         f") SELECT DISTINCT measure.materialization, axis_col.column_name AS axis,"
         f"       tp.detected_granularity AS grain,"
+        # DAT-893: the anchor as RECORDED, beside the anchor as RESOLVED. Without it a
+        # designated-but-unservable anchor is indistinguishable from no anchor at all,
+        # and the fall-loud message below claims "null anchor time axis" about a name
+        # that is right there in og_columns.
+        f"       measure.anchor_time_axis AS recorded,"
         # DAT-812: the axis's WHOLE-COLUMN span + present-period count — the exact window
         # an UNFILTERED, VIEW-OWN flow would live-scan, so it can be read here instead.
         # ``origin`` discriminates a fact ``f.*`` passthrough (view-own, 1:1 with the
@@ -569,7 +597,7 @@ def _read_measure_axes(
         f"        AND axis_col.column_name = measure.anchor_time_axis"
         f'  LEFT JOIN "{read_schema}".current_temporal_column_profiles tp'
         f"         ON tp.column_id = axis_col.source_column_id"
-        f" ORDER BY measure.materialization, axis, grain"  # deterministic evidence
+        f" ORDER BY measure.materialization, axis, grain, recorded"  # deterministic evidence
     ).bindparams(bindparam("measure_cols", expanding=True))
     rows = session.execute(
         stmt, {"view_id": view_table_id, "measure_cols": sorted(measure_cols)}
@@ -579,11 +607,12 @@ def _read_measure_axes(
             materialization=str(mat) if mat is not None else None,
             axis=str(axis) if axis is not None else None,
             grain=str(grain) if grain is not None else None,
+            recorded=str(recorded) if recorded is not None else None,
             persisted_span_days=float(span) if span is not None else None,
             persisted_actual_periods=int(periods) if periods is not None else None,
             # Only the fact's own passthrough is safe to collapse; a joined-dim axis
             # (origin='dimension') or an unresolved axis (NULL) scans live.
             axis_is_view_own=(origin == "fact"),
         )
-        for mat, axis, grain, span, periods, origin in rows
+        for mat, axis, grain, recorded, span, periods, origin in rows
     ]

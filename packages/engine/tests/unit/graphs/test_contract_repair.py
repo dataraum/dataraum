@@ -27,6 +27,7 @@ from dataraum.graphs.models import (
     GraphStep,
     OutputDef,
     OutputType,
+    SnippetFailureMode,
     StepSource,
     StepType,
     TransformationGraph,
@@ -390,6 +391,105 @@ def test_unresolvable_stock_composes_the_fall_loud_shape(monkeypatch) -> None:
     disclosure = [a for a in result.unwrap().assumptions if a.dimension == "period.binding"]
     assert len(disclosure) == 1
     assert "ABSTAINED" in disclosure[0].assumption
+    # DAT-893: the reason also rides the code object, which is what survives the failure
+    # path — the disclosure assumption above does not.
+    assert result.unwrap().composition_abstain == "anchor axis 'period' has no temporal profile"
+
+
+def test_a_composed_extract_records_no_abstention(monkeypatch) -> None:
+    """The mirror: nothing abstained, so nothing is recorded as having abstained.
+
+    Keeps ``composition_abstain`` meaning exactly one thing — without this, a field that
+    is never ``None`` would silently mislabel ordinary verifier rejections.
+    """
+    _patch_context(monkeypatch)
+    agent = _agent_with(_provider(_output_response(_VALID_OUTPUT)))
+
+    result = _generate(agent)
+
+    assert result.success
+    assert result.unwrap().composition_abstain is None
+
+
+def test_the_abstain_reason_reaches_the_persisted_failure_provenance(monkeypatch) -> None:
+    """DAT-893's wire: composition's reason must survive onto the retained-failure row.
+
+    An abstained extract is composed as ``SELECT NULL AS value``. It then EXECUTES clean
+    and the verifier rejects it for having no support — so the persisted row's
+    ``failure_reason`` describes the symptom and the real cause (no reporting instant
+    could be placed on the served relation) was dropped with the discarded assumption.
+    This drives the real ``_save_failed_snippet`` and reads the provenance it wrote.
+    """
+    abstain = "anchor time axis 'entry_id__date' is not a column of relation 'x'"
+    _patch_context(monkeypatch)
+    monkeypatch.setattr(
+        "dataraum.graphs.boundary_resolver.resolve_period_binding", lambda *a, **k: abstain
+    )
+    agent = _agent_with(_provider(_output_response(_VALID_OUTPUT)))
+    generated = _generate(agent).unwrap()
+
+    saved: list[dict] = []
+    monkeypatch.setattr(
+        "dataraum.query.snippet_library.SnippetLibrary.save_snippet",
+        lambda self, **kwargs: saved.append(kwargs),
+    )
+    agent._save_failed_snippet(
+        MagicMock(),
+        _graph(),
+        generated,
+        "sm",
+        workspace_id="ws",
+        # The mode stays the verifier's own — the abstention is the CAUSE, not a new
+        # failure mode (the message taxonomy is not this ticket's to extend).
+        mode=SnippetFailureMode.VERIFIER_REJECTED,
+        reason="no support: aggregation returned NULL",
+    )
+
+    assert len(saved) == 1
+    provenance = saved[0]["provenance"]
+    assert provenance["failure_mode"] == "verifier_rejected"
+    assert provenance["failure_reason"] == "no support: aggregation returned NULL"
+    assert provenance["composition_abstain"] == abstain
+
+
+def test_the_abstain_reason_stays_off_other_failure_modes(monkeypatch) -> None:
+    """A non-verifier failure never carries the composition abstain.
+
+    A generation can both violate the grounding contract AND resolve to a stock whose
+    binding abstains — ``composition_abstain`` is stamped on ``GeneratedCode``
+    unconditionally, but the retained ``PROVENANCE_INVALID`` row must not carry it:
+    the grounding failed for its own reason, and ``_build_prior_context``'s abstain
+    branch ("this is NOT a grounding defect to revise around") would directly
+    contradict the mode's own ``why`` text on the next authoring turn.
+    """
+    abstain = "anchor time axis 'entry_id__date' is not a column of relation 'x'"
+    _patch_context(monkeypatch)
+    monkeypatch.setattr(
+        "dataraum.graphs.boundary_resolver.resolve_period_binding", lambda *a, **k: abstain
+    )
+    agent = _agent_with(_provider(_output_response(_VALID_OUTPUT)))
+    generated = _generate(agent).unwrap()
+    assert generated.composition_abstain == abstain
+
+    saved: list[dict] = []
+    monkeypatch.setattr(
+        "dataraum.query.snippet_library.SnippetLibrary.save_snippet",
+        lambda self, **kwargs: saved.append(kwargs),
+    )
+    agent._save_failed_snippet(
+        MagicMock(),
+        _graph(),
+        generated,
+        "sm",
+        workspace_id="ws",
+        mode=SnippetFailureMode.PROVENANCE_INVALID,
+        reason="grounding contract violated after repair: filter_members names a phantom",
+    )
+
+    assert len(saved) == 1
+    provenance = saved[0]["provenance"]
+    assert provenance["failure_mode"] == "provenance_invalid"
+    assert provenance["composition_abstain"] is None
 
 
 def test_resolved_binding_reaches_the_composed_parts(monkeypatch) -> None:

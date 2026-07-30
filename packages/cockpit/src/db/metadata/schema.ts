@@ -50,11 +50,12 @@ export const concepts = pgView("concepts", {
 	excludePatterns: json("exclude_patterns"),
 	unitFromConcept: varchar("unit_from_concept"),
 	ordering: varchar(),
+	dimensionFacet: varchar("dimension_facet"),
 	source: varchar(),
 	createdAt: timestamp("created_at"),
 	supersededAt: timestamp("superseded_at"),
 }).as(
-	sql`SELECT concept_id, vertical, name, kind, description, indicators, exclude_patterns, unit_from_concept, ordering, source, created_at, superseded_at FROM engine.concepts WHERE vertical::text = COALESCE(( SELECT workspace_settings.active_vertical FROM engine.workspace_settings), '_adhoc'::character varying)::text`,
+	sql`SELECT concept_id, vertical, name, kind, description, indicators, exclude_patterns, unit_from_concept, ordering, dimension_facet, source, created_at, superseded_at FROM engine.concepts WHERE vertical::text = COALESCE(( SELECT workspace_settings.active_vertical FROM engine.workspace_settings), '_adhoc'::character varying)::text`,
 );
 
 export const configOverlay = pgView("config_overlay", {
@@ -809,11 +810,12 @@ export const metrics = pgView("metrics", {
 	description: text(),
 	output: json(),
 	dependencies: json(),
+	dimensionFacet: varchar("dimension_facet"),
 	source: varchar(),
 	createdAt: timestamp("created_at"),
 	supersededAt: timestamp("superseded_at"),
 }).as(
-	sql`SELECT metric_id, vertical, graph_id, name, category, unit, output_type, version, description, output, dependencies, source, created_at, superseded_at FROM engine.metrics WHERE vertical::text = COALESCE(( SELECT workspace_settings.active_vertical FROM engine.workspace_settings), '_adhoc'::character varying)::text`,
+	sql`SELECT metric_id, vertical, graph_id, name, category, unit, output_type, version, description, output, dependencies, dimension_facet, source, created_at, superseded_at FROM engine.metrics WHERE vertical::text = COALESCE(( SELECT workspace_settings.active_vertical FROM engine.workspace_settings), '_adhoc'::character varying)::text`,
 );
 
 export const runTables = pgView("run_tables", {

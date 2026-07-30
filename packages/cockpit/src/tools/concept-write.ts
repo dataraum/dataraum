@@ -38,6 +38,23 @@ export type ConceptKind = (typeof CONCEPT_KINDS)[number];
 export const DIMENSION_ORDERINGS = ["ordered", "nominal"] as const;
 export type DimensionOrdering = (typeof DIMENSION_ORDERINGS)[number];
 
+// The operating-model axis a concept classifies onto — mirrors the engine's
+// DimensionFacet (packages/engine/.../analysis/semantic/db_models.py, DAT-855). The
+// SAME enum a metric also carries (no metric write surface exists here, though —
+// metrics have no `frame` writer yet). NULL means ONLY "no writer classified yet";
+// `cross_cutting` is a POSITIVE classification (applies across every facet), not an
+// "undecided" bucket.
+export const DIMENSION_FACETS = [
+	"demand",
+	"offer",
+	"supply",
+	"capacity",
+	"throughput",
+	"capital",
+	"cross_cutting",
+] as const;
+export type DimensionFacet = (typeof DIMENSION_FACETS)[number];
+
 // The fields the cockpit supplies for one concept (snake_case to mirror the
 // engine's OntologyConcept / the old `concept` teach payload). Identity
 // (`concept_id`), `source`, and the lifecycle timestamps are set on write.
@@ -51,6 +68,8 @@ export interface ConceptWriteInput {
 	unit_from_concept?: string;
 	// The dimension-ordering fact (DAT-730 P5 handoff). Omitted ⇒ NULL ⇒ nominal.
 	ordering?: DimensionOrdering;
+	// The operating-model axis (DAT-855). Omitted ⇒ NULL ⇒ "no writer classified yet".
+	dimension_facet?: DimensionFacet;
 }
 
 /**
@@ -92,6 +111,7 @@ export async function writeConcept(
 			excludePatterns: input.exclude_patterns,
 			unitFromConcept: input.unit_from_concept,
 			ordering: input.ordering,
+			dimensionFacet: input.dimension_facet,
 			source: "frame",
 			createdAt: new Date(),
 			supersededAt: null,

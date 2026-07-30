@@ -75,6 +75,11 @@ export const conceptsWrite = pgTable("concepts", {
 	// `frame` authors it on a dimension concept; NULL for the common case. Mirrors the
 	// engine `Concept.ordering` column (ck_concepts_ordering).
 	ordering: varchar("ordering"),
+	// Operating-model axis (DAT-855): demand | offer | supply | capacity | throughput |
+	// capital | cross_cutting | NULL (⇒ "no writer classified yet"). Mirrors the engine
+	// `Concept.dimension_facet` column (ck_concepts_dimension_facet) — the SAME enum a
+	// metric also carries, though no metric write surface exists on the cockpit side.
+	dimensionFacet: varchar("dimension_facet"),
 	source: varchar("source"),
 	createdAt: timestamp("created_at", { mode: "date" }).notNull(),
 	supersededAt: timestamp("superseded_at", { mode: "date" }),

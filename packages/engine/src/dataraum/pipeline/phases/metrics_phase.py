@@ -126,7 +126,11 @@ class MetricsPhase(BasePhase):
     @property
     def db_models(self) -> list[ModuleType]:
         from dataraum.analysis.semantic import reconciliation_db_models
-        from dataraum.graphs import additivity_db_models, metric_graph_db_models
+        from dataraum.graphs import (
+            additivity_db_models,
+            groundability_db_models,
+            metric_graph_db_models,
+        )
         from dataraum.lifecycle import db_models as lifecycle_db_models
         from dataraum.query import snippet_models
 
@@ -134,6 +138,7 @@ class MetricsPhase(BasePhase):
             snippet_models,
             lifecycle_db_models,
             additivity_db_models,
+            groundability_db_models,
             metric_graph_db_models,
             reconciliation_db_models,
         ]
@@ -368,6 +373,25 @@ class MetricsPhase(BasePhase):
             vertical=vertical,
             run_id=run_id,
             catalogue_run_id=catalogue_run_id,
+        )
+
+        # Ungroundable-dimension verdicts (DAT-620): for every discriminator
+        # column this run's grounding set filters on, classify whether a filter
+        # over its values can be grounded honestly — deterministic, from
+        # persisted signals only (meaning, role, reference catalogue). A coded
+        # column nothing resolves gets an `ungroundable` row whose message names
+        # the generic cure (link a reference/lookup table); linking one flips
+        # the verdict on the next run's rows. Same fault isolation as the
+        # additivity twin above.
+        _persist_groundability_verdicts(
+            ctx.session,
+            ctx.duckdb_conn,
+            graphs=graphs,
+            workspace_id=schema_mapping_id,
+            vertical=vertical,
+            run_id=run_id,
+            catalogue_run_id=catalogue_run_id,
+            semantic_runs=base_runs.semantic_runs,
         )
 
         # reconciles_with derivation (DAT-727 part c): with this run's grounding
@@ -711,6 +735,148 @@ def _verdict_row(run_id: str, vertical: str, v: VerdictRow) -> dict[str, object]
         ),
         "bucket_grain": v.bucket_grain,
     }
+
+
+# ---------------------------------------------------------------------------
+# Ungroundable-dimension verdict (DAT-620)
+# ---------------------------------------------------------------------------
+
+
+def _persist_groundability_verdicts(
+    session: Session,
+    duckdb_conn: duckdb.DuckDBPyConnection,
+    *,
+    graphs: dict[str, TransformationGraph],
+    workspace_id: str,
+    vertical: str,
+    run_id: str,
+    catalogue_run_id: str | None,
+    semantic_runs: dict[str, str],
+) -> None:
+    """Persist the per-(column, run) groundability verdicts (DAT-620).
+
+    **The dependency read (v1):** the filter columns of the declared metrics'
+    committed AND attempted groundings — per EXTRACT leaf, the healthy snippet
+    (``find_by_key``) or the retained failure (``retained_failure``, DAT-543;
+    an attempted grounding is exactly the row DAT-620 exists for). Filter
+    column names come from the healthy provenance's typed ``filter_members``
+    UNION a DuckDB parse of the row's own ``parts.where`` — the parse is the
+    only source on a failed row, which carries no basis by design. Names
+    resolve through the served relation (enriched view → ``source_column_id``)
+    to the typed column identity; a name that does not resolve is warned and
+    skipped — no identity, no row.
+
+    One row per evaluated column (deduped across metrics — the signals are
+    column-grain, so every metric sees the same verdict), UPSERTed on
+    ``(column_id, run_id)`` (ADR-0010 form (a)). Fault-isolated exactly like
+    ``_persist_additivity_verdicts``: per-graph collection and the final
+    evaluate+upsert each run inside their own SAVEPOINT, so a bug costs only
+    this run's annotation, never the metric bookkeeping.
+    """
+    from dataraum.graphs.groundability import (
+        evaluate_groundability,
+        resolve_served_filter_columns,
+        where_predicate_columns,
+    )
+    from dataraum.graphs.groundability_db_models import DimensionGroundability
+    from dataraum.graphs.models import StepType
+    from dataraum.query.snippet_library import SnippetLibrary
+    from dataraum.storage import Column, Table
+    from dataraum.storage.upsert import upsert
+
+    library = SnippetLibrary(session, workspace_id=workspace_id)
+    dependency: dict[str, tuple[Column, Table]] = {}
+    for graph_id in sorted(graphs):
+        graph = graphs[graph_id]
+        try:
+            with session.begin_nested():
+                for step in graph.steps.values():
+                    if step.step_type != StepType.EXTRACT or step.source is None:
+                        continue
+                    match = library.find_by_key(
+                        "extract",
+                        workspace_id,
+                        standard_field=step.source.standard_field,
+                        statement=step.source.statement,
+                        aggregation=step.aggregation,
+                        predicate=step.source.predicate,
+                    )
+                    rec = match.snippet if match else None
+                    if rec is None:
+                        rec = library.retained_failure(
+                            "extract",
+                            workspace_id,
+                            standard_field=step.source.standard_field,
+                            statement=step.source.statement,
+                            aggregation=step.aggregation,
+                            predicate=step.source.predicate,
+                        )
+                    if rec is None:
+                        continue
+                    parts = rec.parts or {}
+                    relation = next(iter(parts.get("from") or []), None)
+                    if not relation:
+                        continue
+                    names: set[str] = set()
+                    provenance = rec.provenance or {}
+                    for basis in (provenance.get("column_mappings_basis") or {}).values():
+                        for member in (basis or {}).get("filter_members") or []:
+                            if member.get("column"):
+                                names.add(str(member["column"]))
+                    names |= where_predicate_columns(parts.get("where") or [], duckdb_conn)
+                    if not names:
+                        continue
+                    resolved = resolve_served_filter_columns(session, str(relation), names)
+                    unresolved = sorted(names - set(resolved))
+                    if unresolved:
+                        # No typed identity → no verdict row can exist; loud, not silent.
+                        _log.warning(
+                            "groundability_filter_column_unresolved",
+                            graph_id=graph_id,
+                            relation=relation,
+                            columns=unresolved,
+                        )
+                    for col, table in resolved.values():
+                        dependency[str(col.column_id)] = (col, table)
+        except Exception as exc:  # noqa: BLE001 - best-effort; never fail the phase
+            _log.warning("groundability_collect_error", graph_id=graph_id, error=str(exc))
+            continue
+
+    if not dependency:
+        _log.info("groundability_persisted", count=0)
+        return
+    try:
+        with session.begin_nested():
+            verdicts = evaluate_groundability(
+                session,
+                [dependency[cid] for cid in sorted(dependency)],
+                catalogue_run_id=catalogue_run_id,
+                semantic_runs=semantic_runs,
+            )
+            rows = [
+                {
+                    "run_id": run_id,
+                    "vertical": vertical,
+                    "column_id": v.column_id,
+                    "table_id": v.table_id,
+                    "column_name": v.column_name,
+                    "table_name": v.table_name,
+                    "status": v.status.value,
+                    "verdict": v.verdict.value if v.verdict else None,
+                    "reason": v.reason.value if v.reason else None,
+                    "abstain_reason": v.abstain_reason.value if v.abstain_reason else None,
+                }
+                for v in verdicts
+            ]
+            upsert(session, DimensionGroundability, rows, index_elements=["column_id", "run_id"])
+    except Exception as exc:  # noqa: BLE001 - isolate the write from phase bookkeeping
+        _log.warning("groundability_persist_error", error=str(exc), count=len(dependency))
+        return
+    _log.info(
+        "groundability_persisted",
+        count=len(rows),
+        ungroundable=sum(1 for r in rows if r["verdict"] == "ungroundable"),
+    )
 
 
 # ---------------------------------------------------------------------------

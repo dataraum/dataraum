@@ -25,7 +25,8 @@ concepts:
       - expense
     kind: measure
     unit_from_concept: currency
-    
+    dimension_facet: demand
+
   - name: cost_of_goods_sold
     description: Direct costs attributable to goods sold
     indicators:
@@ -34,7 +35,8 @@ concepts:
       - cost_of_sales
       - direct_cost
     kind: measure
-    
+    dimension_facet: offer
+
   - name: operating_expense
     description: Expenses from normal business operations
     indicators:
@@ -44,7 +46,8 @@ concepts:
       - sga
       - overhead
     kind: measure
-    
+    dimension_facet: cross_cutting
+
   - name: depreciation
     description: Allocation of asset cost over useful life
     indicators:
@@ -53,7 +56,8 @@ concepts:
       - amortization
       - amort
     kind: measure
-    
+    dimension_facet: cross_cutting
+
   - name: interest
     description: Interest income or expense
     indicators:
@@ -62,7 +66,8 @@ concepts:
       - interest_income
       - finance_cost
     kind: measure
-    
+    dimension_facet: capital
+
   - name: tax
     description: Tax expense or benefit
     indicators:
@@ -71,7 +76,8 @@ concepts:
       - tax_expense
       - tax_provision
     kind: measure
-    
+    dimension_facet: cross_cutting
+
   - name: fiscal_period
     kind: dimension
     description: Time period for financial reporting
@@ -84,6 +90,7 @@ concepts:
       - fy
       - month
       - date
+    dimension_facet: cross_cutting
 
   - name: entity
     kind: entity
@@ -96,7 +103,8 @@ concepts:
       - cost_center
       - department
       - business_unit
-    
+    dimension_facet: cross_cutting
+
   - name: account
     kind: entity
     description: Chart of accounts entry
@@ -106,7 +114,8 @@ concepts:
       - account_code
       - account_number
       - coa
-    
+    dimension_facet: cross_cutting
+
   - name: currency
     kind: unit
     description: Currency of monetary values
@@ -114,6 +123,7 @@ concepts:
       - currency
       - ccy
       - curr
+    dimension_facet: cross_cutting
 
   # Balance Sheet Concepts
   - name: accounts_receivable
@@ -129,6 +139,7 @@ concepts:
       - a/r_paid
     kind: measure
     unit_from_concept: currency
+    dimension_facet: capital
 
   - name: accounts_payable
     description: Money owed by the company to suppliers
@@ -143,6 +154,7 @@ concepts:
       - a/p_paid
     kind: measure
     unit_from_concept: currency
+    dimension_facet: capital
 
   - name: inventory
     description: Goods held for sale or production
@@ -154,6 +166,7 @@ concepts:
       - work_in_progress
       - finished_goods
     kind: measure
+    dimension_facet: capital
 
   - name: current_assets
     description: Assets expected to be converted to cash within one year
@@ -162,6 +175,7 @@ concepts:
       - short_term_assets
       - liquid_assets
     kind: measure
+    dimension_facet: capital
 
   - name: current_liabilities
     description: Obligations due within one year
@@ -170,6 +184,7 @@ concepts:
       - short_term_liabilities
       - current_debt
     kind: measure
+    dimension_facet: capital
 
   - name: cash
     description: Cash and cash equivalents
@@ -180,6 +195,7 @@ concepts:
       - cash_equivalents
     kind: measure
     unit_from_concept: currency
+    dimension_facet: capital
 
   - name: open_balance
     description: Outstanding balance on an account or transaction
@@ -191,6 +207,7 @@ concepts:
       - unpaid
     kind: measure
     unit_from_concept: currency
+    dimension_facet: cross_cutting
 
   # Trial-balance / ledger period balances (DAT-405). Without this concept,
   # debit_balance/credit_balance keyword-match the `debit`/`credit` FLOW
@@ -211,6 +228,7 @@ concepts:
       - beginning_balance
     kind: measure
     unit_from_concept: currency
+    dimension_facet: cross_cutting
 
   - name: transaction_amount
     description: Monetary value of a transaction
@@ -222,6 +240,7 @@ concepts:
       - price
     kind: measure
     unit_from_concept: currency
+    dimension_facet: cross_cutting
 
   - name: debit
     description: Debit entry in double-entry accounting
@@ -230,6 +249,7 @@ concepts:
       - dr
     kind: measure
     unit_from_concept: currency
+    dimension_facet: cross_cutting
 
   - name: credit
     description: Credit entry in double-entry accounting
@@ -238,6 +258,7 @@ concepts:
       - cr
     kind: measure
     unit_from_concept: currency
+    dimension_facet: cross_cutting
 
   - name: equity
     description: Owner's equity or shareholders' equity
@@ -251,6 +272,7 @@ concepts:
       - net_assets
     kind: measure
     unit_from_concept: currency
+    dimension_facet: capital
 
 # Domain conventions, piped VERBATIM to any SQL-authoring agent (extraction,
 # validation, qa) — DAT-645. The engine parses only the generic envelope (id /
@@ -369,3 +391,314 @@ compositions:
   - whole: current_liabilities
     parts:
       - accounts_payable
+
+# Table-entity taxonomy (DAT-724). The table-grain sibling of `concepts`: what kinds
+# of TABLE this domain has. Served as evidence to the two agents that answer
+# table-level questions — the per-table structural agent (is_fact_table) and the
+# catalogue agent (entity_type). It PROPOSES: a table matching none of these keeps
+# free-text detection, which is the normal case for an unfamiliar schema.
+#
+# `role` is a TableRole value (fact | periodic_snapshot | dimension) — the same
+# vocabulary the pipeline persists, declared rather than inferred blind. It is a
+# tiebreaker and a label source, never an override: `derive_table_role` still owns
+# the structural fact→periodic_snapshot refinement.
+#
+# `concepts` lists what an instance of the entity CHARACTERISTICALLY CARRIES AS
+# COLUMNS in this domain. Not a required column list — a real table missing one is
+# still that entity — and not padded with concepts that merely relate to the entity:
+# a payment carries the cash it moves, but NOT the payable it settles. Over-declaring
+# turns the evidence into noise. An empty list is a real answer, and here it says the
+# finance concept vocabulary (measure-heavy, with only `entity` and `account` at
+# entity kind) has nothing at that table's grain.
+entities:
+  # --- General ledger ------------------------------------------------------------
+  - name: gl_entry
+    role: fact
+    description: >-
+      The header of a general-ledger journal entry — one posting event, carrying its
+      date, status and provenance but no measure of its own; the amounts live on its
+      lines. A factless event fact: COUNT of entries is the measure, and the entry is
+      the spine every line hangs off.
+    concepts:
+      - fiscal_period
+    cycles:
+      - journal_entry_cycle
+      - period_close
+    aliases:
+      - journal_entries
+      - journal_entry
+      - gl_header
+      - je_header
+      - voucher
+      - ledger_entry
+
+  - name: gl_line
+    role: fact
+    description: >-
+      One posting line of a journal entry — the debit/credit pair against a single
+      account. The ledger's measure-bearing grain.
+    concepts:
+      - debit
+      - credit
+      - transaction_amount
+      - account
+      - entity
+      - currency
+      - fiscal_period
+    cycles:
+      - journal_entry_cycle
+      - period_close
+    aliases:
+      - journal_lines
+      - journal_line
+      - gl_lines
+      - ledger_lines
+      - je_lines
+      - postings
+
+  - name: account
+    role: dimension
+    description: >-
+      A chart-of-accounts entry — the account every posting classifies onto, with its
+      type and its place in the account tree. Pure reference data.
+    concepts:
+      - account
+      - currency
+    cycles:
+      - period_close
+    aliases:
+      - chart_of_accounts
+      - coa
+      - gl_accounts
+      - account_master
+      - accounts
+
+  # --- Period balances -----------------------------------------------------------
+  # Both are (account, period)-grained and non-additive across time, hence
+  # periodic_snapshot. They differ in what the balance MEANS — trial_balance carries
+  # the period's movement, balance_sheet carries the carried-forward position — which
+  # is a temporal-semantics fact the stock/flow machinery owns, not a role difference.
+  - name: trial_balance
+    role: periodic_snapshot
+    description: >-
+      Per-period debit and credit balances per account — the ledger restated at each
+      period end. The same account population repeats every period, so a COUNT
+      re-states it and the balances must not be summed across periods.
+    concepts:
+      - account
+      - account_balance
+      - fiscal_period
+    cycles:
+      - period_close
+    aliases:
+      - trial_balance
+      - tb
+      - gl_balances
+      - period_balances
+
+  - name: balance_sheet
+    role: periodic_snapshot
+    description: >-
+      Per-period closing position per balance-sheet account — a carried-forward stock
+      that persists through periods with no activity, unlike the trial balance's
+      per-period movement.
+    concepts:
+      - account
+      - account_balance
+      - fiscal_period
+    cycles:
+      - period_close
+    aliases:
+      - balance_sheet
+      - bs
+      - statement_of_financial_position
+      - financial_position
+
+  # --- Payables (procure-to-pay) -------------------------------------------------
+  - name: ap_invoice
+    role: fact
+    description: >-
+      A vendor invoice the business owes — the payable side. Distinguished from its
+      receivable twin by pointing at a vendor rather than a customer.
+    concepts:
+      - accounts_payable
+      - transaction_amount
+      - open_balance
+      - currency
+      - fiscal_period
+    cycles:
+      - procure_to_pay
+      - accounts_payable
+    aliases:
+      - invoices
+      - vendor_invoices
+      - ap_invoices
+      - bills
+      - purchase_invoices
+
+  - name: payment
+    role: fact
+    description: >-
+      An outbound settlement against a vendor invoice — cash leaving the business.
+    concepts:
+      - transaction_amount
+      - cash
+      - currency
+      - fiscal_period
+    cycles:
+      - procure_to_pay
+      - accounts_payable
+    aliases:
+      - payments
+      - disbursements
+      - vendor_payments
+      - outgoing_payments
+
+  # --- Receivables (order-to-cash) -----------------------------------------------
+  - name: customer
+    role: dimension
+    description: >-
+      The party the business sells to, with its segment and terms. Reference data; note
+      this is NOT the `entity` concept, which is the reporting entity or cost centre on
+      the business's own side.
+    concepts: []
+    cycles:
+      - order_to_cash
+      - accounts_receivable
+    aliases:
+      - customers
+      - customer_master
+      - clients
+      - debtors
+
+  - name: product
+    role: dimension
+    description: >-
+      A sellable item with its standard cost and list price. Reference data despite the
+      numeric columns — a standard cost is a per-unit rate attached to the item, not a
+      transaction amount, and summing it across products is meaningless.
+    concepts:
+      - cost_of_goods_sold
+    cycles:
+      - inventory_cycle
+    aliases:
+      - products
+      - product_master
+      - items
+      - skus
+      - materials
+
+  - name: sales_order
+    role: fact
+    description: >-
+      The header of a customer order — one ordering event with its date, customer and
+      status; the amounts live on its lines. A factless event fact, the order-to-cash
+      analogue of gl_entry.
+    concepts:
+      - fiscal_period
+    cycles:
+      - order_to_cash
+    aliases:
+      # NOT "orders": the corpus ships a role-play probe skeleton literally named
+      # `orders` (order_id x order_date plus injected FK-role columns). It is
+      # genuinely a fact, but carries neither fiscal_period nor order_to_cash, so
+      # the alias would misattach this declaration to it.
+      - sales_orders
+      - customer_orders
+      - so_header
+      - order_header
+
+  - name: sales_order_line
+    role: fact
+    description: >-
+      One ordered item on a sales order — units, unit price and the extended amounts.
+      The order's measure-bearing grain.
+    concepts:
+      - revenue
+      - cost_of_goods_sold
+      - transaction_amount
+      - fiscal_period
+    cycles:
+      - order_to_cash
+      - inventory_cycle
+    aliases:
+      - sales_order_lines
+      - order_lines
+      - so_lines
+      - order_items
+
+  - name: ar_invoice
+    role: fact
+    description: >-
+      An invoice raised on a customer — the receivable side, and what days-sales-
+      outstanding measures against.
+    concepts:
+      - accounts_receivable
+      - revenue
+      - transaction_amount
+      - open_balance
+      - currency
+      - fiscal_period
+    cycles:
+      - order_to_cash
+      - accounts_receivable
+    aliases:
+      - ar_invoices
+      - customer_invoices
+      - sales_invoices
+      - receivables
+
+  - name: receipt
+    role: fact
+    description: >-
+      An inbound collection against a customer invoice, possibly partial — cash
+      arriving at the business.
+    concepts:
+      - transaction_amount
+      - cash
+      - currency
+      - fiscal_period
+    cycles:
+      - order_to_cash
+      - accounts_receivable
+    aliases:
+      - receipts
+      - cash_receipts
+      - collections
+      - incoming_payments
+
+  # --- Treasury and reference ----------------------------------------------------
+  - name: bank_transaction
+    role: fact
+    description: >-
+      A line on a bank statement, signed by direction, reconciled against the payments
+      and receipts it settles.
+    concepts:
+      - cash
+      - transaction_amount
+      - currency
+      - fiscal_period
+    cycles:
+      - bank_reconciliation
+    aliases:
+      - bank_transactions
+      - bank_txns
+      - bank_statement_lines
+      - bank_feed
+
+  - name: fx_rate
+    role: dimension
+    description: >-
+      A currency-conversion rate for a pair on a date. Reference data, NOT a periodic
+      snapshot despite the date sitting in its grain: the date is a validity key saying
+      which rate applies, not a period the business is measured over, and the rate is a
+      dimensionless ratio between the two currencies — looked up and multiplied by, never
+      aggregated. Treating it as a fact would build measure views over a conversion factor.
+    concepts:
+      - currency
+    cycles: []
+    aliases:
+      - fx_rates
+      - exchange_rates
+      - currency_rates
+      - conversion_rates

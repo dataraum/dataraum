@@ -119,6 +119,10 @@ _CATALOG_GRAIN: dict[str, str] = {
     "validation_results": "operating_model",
     "detected_business_cycles": "operating_model",
     "metric_axis_additivity": "operating_model",  # operating_model metrics phase (DAT-857/868)
+    # The ungroundable-dimension verdict (DAT-620) — same phase, same head as the
+    # additivity twin, so a consumer never reads a verdict computed against a
+    # grounding set that is no longer current.
+    "dimension_groundability": "operating_model",
     # The evaluated reconciles_with tie-out (DAT-739) — same phase, same head as
     # the groundings it re-executed, so a consumer can never read a tie-out
     # computed from a grounding set that is no longer current.
@@ -191,6 +195,15 @@ _VERTICAL_SCOPED: tuple[str, ...] = (
     # typed homes are — a wrong ``--vertical`` (or the eval's wild-vertical stand-in)
     # must never leak a foreign envelope to a future reader of this view.
     "vertical_envelopes",
+    # The table-entity taxonomy (DAT-724) is likewise declaration-versioned and PER
+    # VERTICAL (keyed ``(vertical, name)``, ``superseded_at`` the only lifecycle axis),
+    # so it scopes the same way. Listed here NOT to add a surface — the view is
+    # generated for every table either way — but because the generated default is the
+    # cross-vertical pass-through, which is the wrong shape for a vertical-keyed table.
+    # Engine-internal today (``entity_store`` reads the base table with the caller's
+    # resolved active vertical); no control-plane WRITE grant — 'seed' is the only
+    # writer until a frame-entity authoring path lands.
+    "vertical_entities",
     # The cycle-type SHIPPED vocabulary (DAT-881) is likewise declaration-versioned
     # and PER VERTICAL (keyed ``(vertical, name)``, ``superseded_at`` the only
     # lifecycle axis), so it scopes the same way. Cockpit-consumed today by

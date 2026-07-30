@@ -152,6 +152,79 @@ def test_days_in_period_parameter_carries_its_derivation_marker(session: Session
     assert param.param_type == "integer"
 
 
+def test_seed_lifts_dimension_facet_from_metadata(
+    session: Session, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """``dimension_facet`` (DAT-855) is read from the raw ``metadata`` sub-dict — the
+    same raw-verbatim discipline ``description``/``output``/``dependencies`` already
+    use (DAT-882). Absent ⇒ NULL ⇒ "no writer classified yet"."""
+    with_facet = {
+        "graph_id": "with_facet",
+        "metadata": {"name": "With Facet", "dimension_facet": "capital"},
+        "output": {"type": "scalar"},
+        "dependencies": {
+            "revenue": {"type": "extract", "source": {"standard_field": "revenue"}},
+        },
+    }
+    without_facet = {
+        "graph_id": "without_facet",
+        "metadata": {"name": "Without Facet"},
+        "output": {"type": "scalar"},
+        "dependencies": {
+            "revenue": {"type": "extract", "source": {"standard_field": "revenue"}},
+        },
+    }
+    monkeypatch.setattr(
+        "dataraum.graphs.metric_store._shipped_metric_definitions",
+        lambda _vertical: {"with_facet": with_facet, "without_facet": without_facet},
+    )
+    assert ensure_metrics_seeded(session, "finance") == 2
+    rows = {r.graph_id: r.dimension_facet for r in session.execute(select(Metric)).scalars()}
+    assert rows == {"with_facet": "capital", "without_facet": None}
+
+
+def test_seed_skips_a_metric_with_an_invalid_dimension_facet(
+    session: Session, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A bad ``dimension_facet`` value fails loud in ``_metric_row`` — caught by the
+    per-metric fault-isolation savepoint (DAT-732: "one bad metric must not sink the
+    seed"), so only THIS metric is skipped, never the whole batch."""
+    good = {
+        "graph_id": "good",
+        "metadata": {"name": "Good"},
+        "output": {"type": "scalar"},
+        "dependencies": {
+            "revenue": {"type": "extract", "source": {"standard_field": "revenue"}},
+        },
+    }
+    bad_facet = {
+        "graph_id": "bad_facet",
+        "metadata": {"name": "Bad Facet", "dimension_facet": "growth"},
+        "output": {"type": "scalar"},
+        "dependencies": {
+            "revenue": {"type": "extract", "source": {"standard_field": "revenue"}},
+        },
+    }
+    monkeypatch.setattr(
+        "dataraum.graphs.metric_store._shipped_metric_definitions",
+        lambda _vertical: {"good": good, "bad_facet": bad_facet},
+    )
+    seeded = ensure_metrics_seeded(session, "finance")
+    assert seeded == 1
+    graph_ids = {r.graph_id for r in session.execute(select(Metric)).scalars()}
+    assert graph_ids == {"good"}
+
+
+def test_finance_seed_has_zero_null_dimension_facets(session: Session) -> None:
+    """The shipped finance vertical assigns every metric a facet (DAT-855) — NULL
+    is reserved for a framed vertical mid-authoring, never a resting state here."""
+    ensure_metrics_seeded(session, "finance")
+    facets = {r.graph_id: r.dimension_facet for r in session.execute(select(Metric)).scalars()}
+    assert len(facets) == 16
+    nulls = [graph_id for graph_id, facet in facets.items() if facet is None]
+    assert nulls == []
+
+
 def test_seed_is_idempotent(session: Session) -> None:
     assert ensure_metrics_seeded(session, "finance") == 16
     # A re-run inserts nothing — never duplicates, never clobbers.

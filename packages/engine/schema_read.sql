@@ -133,6 +133,16 @@ WHERE EXISTS (
     AND h.run_id = r.run_id
 );
 
+DROP VIEW IF EXISTS __READ__.current_dimension_groundability;
+CREATE VIEW __READ__.current_dimension_groundability AS
+SELECT r.* FROM __WS__.dimension_groundability r
+WHERE EXISTS (
+  SELECT 1 FROM __WS__.metadata_snapshot_head h
+  WHERE h.target = 'catalog'
+    AND h.stage = 'operating_model'
+    AND h.run_id = r.run_id
+);
+
 DROP VIEW IF EXISTS __READ__.current_dimension_hierarchies;
 CREATE VIEW __READ__.current_dimension_hierarchies AS
 SELECT r.* FROM __WS__.dimension_hierarchies r
@@ -468,6 +478,12 @@ WHERE EXISTS (
 DROP VIEW IF EXISTS __READ__.validations;
 CREATE VIEW __READ__.validations AS
 SELECT * FROM __WS__.validations
+WHERE vertical = COALESCE(
+  (SELECT active_vertical FROM __WS__.workspace_settings), '_adhoc');
+
+DROP VIEW IF EXISTS __READ__.vertical_entities;
+CREATE VIEW __READ__.vertical_entities AS
+SELECT * FROM __WS__.vertical_entities
 WHERE vertical = COALESCE(
   (SELECT active_vertical FROM __WS__.workspace_settings), '_adhoc');
 

@@ -83,7 +83,8 @@ def test_graph_statement_binds_each_element_view_with_keys() -> None:
     assert "LABEL uses" in graph_sql
     assert "PROPERTIES (role)" in graph_sql
     # DAT-730 — the concept vertex carries the dimension-ordering fact.
-    assert "PROPERTIES (concept_id, vertical, name, kind, ordering)" in graph_sql
+    # DAT-855 — and the operating-model dimension-facet fact.
+    assert "PROPERTIES (concept_id, vertical, name, kind, ordering, dimension_facet)" in graph_sql
     # DAT-730 — the constant period-grain ladder vertex.
     assert "KEY (grain) LABEL period_grain" in graph_sql
     assert "PROPERTIES (grain, ordinal, fiscal_year_start_month, calendar_source)" in graph_sql
@@ -112,8 +113,12 @@ def test_graph_statement_binds_each_element_view_with_keys() -> None:
     assert "LABEL measured_in" in graph_sql
     assert "PROPERTIES (unit_source, self_denominated)" in graph_sql
     # DAT-732 — the metric node + its parameter node (declared default + derivation).
+    # DAT-855 — the metric vertex ALSO carries the operating-model dimension-facet fact.
     assert "KEY (graph_id) LABEL metric_node" in graph_sql
-    assert "PROPERTIES (graph_id, vertical, name, category, unit, output_type)" in graph_sql
+    assert (
+        "PROPERTIES (graph_id, vertical, name, category, unit, output_type,\n"
+        "                  dimension_facet)" in graph_sql
+    )
     assert "KEY (parameter_id) LABEL parameter_node" in graph_sql
     assert (
         "param_type, default_value,\n                  options, derivation, description"

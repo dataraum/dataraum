@@ -114,6 +114,11 @@ class CatalogueSemanticsAgent(LLMFeature):
             **inputs,
             "ontology_name": ontology,
             "ontology_concepts": self._ontology_loader.format_concepts_for_prompt(ontology_def),
+            # The declared table-entity taxonomy (DAT-724) — evidence for
+            # ``entity_type``, the free-text field this phase writes to
+            # ``table_entities.detected_entity_type``. Declared kinds give it something
+            # to ground against; a table matching none keeps free-text detection.
+            "entity_taxonomy": self._ontology_loader.format_entities_for_prompt(ontology_def),
             "required_standard_fields": (
                 "\n".join(f"- {field}" for field in required_fields)
                 if required_fields

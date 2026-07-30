@@ -26,9 +26,11 @@ from dataraum.analysis.semantic.convention_store import load_workspace_conventio
 from dataraum.analysis.semantic.db_models import (
     Concept,
     ConceptKind,
+    DimensionFacet,
     DimensionOrdering,
     WorkspaceSettings,
 )
+from dataraum.analysis.semantic.entity_store import load_workspace_entities
 from dataraum.analysis.semantic.envelope_store import load_workspace_envelope
 from dataraum.analysis.semantic.ontology import (
     OntologyConcept,
@@ -43,6 +45,7 @@ logger = get_logger(__name__)
 
 _VALID_KINDS: frozenset[str] = frozenset(k.value for k in ConceptKind)
 _VALID_ORDERINGS: frozenset[str] = frozenset(o.value for o in DimensionOrdering)
+_VALID_FACETS: frozenset[str] = frozenset(f.value for f in DimensionFacet)
 
 
 def _active_vertical(session: Session) -> str | None:
@@ -147,6 +150,15 @@ def ensure_concepts_seeded(session: Session, vertical: str) -> int:
                 f"concept '{c.name}' in vertical '{vertical}' declares an invalid ordering "
                 f"(got {c.ordering!r}); one of {sorted(_VALID_ORDERINGS)} or omit it."
             )
+        # dimension_facet (DAT-855): OPTIONAL, and if present must be a valid
+        # DimensionFacet value — born-loud, the same discipline as ``kind``/``ordering``.
+        # None ⇒ NULL ⇒ "no writer classified yet"; never inferred here.
+        if c.dimension_facet is not None and c.dimension_facet not in _VALID_FACETS:
+            raise ValueError(
+                f"concept '{c.name}' in vertical '{vertical}' declares an invalid "
+                f"dimension_facet (got {c.dimension_facet!r}); one of "
+                f"{sorted(_VALID_FACETS)} or omit it."
+            )
         rows.append(
             {
                 "vertical": vertical,
@@ -157,6 +169,7 @@ def ensure_concepts_seeded(session: Session, vertical: str) -> int:
                 "exclude_patterns": c.exclude_patterns or None,
                 "unit_from_concept": c.unit_from_concept,
                 "ordering": c.ordering,
+                "dimension_facet": c.dimension_facet,
                 "source": "seed",
             }
         )
@@ -220,6 +233,7 @@ def load_workspace_concepts(session: Session, vertical: str) -> OntologyDefiniti
             exclude_patterns=list(r.exclude_patterns or []),
             unit_from_concept=r.unit_from_concept,
             ordering=r.ordering,
+            dimension_facet=r.dimension_facet,
         )
         for r in rows
     ]
@@ -229,14 +243,20 @@ def load_workspace_concepts(session: Session, vertical: str) -> OntologyDefiniti
     # — the active concept set is a legitimate SUBSET (a superseded concept a
     # convention still names is stale text, not an authoring error), and
     # re-validation would crash the runtime read the moment a referenced concept is
-    # superseded. This bypass covers the DB conventions (DAT-789) and the DB envelope
-    # (DAT-883) alike: both are served verbatim, never re-linted at read time.
+    # superseded. This bypass covers the DB conventions (DAT-789), the DB envelope
+    # (DAT-883) and the DB entity taxonomy (DAT-724) alike: all served verbatim, never
+    # re-linted at read time — an entity naming a since-superseded concept is stale
+    # text, exactly as a convention naming one is.
     return OntologyDefinition.model_construct(
         name=envelope.name if envelope else effective,
         version=envelope.version if envelope else None,
         description=envelope.description if envelope else None,
         concepts=concepts,
         conventions=load_workspace_conventions(session, effective),
+        # Table-entity taxonomy (DAT-724): lifted here rather than at each consumer so
+        # the two table-grain agents, which already call this function for their
+        # concepts, receive it without a second read or a second scoping decision.
+        entities=load_workspace_entities(session, effective),
     )
 
 

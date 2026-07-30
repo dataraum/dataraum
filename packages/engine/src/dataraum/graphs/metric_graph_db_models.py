@@ -48,6 +48,7 @@ from uuid import uuid4
 from sqlalchemy import JSON, CheckConstraint, DateTime, Index, String, Text, text
 from sqlalchemy.orm import Mapped, mapped_column
 
+from dataraum.analysis.semantic.db_models import DimensionFacet
 from dataraum.storage import Base
 
 
@@ -89,6 +90,11 @@ class MetricParameterDerivation(StrEnum):
 _PARAMETER_DERIVATION_VALUES: tuple[str, ...] = tuple(
     sorted(v.value for v in MetricParameterDerivation)
 )
+
+# Dimension-facet vocabulary (DAT-855), imported from its single home
+# (``analysis.semantic.db_models.DimensionFacet``) so the CHECK on both ``Concept``
+# and ``Metric`` can never drift apart. Sorted for a deterministic CHECK string.
+_METRIC_FACET_VALUES: tuple[str, ...] = tuple(sorted(v.value for v in DimensionFacet))
 
 # Lifecycle-source vocabulary: only 'seed' has a live writer today
 # (:func:`dataraum.graphs.metric_store.ensure_metrics_seeded` — the shipped-vertical
@@ -145,6 +151,17 @@ class Metric(Base):
             + ")",
             name="source",
         ),
+        # Dimension-facet vocabulary (DAT-855): derived from the SAME
+        # ``DimensionFacet`` enum ``Concept.dimension_facet`` uses (one home). NULL-
+        # or-IN: NULL means ONLY "no writer has classified this metric yet" — the
+        # shipped finance vertical assigns every metric a facet, so NULL never
+        # appears there.
+        CheckConstraint(
+            "dimension_facet IS NULL OR dimension_facet IN ("
+            + ", ".join(f"'{v}'" for v in _METRIC_FACET_VALUES)
+            + ")",
+            name="dimension_facet",
+        ),
     )
 
     metric_id: Mapped[str] = mapped_column(String, primary_key=True, default=lambda: str(uuid4()))
@@ -162,6 +179,12 @@ class Metric(Base):
     description: Mapped[str | None] = mapped_column(Text)
     output: Mapped[dict[str, Any] | None] = mapped_column(JSON)
     dependencies: Mapped[dict[str, Any] | None] = mapped_column(JSON)
+    # Operating-model axis (DAT-855): which side of the operating model this metric
+    # classifies onto (see ``analysis.semantic.db_models.DimensionFacet`` — the same
+    # enum ``Concept.dimension_facet`` uses). Single-valued. NULL means ONLY "no
+    # writer classified yet". Closed vocab: see ck_metrics_dimension_facet. Exposed
+    # as the ``og_metrics.dimension_facet`` property.
+    dimension_facet: Mapped[str | None] = mapped_column(String)  # DimensionFacet
 
     # Lifecycle: workspace-persistent with supersession (NULL superseded_at = active).
     # Closed vocab: see ck_metrics_source — 'seed' is the one live writer.

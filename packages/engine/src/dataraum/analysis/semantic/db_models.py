@@ -97,6 +97,46 @@ class DimensionOrdering(StrEnum):
     NOMINAL = "nominal"
 
 
+class DimensionFacet(StrEnum):
+    """The operating-model axis a concept (or metric) classifies onto (DAT-855).
+
+    A typed fact on BOTH a concept and a metric — the same enum, one home, shared
+    across the two writers (``concept_store.py`` / ``graphs/metric_store.py``): which
+    side of the operating model a concept or metric belongs to, independent of its
+    ``kind``/``category``. Single-valued: a concept or metric names exactly one facet,
+    never a set — a measure that genuinely spans two facets is ``cross_cutting``, a
+    POSITIVE classification (not an "I couldn't decide" bucket).
+
+    - ``DEMAND`` — revenue-side: what customers buy (revenue).
+    - ``OFFER`` — cost-of-the-offer side: what it costs to produce/deliver
+      (cost_of_goods_sold).
+    - ``SUPPLY`` — reserved for a future supply-side classification (no shipped
+      finance concept maps here yet; the vocabulary slot exists so a later vertical
+      need not widen the CHECK).
+    - ``CAPACITY`` — reserved for a future capacity classification (same as SUPPLY).
+    - ``THROUGHPUT`` — reserved for a future throughput classification (same as SUPPLY).
+    - ``CAPITAL`` — balance-sheet / working-capital positions (accounts_receivable,
+      cash, equity, …).
+    - ``CROSS_CUTTING`` — applies across every facet rather than one (operating_expense,
+      fiscal_period, entity, tax, …) — a POSITIVE classification, not a default.
+
+    NULL means ONLY "no writer has classified this concept/metric yet" (a framed
+    vertical mid-authoring) — it is never a resting state for a shipped vertical: the
+    finance vertical assigns every concept and metric a facet, so NULL never appears
+    there. Seed-declarable via the vertical ontology (``OntologyConcept.
+    dimension_facet``) and the metric YAML's ``metadata.dimension_facet``; the cockpit
+    ``frame`` authoring path is a later lane.
+    """
+
+    DEMAND = "demand"
+    OFFER = "offer"
+    SUPPLY = "supply"
+    CAPACITY = "capacity"
+    THROUGHPUT = "throughput"
+    CAPITAL = "capital"
+    CROSS_CUTTING = "cross_cutting"
+
+
 class ConceptEdgePredicate(StrEnum):
     """The typed relation a concept edge asserts (DAT-729).
 
@@ -132,6 +172,7 @@ _CONCEPT_EDGE_PREDICATE_VALUES: tuple[str, ...] = tuple(
     sorted(v.value for v in ConceptEdgePredicate)
 )
 _DIMENSION_ORDERING_VALUES: tuple[str, ...] = tuple(sorted(v.value for v in DimensionOrdering))
+_DIMENSION_FACET_VALUES: tuple[str, ...] = tuple(sorted(v.value for v in DimensionFacet))
 
 
 def derive_table_role(
@@ -229,6 +270,16 @@ class Concept(Base):
             + ")",
             name="ordering",
         ),
+        # Dimension-facet vocabulary (DAT-855): derived from :class:`DimensionFacet` so
+        # the CHECK and enum can never drift. NULL-or-IN: NULL means ONLY "no writer has
+        # classified this concept yet" (a framed vertical mid-authoring) — the shipped
+        # finance vertical assigns every concept a facet, so NULL never appears there.
+        CheckConstraint(
+            "dimension_facet IS NULL OR dimension_facet IN ("
+            + ", ".join(f"'{v}'" for v in _DIMENSION_FACET_VALUES)
+            + ")",
+            name="dimension_facet",
+        ),
     )
 
     concept_id: Mapped[str] = mapped_column(String, primary_key=True, default=lambda: str(uuid4()))
@@ -246,6 +297,15 @@ class Concept(Base):
     # a wrong window. Time dimensions carry no fact (ordered by construction). Closed
     # vocab: see ck_concepts_ordering. Exposed as the ``og_concepts.ordering`` property.
     ordering: Mapped[str | None] = mapped_column(String)  # DimensionOrdering
+    # Operating-model axis (DAT-855): which side of the operating model this concept
+    # classifies onto — demand | offer | supply | capacity | throughput | capital |
+    # cross_cutting (see :class:`DimensionFacet`). Single-valued, never a set. NULL
+    # means ONLY "no writer classified yet" — never a resting state for a shipped
+    # vertical (finance assigns every concept a facet). ``cross_cutting`` is a
+    # POSITIVE classification (applies across every facet), not an "undecided"
+    # bucket. Closed vocab: see ck_concepts_dimension_facet. Exposed as the
+    # ``og_concepts.dimension_facet`` property.
+    dimension_facet: Mapped[str | None] = mapped_column(String)  # DimensionFacet
 
     # Lifecycle: workspace-persistent with supersession (NULL superseded_at = active).
     # Closed vocab: see ck_concepts_source — 'seed' | 'frame' are the two live writers.
@@ -507,6 +567,87 @@ class VerticalEnvelope(Base):
     superseded_at: Mapped[datetime | None] = mapped_column(DateTime)
 
 
+class VerticalEntity(Base):
+    """The vertical's declared TABLE-entity taxonomy — one home (DAT-724).
+
+    The table-grain sibling of :class:`Concept`. The vertical declared a rich
+    column-concept vocabulary but nothing about what a *table* can be, so
+    :attr:`TableEntity.detected_entity_type` was unconstrained LLM free text and the
+    fact/dimension bit was inferred blind against no declared alternative. These rows
+    are the vocabulary both now ground against.
+
+    **Declared, not detected — and distinct from** :class:`TableEntity`. That table is
+    the run-versioned DETECTION (what this run concluded about a physical table); this
+    one is the vertical's standing DECLARATION (what kinds of table the domain has),
+    which is why the name carries the ``vertical_`` prefix. They meet only in the
+    prompt: the declaration is served as evidence, and the detection is the answer.
+
+    **Identity contract — NOT run-versioned**, exactly as :class:`Concept`: a stable
+    node keyed by ``(vertical, name)`` with a workspace-stable surrogate minted once at
+    seed. Edits supersede rather than collide; the partial-unique index keeps at most
+    one active row per ``(vertical, name)`` so a head-free read is unambiguous.
+    """
+
+    __tablename__ = "vertical_entities"
+    __table_args__ = (
+        # At most one ACTIVE row per (vertical, name); superseded history rows are
+        # exempt. The Concept pattern — see uq_concept_active.
+        Index(
+            "uq_vertical_entity_active",
+            "vertical",
+            "name",
+            unique=True,
+            postgresql_where=text("superseded_at IS NULL"),
+            sqlite_where=text("superseded_at IS NULL"),
+        ),
+        # Closed-vocabulary enforcement: derived from :class:`TableRole`, the SAME
+        # single home the detected ``table_entities.table_role`` column uses — a
+        # declaration ABOUT that column must not drift into a parallel vocabulary.
+        # NULL-or-IN: NULL means only "no writer has classified this entity yet" (a
+        # framed vertical mid-authoring); a shipped vertical declares a role for every
+        # entity, and the seed refuses one that doesn't.
+        CheckConstraint(
+            "role IS NULL OR role IN (" + ", ".join(f"'{v}'" for v in _TABLE_ROLE_VALUES) + ")",
+            name="role",
+        ),
+        # Lifecycle-source vocabulary: 'seed' is the ONE live writer (``entity_store``).
+        # No 'frame' value until a cockpit authoring path actually writes one — a CHECK
+        # value with no writer is dead vocabulary (the ``ck_concepts_source`` note).
+        CheckConstraint("source IS NULL OR source IN ('seed')", name="source"),
+    )
+
+    vertical_entity_id: Mapped[str] = mapped_column(
+        String, primary_key=True, default=lambda: str(uuid4())
+    )
+    vertical: Mapped[str] = mapped_column(String, nullable=False)
+    name: Mapped[str] = mapped_column(String, nullable=False)
+
+    # The table role this entity kind takes — a TableRole value. Closed vocab: see
+    # ck_vertical_entities_role. EVIDENCE for the classifier and a label source; it is
+    # never fed to ``derive_table_role``, which keeps sole ownership of the structural
+    # periodic_snapshot refinement.
+    role: Mapped[str | None] = mapped_column(String)  # TableRole
+    description: Mapped[str | None] = mapped_column(Text)
+    # Concept names an instance of this entity is expected to carry. Stored as names
+    # (not concept_id FKs) for the same reason the run-versioned groundings key on
+    # (vertical, name): a concept edit supersedes its row, and an entity declaration
+    # must survive that without a dangling id. Empty ⇒ NULL.
+    concepts: Mapped[list[str] | None] = mapped_column(JSON)
+    # Business-cycle names this entity participates in — validated at seed against the
+    # typed ``cycle_types`` vocabulary (DAT-881). Empty ⇒ NULL.
+    cycles: Mapped[list[str] | None] = mapped_column(JSON)
+    # Physical-name hints served to the classifier. Never an engine-side string match.
+    aliases: Mapped[list[str] | None] = mapped_column(JSON)
+
+    # Lifecycle: workspace-persistent with supersession (NULL superseded_at = active).
+    # Closed vocab: see ck_vertical_entities_source — 'seed' is the one live writer.
+    source: Mapped[str | None] = mapped_column(String)
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime, nullable=False, default=lambda: datetime.now(UTC)
+    )
+    superseded_at: Mapped[datetime | None] = mapped_column(DateTime)
+
+
 class WorkspaceSettings(Base):
     """The workspace's bound active vertical — the one home DAT-848 was missing.
 
@@ -730,8 +871,11 @@ class ColumnConcept(Base):
             present — the meaning text states what is undetermined and what
             would settle it (the DAT-769 contract licenses this). NULL on rows
             written before the column existed (no backfill) and on rows without
-            a meaning (a coverage gap is not a judgment). No consumer branches
-            on it — it is queryable state, not a decision surface.
+            a meaning (a coverage gap is not a judgment). One consumer branches
+            on it: the DAT-620 groundability verdict reads ``'ambiguous'`` as
+            the agent's persisted abstention on the meaning
+            (``graphs/groundability.py``, opacity leg) — consuming the declared
+            ignorance, never overriding the judgment (ADR-0009).
         temporal_behavior: the resolved stock/flow ('additive' / 'point_in_time')
             for this column — data-determined (DAT-657): the resolved-layer pass
             writes the LLM claim reconciled with the data-grounded structural
@@ -931,10 +1075,12 @@ __all__ = [
     "ConceptEdgePredicate",
     "ConceptKind",
     "Convention",
+    "DimensionFacet",
     "DimensionOrdering",
     "SemanticAnnotation",
     "TableEntity",
     "TableRole",
+    "VerticalEntity",
     "WorkspaceCalendar",
     "WorkspaceSettings",
     "derive_table_role",

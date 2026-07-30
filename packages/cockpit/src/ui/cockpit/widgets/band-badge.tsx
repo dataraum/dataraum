@@ -100,3 +100,57 @@ export function BandBadge({
 	}
 	return badge;
 }
+
+// --- Coverage-map vocabulary (DAT-855 B2) -----------------------------------
+//
+// A SIBLING badge, not an overload of `BandBadge`: lit/partial/dark is the
+// coverage-map's own three-state read (does a REAL grounded metric cover this
+// operating-model dimension) — a different question than the entropy readiness
+// band above, which happens to share the word "partial" for an unrelated
+// meaning (partial MEASUREMENT coverage of a band, not partial dimension
+// coverage). Sharing the module, not the component, keeps the two vocabularies
+// from bleeding into each other while still giving shared visual vocabulary one
+// home (this module's own header rationale).
+
+const COVERAGE_STATE_COLOR: Record<string, string> = {
+	lit: "green",
+	partial: "yellow",
+	dark: "gray",
+};
+const COVERAGE_STATE_LABEL: Record<string, string> = {
+	lit: "Lit",
+	partial: "Partial",
+	dark: "Dark",
+};
+
+// Same defensive-lookup guard as `bandColor` above: `state` is persisted-derived
+// text passed through several layers, and a plain `RECORD[state]` lookup resolves
+// an inherited key (e.g. "constructor") through Object.prototype to a function —
+// truthy, so a `?? "gray"` fallback never fires and Mantine's color parser throws
+// deep inside render.
+function coverageStateColor(state: string): string {
+	return Object.hasOwn(COVERAGE_STATE_COLOR, state)
+		? COVERAGE_STATE_COLOR[state]
+		: "gray";
+}
+function coverageStateLabel(state: string): string {
+	return Object.hasOwn(COVERAGE_STATE_LABEL, state)
+		? COVERAGE_STATE_LABEL[state]
+		: state;
+}
+
+/** The coverage-map state badge: lit (green) / partial (yellow) / dark (gray).
+ *  ONE rendering everywhere the coverage lens shows a dimension's state. */
+export function CoverageStateBadge({ state }: { state: string }) {
+	return (
+		<Badge
+			color={coverageStateColor(state)}
+			variant="light"
+			size="sm"
+			tt="none"
+			data-testid={`coverage-state-badge-${state}`}
+		>
+			{coverageStateLabel(state)}
+		</Badge>
+	);
+}

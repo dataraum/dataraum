@@ -4,6 +4,7 @@ metadata:
   name: Days Payable Outstanding
   description: Average days to pay suppliers after purchase
   category: working_capital
+  dimension_facet: capital
   source: system
   tags:
   - ap

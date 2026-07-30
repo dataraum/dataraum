@@ -172,6 +172,14 @@ class SemanticAgent(LLMFeature):
             "tables_json": json.dumps(tables_json),
             "ontology_name": ontology,
             "ontology_concepts": self._ontology_loader.format_concepts_for_prompt(ontology_def),
+            # The declared table-entity taxonomy (DAT-724) — evidence for the
+            # fact/dimension answer, which until now was decided against no declared
+            # alternative. It PROPOSES: an undeclared table is classified on its data
+            # exactly as before, and the value never bypasses ``derive_table_role``,
+            # which keeps sole ownership of the structural periodic_snapshot
+            # refinement. ``load_workspace_concepts`` already lifted it onto the
+            # definition, so this costs no extra read.
+            "entity_taxonomy": self._ontology_loader.format_entities_for_prompt(ontology_def),
             "relationship_candidates": self._format_relationship_candidates(
                 relationship_candidates, graph_structure=graph_structure
             ),

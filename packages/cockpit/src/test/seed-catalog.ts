@@ -470,3 +470,155 @@ VALUES
 ON CONFLICT DO NOTHING;
 `;
 }
+
+/**
+ * A `metrics` config row carrying a `dimension_facet`, plus (optionally) its own
+ * lifecycle-artifact row — the coverage-map fixture (DAT-855 B2, `coverage-map-
+ * load.integration.test.ts`).
+ *
+ * Deliberately separate from `metricArtifactSeedSql`/`conceptSeedSql`'s existing
+ * `gross_margin`/`mtr_gm` rows rather than widening them: several OTHER suites
+ * assert on that row's exact shape (state='grounded', no facet), and
+ * `coverage-map-load.ts` groups grounding evidence by graph_id PREFIX (its own
+ * module header, point 3) — reusing a shared graph_id would let this fixture's
+ * grounding rows bleed into theirs and vice versa.
+ *
+ * `state: null` omits the lifecycle_artifacts row entirely (the "never even
+ * declared into a run" case); any other value inserts one row at that state.
+ *
+ * `superseded: true` (DAT-855 B2 spec-compliance fix) inserts the `metrics` row
+ * with a NON-NULL `superseded_at` — the retired-row regression fixture: `metrics`
+ * is supersession-versioned (`uq_metric_active`, active row = `superseded_at IS
+ * NULL`), and the raw Drizzle mirror `coverage-map-load.ts` reads carries every row
+ * ever written, so the loader itself must filter to the active one. Mints a
+ * DISTINCT `metric_id` (`..._superseded`) so calling this twice for the SAME
+ * `graphId` — a superseded row plus its live successor, possibly under a
+ * DIFFERENT facet — inserts two rows rather than colliding on conflict.
+ */
+export interface CoverageMetricSeedOptions {
+	graphId: string;
+	name?: string;
+	dimensionFacet: string | null;
+	state?: "declared" | "grounded" | "executed" | "canonical" | null;
+	stateReason?: string | null;
+	runId?: string;
+	superseded?: boolean;
+}
+
+export function coverageMetricSeedSql(opts: CoverageMetricSeedOptions): string {
+	const {
+		graphId,
+		name = graphId,
+		dimensionFacet,
+		state = null,
+		stateReason = null,
+		runId = RUN_ID,
+		superseded = false,
+	} = opts;
+	const metricId = superseded
+		? `mtr_cov_${graphId}_superseded`
+		: `mtr_cov_${graphId}`;
+	const facetSql = dimensionFacet === null ? "NULL" : `'${dimensionFacet}'`;
+	const supersededAtSql = superseded ? ts : "NULL";
+	const stateReasonSql =
+		stateReason === null ? "NULL" : `'${stateReason.replaceAll("'", "''")}'`;
+	const lifecycleSql =
+		state === null
+			? ""
+			: `
+INSERT INTO lifecycle_artifacts (
+  artifact_id, artifact_type, artifact_key, run_id, state, state_reason,
+  stage, created_at, state_changed_at)
+VALUES (
+  'art_cov_${graphId}', 'metric', '${graphId}', '${runId}', '${state}',
+  ${stateReasonSql}, 'operating_model', ${ts}, ${ts})
+ON CONFLICT DO NOTHING;
+`;
+
+	return `
+SET search_path TO engine;
+
+INSERT INTO metrics (metric_id, vertical, graph_id, name, dimension_facet,
+                     source, created_at, superseded_at)
+VALUES ('${metricId}', '_adhoc', '${graphId}', '${name}', ${facetSql},
+        'seed', ${ts}, ${supersededAtSql})
+ON CONFLICT DO NOTHING;
+${lifecycleSql}`;
+}
+
+/**
+ * ONE clean `sql_snippets` row sourced `graph:<graphId>` — the coverage-map's
+ * grounding-evidence fixture. Deliberately a single, isolated row per call rather
+ * than reusing `graphSnippetSeedSql`'s fixed 4-row shape: that shape bakes in an
+ * unrelated failed `shrinkage` extract under every graph_id it is given, which
+ * would corrupt a coverage-map LIT fixture (a graph_id-prefix reader has no way to
+ * tell that failure apart from the metric's own).
+ */
+export interface CoverageGroundingSeedOptions {
+	snippetId: string;
+	graphId: string;
+	workspaceId: string;
+	snippetType?: "extract" | "formula";
+	standardField?: string | null;
+	failed?: boolean;
+	failureReason?: string | null;
+}
+
+export function coverageGroundingSeedSql(
+	opts: CoverageGroundingSeedOptions,
+): string {
+	const {
+		snippetId,
+		graphId,
+		workspaceId,
+		snippetType = "formula",
+		standardField = null,
+		failed = false,
+		failureReason = null,
+	} = opts;
+	const provenance = failed
+		? JSON.stringify({
+				failure_mode: "verifier_rejected",
+				failure_reason: failureReason ?? "grounding failed",
+			})
+		: JSON.stringify({ column_mappings_basis: {}, assumptions: [] });
+	const standardFieldSql =
+		standardField === null ? "NULL" : `'${standardField}'`;
+
+	return `
+SET search_path TO engine;
+
+INSERT INTO sql_snippets (
+  snippet_id, workspace_id, snippet_type, standard_field, schema_mapping_id,
+  sql, description, source, provenance, execution_count, failure_count,
+  created_at, updated_at)
+VALUES (
+  '${snippetId}', '${workspaceId}', '${snippetType}', ${standardFieldSql},
+  '${workspaceId}', 'SELECT 1', 'coverage-map fixture snippet',
+  'graph:${graphId}', '${provenance.replaceAll("'", "''")}'::json,
+  0, ${failed ? 1 : 0}, ${ts}, ${ts})
+ON CONFLICT DO NOTHING;
+`;
+}
+
+/**
+ * ONE `metric_derives_from` row (DAT-732) — the metric-graph_id → concept-name
+ * bridge `coverage-map-load.ts` reads to check reconciliation disagreement (DAT-855
+ * B2 spec-compliance fix: `current_concept_reconciliation` is keyed by CONCEPT
+ * NAME, a namespace disjoint from a metric's own `graph_id`; without this edge the
+ * loader has no way to know which concept(s) a metric derives from).
+ */
+export function metricDerivesFromSeedSql(
+	graphId: string,
+	conceptName: string,
+): string {
+	const edgeId = `mdf_cov_${graphId}_${conceptName}`;
+	return `
+SET search_path TO engine;
+
+INSERT INTO metric_derives_from (edge_id, vertical, graph_id, concept_name,
+                                 created_at)
+VALUES ('${edgeId}', '_adhoc', '${graphId}', '${conceptName}', ${ts})
+ON CONFLICT DO NOTHING;
+`;
+}

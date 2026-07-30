@@ -16,12 +16,15 @@ from typing import TYPE_CHECKING
 
 import pytest
 
+from dataraum.graphs import boundary_resolver
+from dataraum.graphs.additivity_resolver import ServedRelation
 from dataraum.graphs.boundary_resolver import (
     PeriodBinding,
     ReportingCalendar,
     _advance,
     _bind_to_close,
     _latest_close,
+    _StockAxis,
     compose_period_binding,
     resolve_period_binding,
 )
@@ -361,6 +364,113 @@ def test_no_relation_makes_no_binding(
         )
         is None
     )
+
+
+# ---------------------------------------------------------------------------
+# The anchor-mismatch guard (DAT-893)
+#
+# DAT-893's writer fix makes this unreachable on a clean corpus: the anchor is now
+# resolved from the measure's OWN table, and enriched views serve fact columns
+# under their original names. It is kept — and tested by constructing the mismatch
+# directly — because the anchor arrives from a read surface this module does not
+# own. Anything that designates an anchor a served relation does not carry must be
+# NAMED here, not reported as an absence.
+# ---------------------------------------------------------------------------
+
+
+def _resolve_with_stocks(
+    monkeypatch: pytest.MonkeyPatch,
+    session: Session,
+    duckdb_conn: duckdb.DuckDBPyConnection,
+    stocks: list[_StockAxis],
+    relation: str = "enriched_balance_sheet",
+) -> PeriodBinding | str | None:
+    """Drive ``_resolve`` past its read surface with a constructed stock-axis read.
+
+    Only the two reads that need Postgres are replaced — the served-relation lookup and
+    the per-view axis read. Everything after them is the real code path.
+    """
+    monkeypatch.setattr(
+        boundary_resolver,
+        "served_relation",
+        lambda _session, _relation: ServedRelation(
+            columns_table_id="view_1", fact_table_id="fact_1"
+        ),
+    )
+    monkeypatch.setattr(
+        boundary_resolver,
+        "_read_stock_axes",
+        lambda _session, _schema, _view_id, _cols: ({"stock"}, stocks),
+    )
+    return boundary_resolver._resolve(
+        session,
+        duckdb_conn,
+        relation,
+        "SUM(balance)",
+        "ws_test_read",
+        _CALENDAR_YEAR,
+    )
+
+
+def test_an_anchor_not_served_on_the_relation_names_the_mismatch(
+    monkeypatch: pytest.MonkeyPatch, session: Session, duckdb_conn: duckdb.DuckDBPyConnection
+) -> None:
+    """THE DAT-893 shape: a designated anchor belonging to a DIFFERENT relation.
+
+    The live defect recorded the reconciliation evidence's axis (journal lines'
+    ``entry_id__date``) as a balance-sheet stock's anchor. The reason must name the axis
+    AND the relation — a reader who sees only "no anchor time axis" goes hunting the
+    table's ``time_columns``, which are fine; the fault is at whoever recorded it.
+    """
+    reason = _resolve_with_stocks(
+        monkeypatch,
+        session,
+        duckdb_conn,
+        [_StockAxis(axis=None, grain=None, recorded="entry_id__date")],
+    )
+
+    assert isinstance(reason, str)
+    assert "entry_id__date" in reason
+    assert "enriched_balance_sheet" in reason
+    # It must NOT degrade to the absence message — that is a different fact.
+    assert "no anchor time axis" not in reason
+
+
+def test_no_anchor_designated_at_all_still_reports_an_absence(
+    monkeypatch: pytest.MonkeyPatch, session: Session, duckdb_conn: duckdb.DuckDBPyConnection
+) -> None:
+    """The mirror: nothing was ever designated, so there is no mismatch to name.
+
+    Pins the discrimination in both directions — the guard must not swallow the
+    absence case and start inventing a relation mismatch that does not exist.
+    """
+    reason = _resolve_with_stocks(
+        monkeypatch, session, duckdb_conn, [_StockAxis(axis=None, grain=None, recorded=None)]
+    )
+
+    assert reason == "point-in-time measure has no anchor time axis to bind a reporting instant on"
+
+
+def test_one_measures_unservable_anchor_is_not_hidden_by_anothers_good_one(
+    monkeypatch: pytest.MonkeyPatch, session: Session, duckdb_conn: duckdb.DuckDBPyConnection
+) -> None:
+    """A second stock's unservable anchor must not ride along on the first's.
+
+    Binding the instant the resolvable axis yields would silently misstate the operand
+    whose own axis this relation cannot carry.
+    """
+    reason = _resolve_with_stocks(
+        monkeypatch,
+        session,
+        duckdb_conn,
+        [
+            _StockAxis(axis="period", grain="month", recorded="period"),
+            _StockAxis(axis=None, grain=None, recorded="entry_id__date"),
+        ],
+    )
+
+    assert isinstance(reason, str)
+    assert "entry_id__date" in reason
 
 
 # ---------------------------------------------------------------------------

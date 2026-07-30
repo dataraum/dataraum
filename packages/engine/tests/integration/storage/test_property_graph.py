@@ -228,8 +228,14 @@ def _seed(engine: Engine) -> None:
     # fixture doesn't seed a TableEntity.time_columns axis, so there is nothing to
     # resolve (DAT-778's honest-NULL case). measure_slice_column_id /
     # event_slice_column_id are NOT NULL (sourced from SliceDefinition.column_id in
-    # the real writer): 'c_k1' stands in for both, same as the real writer would use
-    # when measure_table_id == event_table_id.
+    # the real writer): 'c_k1'/'c_k4' stand in for the two sides' physical slice columns.
+    #
+    # The two sides carry DIFFERENT axis names on DIFFERENT tables, which is the only
+    # shape the real processor can produce (it skips self-pairs and requires a strictly
+    # finer event side) and the only shape that can tell the two fields apart. DAT-893:
+    # the anchor must resolve the MEASURE side ('period_date', an axis of t1 — the table
+    # carrying the measure), never the event side ('posted_at', an axis of the evidence
+    # fact t4, which t1's own relation does not serve).
     stmts.append(
         "INSERT INTO measure_aggregation_lineage "
         "(lineage_id, run_id, measure_table_id, measure_column_id, event_table_id, "
@@ -238,8 +244,8 @@ def _seed(engine: Engine) -> None:
         " slice_dimension, convention_sql, period_grain, pattern, match_rate, "
         " r_flow_median, r_stock_median, n_entities, n_entities_fired, "
         " sign_fired_primary, sign_fired_mirror, sign_fired_both, created_at) "
-        f"VALUES ('mal_amt', '{RUN}', 't1', 'c_amt', 't1', "
-        f"'period_date', 'period_date', 'c_k1', 'c_k1', "
+        f"VALUES ('mal_amt', '{RUN}', 't1', 'c_amt', 't4', "
+        f"'period_date', 'posted_at', 'c_k1', 'c_k4', "
         f"'month', 'SUM(amount)', "
         f"'month', 'per_period', 1.0, 0.9, 0.1, 10, 10, 10, 0, 0, '{TS}')"
     )
@@ -495,16 +501,17 @@ def _metric_dag_stmts() -> list[str]:
       (``ghost_concept``) — the og_derives_from INNER JOIN must DROP it (the graph
       never dangles, the og_grounded_by discipline);
     * carries a ``days_in_period`` parameter whose ``derivation`` marker is
-      ``period_grain`` and whose declared default (30) round-trips as a property.
+      ``period_grain`` and whose declared default (30) round-trips as a property;
+    * carries dimension_facet='capital' (DAT-855), projected on the metric_node vertex.
 
     All rows are ``vertical='finance'`` so the _VERTICAL_SCOPED read views (bound to
     finance in this seed) surface them.
     """
     return [
         "INSERT INTO metrics (metric_id, vertical, graph_id, name, category, unit, "
-        " output_type, version, source, created_at) "
+        " output_type, version, dimension_facet, source, created_at) "
         f"VALUES ('m_wc', 'finance', 'working_capital_metric', 'Working Capital Metric', "
-        f"'working_capital', 'days', 'scalar', '1.0', 'seed', '{TS}')",
+        f"'working_capital', 'days', 'scalar', '1.0', 'capital', 'seed', '{TS}')",
         "INSERT INTO metric_parameters (parameter_id, vertical, graph_id, name, param_type, "
         " default_value, options, description, derivation, source, created_at) "
         f"VALUES ('mp_dip', 'finance', 'working_capital_metric', 'days_in_period', 'integer', "
@@ -578,7 +585,8 @@ def _coverage_and_rollup_stmts() -> list[str]:
     - a ``drilldown`` dimension_hierarchies row over c_k1→c_k2→c_k3 (levels 2→1→0,
       finer→coarser) plus a level-3 member with NO catalog column ('') to prove the
       skip, and an ``alias`` row to prove kind!='drilldown' emits no rolls_up_to.
-    - a ``dimension`` concept carrying ordering='ordered' (the DAT-730 typed fact).
+    - a ``dimension`` concept carrying ordering='ordered' (the DAT-730 typed fact)
+      and dimension_facet='capital' (the DAT-855 typed fact).
     """
     import json
 
@@ -649,10 +657,13 @@ def _coverage_and_rollup_stmts() -> list[str]:
         f"VALUES ('dh_2', '{RUN}', 't4', 'alias', '{alias_members}'::json, "
         f"'division_id', 'alias:t4:division', 'g3', false, '{TS}')"
     )
-    # A dimension concept carrying the DAT-730 ordering fact (og_concepts.ordering).
+    # A dimension concept carrying the DAT-730 ordering fact (og_concepts.ordering)
+    # and the DAT-855 dimension_facet fact (og_concepts.dimension_facet).
     stmts.append(
-        "INSERT INTO concepts (concept_id, vertical, name, kind, ordering, created_at) "
-        f"VALUES ('con_sev', 'finance', 'severity', 'dimension', 'ordered', '{TS}')"
+        "INSERT INTO concepts (concept_id, vertical, name, kind, ordering, "
+        "dimension_facet, created_at) "
+        f"VALUES ('con_sev', 'finance', 'severity', 'dimension', 'ordered', "
+        f"'capital', '{TS}')"
     )
     return stmts
 
@@ -1181,9 +1192,14 @@ def test_measure_column_matches_its_materialization(graph_engine: Engine) -> Non
 
 
 def test_measure_anchor_time_axis_prefers_the_witness(graph_engine: Engine) -> None:
-    """DAT-780 Gap 2: a measure's anchor is the DAT-778 witness event-side axis where
-    a witness exists — precedence over the table's declared anchor, expressed by the
-    COALESCE order (mirrors materialization's witness-over-claim precedence)."""
+    """DAT-780 Gap 2: a measure's anchor is the DAT-778 witness axis where a witness
+    exists — precedence over the table's declared anchor, expressed by the COALESCE
+    order (mirrors materialization's witness-over-claim precedence).
+
+    DAT-893 pins WHICH witness axis: the MEASURE side. The fixture's witness row spans
+    two tables with two different axis names, so this discriminates — reading the event
+    side would return 'posted_at' here.
+    """
     sql = (
         f"SELECT anchor FROM GRAPH_TABLE ({_graph_ref()} "
         # Scope to the typed fact vertex: DAT-811 adds an enriched 'amount' vertex on
@@ -1193,9 +1209,36 @@ def test_measure_anchor_time_axis_prefers_the_witness(graph_engine: Engine) -> N
     )
     with graph_engine.connect() as conn:
         rows = conn.execute(text(sql)).all()
-    # c_amt's witness row set event_time_axis_column='period_date'; it wins over t1's
-    # declared anchor 'txn_date'.
+    # c_amt's witness row set measure_time_axis_column='period_date' (an axis of t1, the
+    # measure's own table); it wins over t1's declared anchor 'txn_date'.
     assert rows == [("period_date",)]
+
+
+def test_measure_anchor_time_axis_is_never_the_evidence_relations_axis(
+    graph_engine: Engine,
+) -> None:
+    """DAT-893: the witness's EVENT-side axis must never become the measure's anchor.
+
+    A lineage row spans two tables, so its event axis names a column of the EVIDENCE
+    fact. Both anchor consumers key the name against the served columns of the measure's
+    own relation, so recording it there makes the measure unbindable — the live defect:
+    balance_sheet.ending_balance anchored to journal-lines 'entry_id__date', the period
+    binder abstained, and the extract composed SELECT NULL AS value.
+
+    Asserted on BOTH vertices: the typed measure and the enriched served column that
+    resolves its semantics through the same source (DAT-811).
+    """
+    sql = (
+        f"SELECT table_id, anchor FROM GRAPH_TABLE ({_graph_ref()} "
+        "MATCH (c IS column_node WHERE c.column_name = 'amount') "
+        "COLUMNS (c.table_id AS table_id, c.anchor_time_axis AS anchor))"
+    )
+    with graph_engine.connect() as conn:
+        # A LIST, not a dict: a duplicate vertex would collapse silently into a dict and
+        # the KEY-uniqueness this view must hold would go unasserted.
+        rows = sorted(conn.execute(text(sql)).all())
+    # 'posted_at' — the event side — must appear on neither.
+    assert rows == [("t1", "period_date"), ("t_enr", "period_date")]
 
 
 def test_measure_anchor_time_axis_falls_back_to_declared_anchor(graph_engine: Engine) -> None:
@@ -2211,6 +2254,22 @@ def test_concept_ordering_property_is_queryable(graph_engine: Engine) -> None:
     assert rows["accounts_payable"] is None
 
 
+def test_concept_dimension_facet_property_is_queryable(graph_engine: Engine) -> None:
+    """dimension_facet (DAT-855): the operating-model axis fact rides the concept
+    vertex — a declared value where classified, NULL (⇒ "no writer classified yet")
+    otherwise."""
+    sql = (
+        f"SELECT name, dimension_facet FROM GRAPH_TABLE ({_graph_ref()} "
+        "MATCH (c IS concept_node) "
+        "COLUMNS (c.name AS name, c.dimension_facet AS dimension_facet))"
+    )
+    with graph_engine.connect() as conn:
+        rows = {r.name: r.dimension_facet for r in conn.execute(text(sql))}
+    assert rows["severity"] == "capital"
+    # A concept with no declared facet carries NULL.
+    assert rows["accounts_payable"] is None
+
+
 # --- DAT-731: additivity projection + measured_in units ---------------------------
 
 
@@ -2351,16 +2410,19 @@ def test_measured_in_edge_resolves_the_unit_column(graph_engine: Engine) -> None
 
 
 def test_metric_node_carries_its_declared_metadata(graph_engine: Engine) -> None:
-    """metric_node: one vertex per declared metric, over the typed home."""
+    """metric_node: one vertex per declared metric, over the typed home. Also carries
+    the DAT-855 dimension_facet fact."""
     sql = (
-        f"SELECT gid, name, unit, otype FROM GRAPH_TABLE ({_graph_ref()} "
+        f"SELECT gid, name, unit, otype, facet FROM GRAPH_TABLE ({_graph_ref()} "
         "MATCH (m IS metric_node) "
         "COLUMNS (m.graph_id AS gid, m.name AS name, m.unit AS unit, "
-        "m.output_type AS otype))"
+        "m.output_type AS otype, m.dimension_facet AS facet))"
     )
     with graph_engine.connect() as conn:
-        rows = {(r.gid, r.name, r.unit, r.otype) for r in conn.execute(text(sql))}
-    assert rows == {("working_capital_metric", "Working Capital Metric", "days", "scalar")}
+        rows = {(r.gid, r.name, r.unit, r.otype, r.facet) for r in conn.execute(text(sql))}
+    assert rows == {
+        ("working_capital_metric", "Working Capital Metric", "days", "scalar", "capital")
+    }
 
 
 def test_derives_from_binds_metric_to_its_extracted_concepts(graph_engine: Engine) -> None:

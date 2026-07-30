@@ -29,6 +29,7 @@ import pytest
 from sqlalchemy import Engine, text
 from sqlalchemy.orm import Session, sessionmaker
 
+from dataraum.analysis.lineage.db_models import MeasureAggregationLineage
 from dataraum.analysis.semantic.db_models import ColumnConcept, TableEntity
 from dataraum.analysis.temporal.db_models import TemporalColumnProfile
 from dataraum.analysis.views.db_models import EnrichedView
@@ -39,7 +40,13 @@ from dataraum.graphs.boundary_resolver import (
     resolve_period_binding,
 )
 from dataraum.graphs.formula_composer import compose_extract_sql, extract_parts_dict
-from dataraum.graphs.models import ExtractGroundingOutput, GraphProvenanceOutput
+from dataraum.graphs.models import (
+    ExtractGroundingOutput,
+    FailedSnippetProvenance,
+    GraphProvenanceOutput,
+    NoSupportClass,
+    SnippetFailureMode,
+)
 from dataraum.query.snippet_models import SQLSnippetRecord
 from dataraum.server.workspace import schema_name_for
 from dataraum.storage import Column, Table
@@ -569,3 +576,219 @@ def test_flow_on_an_unserved_relation_is_still_left_alone(
         )
         is None
     )
+
+
+# ---------------------------------------------------------------------------
+# DAT-893: the anchor a reconciliation witness designates
+# ---------------------------------------------------------------------------
+
+
+def _seed_lineage_witness(session: Session, *, measure_axis: str, event_axis: str) -> None:
+    """Seed a DAT-778 reconciliation witness for the balance-sheet stock measure.
+
+    The live corpus shape: the ending balance reconciles against the journal-lines
+    detail, so the witness spans TWO tables and its two axis fields name columns on two
+    DIFFERENT relations — which is the only shape the processor can produce (it skips
+    self-pairs and requires a strictly finer event side). ``pattern='cumulative'`` keeps
+    the witness posterior agreeing with the concept prior that this is a stock; a
+    ``per_period`` witness would outrank it and make the measure a flow.
+    """
+    session.add(
+        Table(
+            table_id="t_jl",
+            source_id=SRC,
+            table_name="journal_lines",
+            layer="typed",
+            duckdb_path="journal_lines",
+        )
+    )
+    session.add_all(
+        [
+            Column(table_id="t_jl", column_name="entry_id__date", column_position=1),
+            Column(table_id="t_jl", column_name="account_id", column_position=2),
+        ]
+    )
+    session.flush()
+    balance_col = (
+        session.query(Column)
+        .filter(Column.table_id == "t_bs", Column.column_name == "balance")
+        .one()
+    )
+    period_col = (
+        session.query(Column)
+        .filter(Column.table_id == "t_bs", Column.column_name == "period")
+        .one()
+    )
+    event_key = (
+        session.query(Column)
+        .filter(Column.table_id == "t_jl", Column.column_name == "account_id")
+        .one()
+    )
+    session.add(
+        MeasureAggregationLineage(
+            lineage_id="mal_bs",
+            run_id=RUN,
+            measure_table_id="t_bs",
+            measure_column_id=balance_col.column_id,
+            event_table_id="t_jl",
+            measure_time_axis_column=measure_axis,
+            event_time_axis_column=event_axis,
+            measure_slice_column_id=period_col.column_id,
+            event_slice_column_id=event_key.column_id,
+            slice_dimension="account",
+            convention_sql="SUM(amount)",
+            period_grain="month",
+            pattern="cumulative",
+            match_rate=1.0,
+            r_flow_median=0.9,
+            r_stock_median=0.05,
+            n_entities=10,
+            n_entities_fired=10,
+            sign_fired_primary=10,
+            sign_fired_mirror=0,
+            sign_fired_both=0,
+            created_at=TS,
+        )
+    )
+    session.commit()
+
+
+def test_a_reconciled_stock_binds_on_its_own_relations_axis(
+    integration_engine: Engine,
+    pg_session: Session,
+    duckdb_conn: duckdb.DuckDBPyConnection,
+) -> None:
+    """THE DAT-893 defect, end to end: a reconciled stock must still bind.
+
+    Undeclared calendar (the stamped January default) + a snapshot relation + a stock
+    measure whose witness reconciled against the journal-lines detail. Before the fix the
+    anchor resolved the witness's EVENT-side axis — ``entry_id__date``, a column of the
+    evidence relation that ``balance_sheet`` does not serve — so the binder could place
+    no boundary, abstained, and the extract composed ``SELECT NULL AS value``, taking
+    DSO/DPO/DIO/CCC/current_ratio with it.
+
+    The witness must still WIN (it outranks the declaration, DAT-780); what changes is
+    which of its two axes it contributes. Here both point at ``period`` in the end, so
+    the assertion that discriminates is that a binding exists AT ALL.
+    """
+    _seed(pg_session)
+    _seed_lineage_witness(pg_session, measure_axis="period", event_axis="entry_id__date")
+    _create_balance_sheet(duckdb_conn)
+    _boot(integration_engine)
+
+    bound = _resolve(pg_session, duckdb_conn)
+
+    assert isinstance(bound, PeriodBinding), bound
+    assert bound.axis == "period"
+    assert bound.as_of == YEAR_END
+    assert bound.calendar_source == "default"
+
+
+def test_the_reconciled_stock_extract_computes_a_real_value(
+    integration_engine: Engine,
+    pg_session: Session,
+    duckdb_conn: duckdb.DuckDBPyConnection,
+) -> None:
+    """The observable behind the fix: a NUMBER, not ``SELECT NULL AS value``.
+
+    Composes the binding the way the agent does and runs the result against the live
+    relation. The seeded balances are ``100 + index``, so the FY2025 year-end row
+    (2025-12-01, index 11) is 111.0 — pinned, so a binding that lands on the wrong
+    period cannot pass either.
+    """
+    _seed(pg_session)
+    _seed_lineage_witness(pg_session, measure_axis="period", event_axis="entry_id__date")
+    _create_balance_sheet(duckdb_conn)
+    _boot(integration_engine)
+
+    bound = _resolve(pg_session, duckdb_conn)
+    assert isinstance(bound, PeriodBinding), bound
+    composed = compose_period_binding(
+        _grounding_output(), [], bound, {"period", "balance"}, duckdb_conn
+    )
+    assert composed.abstain is None
+
+    sql = compose_extract_sql("SUM(balance)", "balance_sheet", composed.where)
+    value = duckdb_conn.execute(sql).fetchone()
+
+    assert value is not None
+    assert value[0] == 111.0
+
+
+def test_an_anchor_from_another_relation_persists_the_named_reason(
+    integration_engine: Engine,
+    pg_session: Session,
+    duckdb_conn: duckdb.DuckDBPyConnection,
+) -> None:
+    """The constructed mismatch, and its reason's trip through the read surface.
+
+    DAT-893's writer fix makes this unreachable through the witness for a measure that is
+    its fact's own column, so the mismatch is constructed directly: an anchor naming a
+    column the served relation does not carry. Two things must hold — the binder NAMES
+    the axis and the relation rather than reporting an absence, and the reason survives
+    ``current_groundings``, where ``failure_reason`` alone would say only "no support".
+
+    Scope, precisely: this covers the resolver and the provenance ROUND-TRIP (the record
+    is written the way the agent writes it, then read back off the view). It does NOT
+    drive ``_save_failed_snippet`` — that wire is covered by the unit case
+    ``test_the_abstain_reason_reaches_the_persisted_failure_provenance``, which calls the
+    real writer. The two together cover the path; neither does alone.
+    """
+    _seed(pg_session)
+    # The anchor now names an axis of the EVIDENCE relation — exactly what the old view
+    # expression served for balance_sheet.ending_balance.
+    _seed_lineage_witness(pg_session, measure_axis="entry_id__date", event_axis="entry_id__date")
+    _create_balance_sheet(duckdb_conn)
+    _boot(integration_engine)
+
+    reason = _resolve(pg_session, duckdb_conn)
+
+    assert isinstance(reason, str)
+    assert "entry_id__date" in reason
+    assert "balance_sheet" in reason
+    assert "no anchor time axis" not in reason
+
+    composed = compose_period_binding(
+        _grounding_output(), [], reason, {"period", "balance"}, duckdb_conn
+    )
+    assert composed.abstain == reason
+
+    pg_session.add(
+        SQLSnippetRecord(
+            workspace_id=WS_ID,
+            schema_mapping_id=WS_ID,
+            snippet_type="extract",
+            standard_field="accounts_payable",
+            statement="balance_sheet",
+            aggregation="sum",
+            sql="SELECT NULL AS value",
+            source="graph:dpo",
+            failure_count=1,
+            provenance=FailedSnippetProvenance(
+                failure_mode=SnippetFailureMode.VERIFIER_REJECTED,
+                failure_reason="no support: aggregation returned NULL",
+                # DAT-658 folded DAT-893's composition_abstain into the no-support
+                # vocabulary: the abstention is the typed cause class, its reason
+                # the evidence — one read for "why did this grounding fail".
+                no_support_class=NoSupportClass.COMPOSITION_ABSTAINED,
+                no_support_evidence=composed.abstain,
+            ).model_dump(mode="json"),
+            parts=extract_parts_dict("NULL", None, [], None),
+        )
+    )
+    pg_session.commit()
+
+    row = pg_session.execute(
+        text(  # noqa: S608 - internal identifier
+            f"SELECT failed, provenance"
+            f' FROM "{read_schema_name_for(schema_name_for(WS_ID))}".current_groundings'
+            f" WHERE concept = 'accounts_payable'"
+        )
+    ).one()
+
+    assert row[0] is True
+    # The verifier's generic text alone would send a reader hunting the SQL; the cause
+    # rides beside it, unchanged, on the same row.
+    assert row[1]["failure_reason"] == "no support: aggregation returned NULL"
+    assert row[1]["no_support_class"] == "composition_abstained"
+    assert row[1]["no_support_evidence"] == reason

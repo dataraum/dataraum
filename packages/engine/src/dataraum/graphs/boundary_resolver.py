@@ -199,10 +199,21 @@ class BindingComposition:
 
 @dataclass(frozen=True)
 class _StockAxis:
-    """A stock measure's anchor axis and that axis's detected cadence."""
+    """A stock measure's anchor axis and that axis's detected cadence.
+
+    ``recorded`` is the anchor name as ``og_columns`` RECORDED it; ``axis`` is that name
+    RESOLVED against the served relation's own columns. They differ in exactly one case
+    and it is the one worth naming: an anchor was designated, but it is not a column of
+    the relation being served (DAT-893). Keeping both lets the caller tell that apart
+    from "no anchor was ever designated", which is a different fact and a different
+    disclosure.
+    """
 
     axis: str | None
     grain: str | None
+    # No default: omitting it would silently disable the mismatch guard, which is the
+    # one thing this field exists for.
+    recorded: str | None
 
 
 def read_reporting_calendar(session: Session, read_schema: str) -> ReportingCalendar | None:
@@ -315,6 +326,34 @@ def _resolve(
         # A single extract aggregating BOTH a stock and a flow has no one instant to be
         # "as of" — binding either way would misstate the other half.
         return "extract mixes stock and flow measures — no single point-in-time instant applies"
+    # A DESIGNATED anchor that is not a column of the relation we are serving (DAT-893).
+    # Structurally distinct from "no anchor was designated" and it must say so: the
+    # anchor is a real designation, it simply belongs to another relation, so the fix is
+    # at whoever recorded it — not at the calendar, the cadence, or the grounding. The
+    # generic reason below sent every reader of a failed stock extract hunting the wrong
+    # cause. Checked BEFORE the emptiness test so a mismatch is never reported as an
+    # absence, and across ALL stocks so a second measure's unservable anchor cannot hide
+    # behind a first measure's good one.
+    #
+    # That last part is a deliberate BEHAVIOUR change, not just a relabelling, and it is
+    # the one path here that turns a previously-binding extract into a fall-loud: with two
+    # stock operands where only one anchor resolves, the old code bound on the resolvable
+    # one. It is reachable — `parse_aggregate_calls` unions the columns of every call, so
+    # one select_expr can mix a fact measure with a dim-sourced one whose anchor is served
+    # only as `{fk}__{col}`. Binding operand A's instant while operand B trends on an axis
+    # this relation cannot carry misstates B, which is exactly the class of silent error
+    # this module exists to refuse.
+    #
+    # `if s.recorded` also treats '' as absent: `declared_anchor` comes from unvalidated
+    # LLM JSON, and an empty anchor name is an absence, not a mismatch worth naming.
+    unservable = sorted({s.recorded for s in stocks if s.axis is None and s.recorded})
+    if unservable:
+        named = ", ".join(repr(a) for a in unservable)
+        return (
+            f"anchor time axis {named} is not a column of relation {relation!r} — the "
+            f"point-in-time measure's anchor names an axis of a different relation, so no "
+            f"reporting instant can be placed on the one being served"
+        )
     axes = {s.axis for s in stocks if s.axis}
     if not axes:
         return "point-in-time measure has no anchor time axis to bind a reporting instant on"
@@ -595,10 +634,14 @@ def _read_stock_axes(
     The joins are LEFT so a stock whose anchor is not served on THIS relation, or whose
     axis was never temporally profiled, still returns a row with ``axis``/``grain``
     ``None`` — the caller falls loud on it rather than silently treating it as a flow.
+    The RECORDED anchor name comes back beside the resolved one so the caller can tell
+    those two cases apart from a stock that was never given an anchor at all (DAT-893);
+    without it all three arrive as ``axis=None`` and collapse into one reason.
     """
     stmt = text(
         f"SELECT DISTINCT m.materialization, axis_col.column_name AS axis,"  # noqa: S608
-        f"       tp.detected_granularity AS grain"
+        f"       tp.detected_granularity AS grain,"
+        f"       m.anchor_time_axis AS recorded"
         f' FROM "{read_schema}".og_columns m'
         f'  LEFT JOIN "{read_schema}".current_enriched_columns axis_col'
         f"         ON axis_col.table_id = :view_id"
@@ -606,18 +649,19 @@ def _read_stock_axes(
         f'  LEFT JOIN "{read_schema}".current_temporal_column_profiles tp'
         f"         ON tp.column_id = axis_col.source_column_id"
         f" WHERE m.table_id = :view_id AND m.column_name IN :measure_cols"
-        f" ORDER BY m.materialization, axis, grain"  # deterministic evidence
+        f" ORDER BY m.materialization, axis, grain, recorded"  # deterministic evidence
     ).bindparams(bindparam("measure_cols", expanding=True))
     rows = session.execute(
         stmt, {"view_id": view_table_id, "measure_cols": sorted(measure_cols)}
     ).all()
-    verdicts = {str(mat) for mat, _, _ in rows if mat is not None}
+    verdicts = {str(mat) for mat, _, _, _ in rows if mat is not None}
     stocks = [
         _StockAxis(
             axis=str(axis) if axis is not None else None,
             grain=str(grain) if grain is not None else None,
+            recorded=str(recorded) if recorded is not None else None,
         )
-        for mat, axis, grain in rows
+        for mat, axis, grain, recorded in rows
         if mat == _STOCK
     ]
     return verdicts, stocks

@@ -57,7 +57,7 @@ from typing import TYPE_CHECKING, Any
 from sqlalchemy import func, select
 from sqlalchemy import text as sa_text
 
-from dataraum.analysis.semantic.db_models import WorkspaceSettings
+from dataraum.analysis.semantic.db_models import DimensionFacet, WorkspaceSettings
 from dataraum.core.logging import get_logger
 from dataraum.core.vertical_loader import Family, VerticalLoader
 from dataraum.graphs.loader import GraphLoader, GraphLoadError
@@ -77,6 +77,11 @@ if TYPE_CHECKING:
 logger = get_logger(__name__)
 
 _ADHOC = "_adhoc"
+# Dimension-facet vocabulary (DAT-855), imported from its single home. The metric
+# YAML parser (GraphLoader) silently ignores unknown ``metadata`` fields, so this
+# store — the one place that reads ``metadata.dimension_facet`` off the raw defn —
+# is where a bad value must fail loud (born-loud, the ``concept_store`` discipline).
+_VALID_FACETS: frozenset[str] = frozenset(f.value for f in DimensionFacet)
 
 
 def _shipped_metric_definitions(vertical: str) -> dict[str, dict[str, Any]]:
@@ -185,6 +190,19 @@ def _metric_row(vertical: str, graph: TransformationGraph, defn: dict[str, Any])
     Re-deriving would need a lossy renaming re-serialization for no benefit.
     """
     metadata = defn.get("metadata") or {}
+    # dimension_facet (DAT-855): OPTIONAL, read from the raw metadata sub-dict — the
+    # metric YAML parser (GraphLoader) silently ignores unknown ``metadata`` fields,
+    # so this is the one place a bad value can be caught, born-loud, mirroring
+    # concept_store's ordering/dimension_facet validation shape. The per-metric
+    # fault-isolation savepoint in ``ensure_metrics_seeded`` scopes the failure to
+    # THIS metric only — a bad facet skips one metric's seed, never the whole batch.
+    dimension_facet = metadata.get("dimension_facet")
+    if dimension_facet is not None and dimension_facet not in _VALID_FACETS:
+        raise ValueError(
+            f"metric '{graph.graph_id}' in vertical '{vertical}' declares an invalid "
+            f"dimension_facet (got {dimension_facet!r}); one of {sorted(_VALID_FACETS)} "
+            f"or omit it."
+        )
     return {
         "vertical": vertical,
         "graph_id": graph.graph_id,
@@ -196,6 +214,7 @@ def _metric_row(vertical: str, graph: TransformationGraph, defn: dict[str, Any])
         "description": metadata.get("description"),
         "output": defn.get("output"),
         "dependencies": defn.get("dependencies"),
+        "dimension_facet": dimension_facet,
         "source": "seed",
     }
 

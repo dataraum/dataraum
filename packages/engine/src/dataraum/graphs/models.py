@@ -580,18 +580,132 @@ class HealthySnippetProvenance(BaseModel):
     assumptions: list[SnippetAssumption] = Field(default_factory=list)
 
 
+class NoSupportClass(StrEnum):
+    """Evidence-backed cause classes for a no-support rejection (DAT-658).
+
+    ``verify_execution`` can only MEASURE "aggregated to NULL" — it is
+    structurally blind to the cause (DAT-699: no context, no connection, no
+    value sets). The cause IS determinable where the execution outcome and the
+    served evidence are both in scope, so ``classify_no_support`` (agent.py)
+    computes one of these deterministically — a COUNT probe over the extract's
+    own clause parts plus the served value-set reference, never an LLM — and
+    the class travels WITH the rejection: the verifier's message, the retained
+    row, and the next authoring's guidance all name one measured cause instead
+    of enumerating the possibility space.
+
+    - ``PREDICATE_MATCHED_NO_ROWS`` — the filter selected zero rows, and
+      absence of the concept could NOT be evidenced (a declared value IS
+      served, or no complete enumeration screens the filter columns — the
+      known un-screened gap, classified honestly as revisable). A different
+      predicate over the served values may ground it.
+    - ``OPERAND_ALL_NULL`` — rows matched the filter, but the aggregated
+      operand is NULL over every one of them (the one-sided two-operand
+      extract, DAT-699's second case). Revisable: row-guarded NULL-safe
+      combination of the operands.
+    - ``CONCEPT_ABSENT`` — every value the grounding declared for the concept
+      is missing from its column's COMPLETE served enumeration: the served
+      data carries no value for the concept's family, so no predicate over
+      the served values can ever select it. NON-REVISABLE — re-authoring SQL
+      against it is churn by construction; only new data changes the verdict.
+    - ``COMPOSITION_ABSTAINED`` — the SYSTEM withheld composition (DAT-893:
+      e.g. no reporting instant could be placed on the served relation); the
+      rejected SQL is the fall-loud ``SELECT NULL`` the model never authored,
+      so the NULL says nothing about the grounding itself.
+    - ``UNGROUNDABLE_DIMENSION`` — a filter column of the extract carries the
+      deterministic ungroundable-dimension verdict (DAT-620,
+      ``graphs.groundability``): its coded values have no resolved meaning, no
+      ontology match, and no linked reference table — so ANY predicate over
+      them is a guess, and the absence screen's conclusion would be unsound
+      (an unserved declared value proves nothing when the served values are
+      opaque codes that may well encode the concept). NON-REVISABLE —
+      re-authoring a different predicate is churn by construction; the cure is
+      LINKING a reference/lookup table that resolves these values, which flips
+      the verdict on the next run.
+    """
+
+    PREDICATE_MATCHED_NO_ROWS = "predicate_matched_no_rows"
+    OPERAND_ALL_NULL = "operand_all_null"
+    CONCEPT_ABSENT = "concept_absent"
+    COMPOSITION_ABSTAINED = "composition_abstained"
+    UNGROUNDABLE_DIMENSION = "ungroundable_dimension"
+
+
+#: The classes whose verdict re-authoring cannot change (churn by construction):
+#: CONCEPT_ABSENT until new DATA serves a representing value, UNGROUNDABLE_DIMENSION
+#: until a resolving reference table is LINKED. Consumed by the three sites that
+#: close the churn loop (agent.py): the cached-row drift demotion, the sticky
+#: carry-forward across compliant fall-loud refreshes, and the do-not-re-author
+#: prior-context guidance.
+NON_REVISABLE_NO_SUPPORT: frozenset[NoSupportClass] = frozenset(
+    {NoSupportClass.CONCEPT_ABSENT, NoSupportClass.UNGROUNDABLE_DIMENSION}
+)
+
+
+@dataclass(frozen=True)
+class NoSupportFinding:
+    """One NULL-aggregate step's classified cause + the evidence that backs it.
+
+    The in-memory carrier between ``classify_no_support`` (which does the IO),
+    ``verify_execution`` (which names the class in its rejection — data in, no
+    IO), and ``_save_failed_snippet`` (which persists the pair onto
+    ``FailedSnippetProvenance``). Always constructed together — a class without
+    its evidence cannot exist, mirroring the persisted model's validator.
+    """
+
+    reason_class: NoSupportClass
+    evidence: str
+
+
 class FailedSnippetProvenance(BaseModel):
     """The ENTIRE provenance payload of a retained-failure sql_snippets row (DAT-543).
 
     Read back by ``_build_prior_context`` (the exact prior SQL + why it was
     rejected) and by the cockpit's ungroundable-node detail. Carries no column
     enumeration — a failed grounding yields no ``uses`` edges by construction.
+
+    ``no_support_class`` / ``no_support_evidence`` (DAT-658) type the CAUSE of a
+    no-support rejection, always as a pair — the validator below is the
+    chokepoint (the additivity status/verdict/reason discipline; provenance is
+    JSON, so no DB CHECK can repeat it). DAT-893's ``composition_abstain``
+    field is FOLDED into this vocabulary (``no_support_class:
+    composition_abstained``, evidence = the abstain reason): a nullable abstain
+    string BESIDE a typed cause class would give every consumer two parallel
+    reads for the one question "why did this grounding fail", and each engine
+    reader is dict-keyed (no model round-trip on read), so the fold is a clean
+    cut — pre-fold rows keep their old key, read by nothing.
     """
 
     model_config = ConfigDict(extra="forbid")
 
     failure_mode: SnippetFailureMode
     failure_reason: str
+    no_support_class: NoSupportClass | None = None
+    no_support_evidence: str | None = None
+
+    @model_validator(mode="after")
+    def _class_is_evidence_backed(self) -> FailedSnippetProvenance:
+        """A class requires its evidence, and both qualify ONLY the verifier's rejection.
+
+        The mode invariant generalizes DAT-893's ("the abstain accompanies only
+        the verifier's rejection"): every class in the vocabulary explains a
+        no-support NULL, which only the verifier gate produces — on any other
+        mode the grounding failed for its own reason, and a cause class there
+        would contradict the mode and misdirect the retry guidance.
+        """
+        if self.no_support_class is not None:
+            if not self.no_support_evidence:
+                raise ValueError(
+                    f"no_support_class {self.no_support_class!r} must carry its evidence — "
+                    "a class is a measured finding, never an assertion"
+                )
+            if self.failure_mode is not SnippetFailureMode.VERIFIER_REJECTED:
+                raise ValueError(
+                    "no_support_class qualifies the verifier's no-support rejection only; "
+                    f"mode {self.failure_mode!r} failed for its own reason"
+                )
+        elif self.no_support_evidence is not None:
+            raise ValueError("no_support_evidence without a class is not a finding")
+        return self
 
 
 class ValueSearchInput(BaseModel):

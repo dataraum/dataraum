@@ -33,6 +33,7 @@ import pytest
 from sqlalchemy import Engine, text
 from sqlalchemy.orm import Session, sessionmaker
 
+from dataraum.analysis.lineage.db_models import MeasureAggregationLineage
 from dataraum.analysis.semantic.db_models import ColumnConcept, TableEntity
 from dataraum.analysis.temporal.db_models import TemporalColumnProfile
 from dataraum.analysis.views.db_models import EnrichedView
@@ -1019,7 +1020,12 @@ def test_null_anchor_axis_falls_loud(
     duckdb_conn: duckdb.DuckDBPyConnection,
 ) -> None:
     """A flow fact with no anchor time axis (the DAT-801 header-date shape) abstains
-    and flags — never a silent 30 derived off a missing axis."""
+    and flags — never a silent 30 derived off a missing axis.
+
+    DAT-893 splits this reason from the two that used to share it: nothing was ever
+    designated here, so the flag says exactly that and must NOT claim the relation
+    fails to carry some named axis.
+    """
     _seed(pg_session, declare_anchor=False)
     _create_income_stmt(duckdb_conn)
     _boot(integration_engine)
@@ -1028,7 +1034,8 @@ def test_null_anchor_axis_falls_loud(
     )
     assert resolution is not None
     assert resolution.days == 30.0
-    assert "no observable anchor-axis span" in (resolution.flag or "")
+    assert "no anchor time axis to observe a span on" in (resolution.flag or "")
+    assert "is not a column of relation" not in (resolution.flag or "")
 
 
 def test_axis_without_temporal_profile_falls_loud(
@@ -1036,7 +1043,11 @@ def test_axis_without_temporal_profile_falls_loud(
     pg_session: Session,
     duckdb_conn: duckdb.DuckDBPyConnection,
 ) -> None:
-    """An anchor axis that was never temporally profiled has no cadence to observe."""
+    """An anchor axis that was never temporally profiled has no cadence to observe.
+
+    The third of the three reasons DAT-893 split apart: the axis IS served here, so the
+    flag must name the profile gap and neither of the other two causes.
+    """
     _seed(pg_session, profile_axis=False)
     _create_income_stmt(duckdb_conn)
     _boot(integration_engine)
@@ -1045,7 +1056,8 @@ def test_axis_without_temporal_profile_falls_loud(
     )
     assert resolution is not None
     assert resolution.days == 30.0
-    assert "no observable anchor-axis span" in (resolution.flag or "")
+    assert "has no temporal profile" in (resolution.flag or "")
+    assert "is not a column of relation" not in (resolution.flag or "")
 
 
 @pytest.mark.parametrize("cadence", ["irregular", "unknown"])
@@ -1348,3 +1360,122 @@ def test_joined_dim_anchor_does_not_collapse_to_the_wider_profile_span(
     assert resolution.days != pytest.approx(_apply_fencepost(5 * 365.0, 20))
     assert resolution.evidence["filtered_span_days"] == pytest.approx(SPAN_DAYS)
     assert resolution.evidence["actual_periods"] == 4  # live periods, not the profile's 20
+
+
+def _seed_lineage_witness(session: Session, *, measure_axis: str, event_axis: str) -> None:
+    """Seed a DAT-778 reconciliation witness for the COGS flow measure.
+
+    The witness spans two tables — the only shape the processor produces — so its two
+    axis fields name columns on two DIFFERENT relations. ``pattern='per_period'`` makes
+    the witness posterior say FLOW, which is the point: ``og_columns.materialization``
+    prefers the witness over the concept prior, so a measure is witness-classified
+    exactly when its anchor came from the witness too.
+    """
+    session.add(
+        Table(
+            table_id="t_jl2",
+            source_id=SRC,
+            table_name="journal_lines",
+            layer="typed",
+            duckdb_path="journal_lines",
+        )
+    )
+    session.add_all(
+        [
+            Column(table_id="t_jl2", column_name="entry_id__date", column_position=1),
+            Column(table_id="t_jl2", column_name="account_id", column_position=2),
+        ]
+    )
+    session.flush()
+    by_name = {
+        (c.table_id, c.column_name): c
+        for c in session.query(Column).filter(Column.table_id.in_(["t_is", "t_jl2"])).all()
+    }
+    session.add(
+        MeasureAggregationLineage(
+            lineage_id="mal_cogs",
+            run_id=RUN,
+            measure_table_id="t_is",
+            measure_column_id=by_name[("t_is", "cogs")].column_id,
+            event_table_id="t_jl2",
+            measure_time_axis_column=measure_axis,
+            event_time_axis_column=event_axis,
+            measure_slice_column_id=by_name[("t_is", "posting_date")].column_id,
+            event_slice_column_id=by_name[("t_jl2", "account_id")].column_id,
+            slice_dimension="account",
+            convention_sql="SUM(amount)",
+            period_grain="quarter",
+            pattern="per_period",
+            match_rate=1.0,
+            r_flow_median=0.05,
+            r_stock_median=0.9,
+            n_entities=10,
+            n_entities_fired=10,
+            sign_fired_primary=10,
+            sign_fired_mirror=0,
+            sign_fired_both=0,
+            created_at=TS,
+        )
+    )
+    session.commit()
+
+
+def test_a_witness_classified_flow_still_derives_its_window(
+    integration_engine: Engine,
+    pg_session: Session,
+    duckdb_conn: duckdb.DuckDBPyConnection,
+) -> None:
+    """DAT-893's flow-side consequence — the diff's largest observable effect.
+
+    ``og_columns.materialization`` prefers the witness posterior, so a measure is
+    witness-classified as a FLOW exactly when the old expression also took its anchor
+    from the witness's EVENT side. That anchor names a column of the evidence relation,
+    so it never resolved on the flow's own served view: EVERY witness-classified flow
+    fell back to the flagged config default, and ``days_in_period`` — the denominator of
+    DSO/DPO/DIO/CCC — was 30 by fallback rather than measured.
+
+    So this does not merely change an abstain into a bind: it changes the VALUE. Pinned
+    against the config default so a regression cannot pass as a plausible number.
+    """
+    _seed(pg_session)
+    _seed_lineage_witness(pg_session, measure_axis="posting_date", event_axis="entry_id__date")
+    _create_income_stmt(duckdb_conn)
+    _boot(integration_engine)
+
+    resolution = resolve_days_in_period(
+        pg_session, duckdb_conn, graph=_dpo_graph(), workspace_id=WS_ID
+    )
+
+    assert resolution is not None
+    assert resolution.derived is True, resolution.flag
+    assert resolution.flag is None
+    assert resolution.days == pytest.approx(CORRECTED_DAYS)
+    assert resolution.days != 30.0  # the flagged config default the old anchor forced
+    assert resolution.evidence["anchor_time_axis"] == ["posting_date"]
+
+
+def test_a_flow_anchored_off_its_relation_names_the_mismatch(
+    integration_engine: Engine,
+    pg_session: Session,
+    duckdb_conn: duckdb.DuckDBPyConnection,
+) -> None:
+    """The flow mirror of the binder's guard: NAME the axis, never claim it was null.
+
+    Constructed directly, since the writer fix makes it unreachable through the witness.
+    The old single message asserted "null anchor time axis" about a name sitting in
+    og_columns — which sent a reader to the table's time_columns, where nothing is wrong.
+    """
+    _seed(pg_session)
+    _seed_lineage_witness(pg_session, measure_axis="entry_id__date", event_axis="entry_id__date")
+    _create_income_stmt(duckdb_conn)
+    _boot(integration_engine)
+
+    resolution = resolve_days_in_period(
+        pg_session, duckdb_conn, graph=_dpo_graph(), workspace_id=WS_ID
+    )
+
+    assert resolution is not None
+    assert resolution.derived is False
+    assert "entry_id__date" in (resolution.flag or "")
+    assert "is not a column of relation" in (resolution.flag or "")
+    assert "null anchor time axis" not in (resolution.flag or "")

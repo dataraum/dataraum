@@ -452,6 +452,46 @@ def test_the_abstain_reason_reaches_the_persisted_failure_provenance(monkeypatch
     assert provenance["composition_abstain"] == abstain
 
 
+def test_the_abstain_reason_stays_off_other_failure_modes(monkeypatch) -> None:
+    """A non-verifier failure never carries the composition abstain.
+
+    A generation can both violate the grounding contract AND resolve to a stock whose
+    binding abstains — ``composition_abstain`` is stamped on ``GeneratedCode``
+    unconditionally, but the retained ``PROVENANCE_INVALID`` row must not carry it:
+    the grounding failed for its own reason, and ``_build_prior_context``'s abstain
+    branch ("this is NOT a grounding defect to revise around") would directly
+    contradict the mode's own ``why`` text on the next authoring turn.
+    """
+    abstain = "anchor time axis 'entry_id__date' is not a column of relation 'x'"
+    _patch_context(monkeypatch)
+    monkeypatch.setattr(
+        "dataraum.graphs.boundary_resolver.resolve_period_binding", lambda *a, **k: abstain
+    )
+    agent = _agent_with(_provider(_output_response(_VALID_OUTPUT)))
+    generated = _generate(agent).unwrap()
+    assert generated.composition_abstain == abstain
+
+    saved: list[dict] = []
+    monkeypatch.setattr(
+        "dataraum.query.snippet_library.SnippetLibrary.save_snippet",
+        lambda self, **kwargs: saved.append(kwargs),
+    )
+    agent._save_failed_snippet(
+        MagicMock(),
+        _graph(),
+        generated,
+        "sm",
+        workspace_id="ws",
+        mode=SnippetFailureMode.PROVENANCE_INVALID,
+        reason="grounding contract violated after repair: filter_members names a phantom",
+    )
+
+    assert len(saved) == 1
+    provenance = saved[0]["provenance"]
+    assert provenance["failure_mode"] == "provenance_invalid"
+    assert provenance["composition_abstain"] is None
+
+
 def test_resolved_binding_reaches_the_composed_parts(monkeypatch) -> None:
     """The resolving path appends the typed predicate and records the observable."""
     from dataraum.graphs.boundary_resolver import PeriodBinding

@@ -1818,7 +1818,18 @@ class GraphAgent(LLMFeature):
         provenance = FailedSnippetProvenance(
             failure_mode=mode,
             failure_reason=reason,
-            composition_abstain=generated_code.composition_abstain,
+            # The abstain cause accompanies ONLY the verifier's rejection of the
+            # fall-loud ``SELECT NULL`` it produced (the models.py invariant: "the MODE
+            # is still the verifier's rejection, honestly"). On any other mode — a
+            # contract violation, an execution error — the grounding failed for its own
+            # reason, and recording a composition abstain there would contradict the
+            # mode and steer ``_build_prior_context``'s retry guidance away from the
+            # actual retained defect.
+            composition_abstain=(
+                generated_code.composition_abstain
+                if mode is SnippetFailureMode.VERIFIER_REJECTED
+                else None
+            ),
         ).model_dump(mode="json")
         for step_id, graph_step in graph.steps.items():
             if graph_step.step_type != StepType.EXTRACT or not graph_step.source:

@@ -470,3 +470,118 @@ VALUES
 ON CONFLICT DO NOTHING;
 `;
 }
+
+/**
+ * A `metrics` config row carrying a `dimension_facet`, plus (optionally) its own
+ * lifecycle-artifact row — the coverage-map fixture (DAT-855 B2, `coverage-map-
+ * load.integration.test.ts`).
+ *
+ * Deliberately separate from `metricArtifactSeedSql`/`conceptSeedSql`'s existing
+ * `gross_margin`/`mtr_gm` rows rather than widening them: several OTHER suites
+ * assert on that row's exact shape (state='grounded', no facet), and
+ * `coverage-map-load.ts` groups grounding evidence by graph_id PREFIX (its own
+ * module header, point 3) — reusing a shared graph_id would let this fixture's
+ * grounding rows bleed into theirs and vice versa.
+ *
+ * `state: null` omits the lifecycle_artifacts row entirely (the "never even
+ * declared into a run" case); any other value inserts one row at that state.
+ */
+export interface CoverageMetricSeedOptions {
+	graphId: string;
+	name?: string;
+	dimensionFacet: string | null;
+	state?: "declared" | "grounded" | "executed" | "canonical" | null;
+	stateReason?: string | null;
+	runId?: string;
+}
+
+export function coverageMetricSeedSql(opts: CoverageMetricSeedOptions): string {
+	const {
+		graphId,
+		name = graphId,
+		dimensionFacet,
+		state = null,
+		stateReason = null,
+		runId = RUN_ID,
+	} = opts;
+	const facetSql = dimensionFacet === null ? "NULL" : `'${dimensionFacet}'`;
+	const stateReasonSql =
+		stateReason === null ? "NULL" : `'${stateReason.replaceAll("'", "''")}'`;
+	const lifecycleSql =
+		state === null
+			? ""
+			: `
+INSERT INTO lifecycle_artifacts (
+  artifact_id, artifact_type, artifact_key, run_id, state, state_reason,
+  stage, created_at, state_changed_at)
+VALUES (
+  'art_cov_${graphId}', 'metric', '${graphId}', '${runId}', '${state}',
+  ${stateReasonSql}, 'operating_model', ${ts}, ${ts})
+ON CONFLICT DO NOTHING;
+`;
+
+	return `
+SET search_path TO engine;
+
+INSERT INTO metrics (metric_id, vertical, graph_id, name, dimension_facet,
+                     source, created_at)
+VALUES ('mtr_cov_${graphId}', '_adhoc', '${graphId}', '${name}', ${facetSql},
+        'seed', ${ts})
+ON CONFLICT DO NOTHING;
+${lifecycleSql}`;
+}
+
+/**
+ * ONE clean `sql_snippets` row sourced `graph:<graphId>` — the coverage-map's
+ * grounding-evidence fixture. Deliberately a single, isolated row per call rather
+ * than reusing `graphSnippetSeedSql`'s fixed 4-row shape: that shape bakes in an
+ * unrelated failed `shrinkage` extract under every graph_id it is given, which
+ * would corrupt a coverage-map LIT fixture (a graph_id-prefix reader has no way to
+ * tell that failure apart from the metric's own).
+ */
+export interface CoverageGroundingSeedOptions {
+	snippetId: string;
+	graphId: string;
+	workspaceId: string;
+	snippetType?: "extract" | "formula";
+	standardField?: string | null;
+	failed?: boolean;
+	failureReason?: string | null;
+}
+
+export function coverageGroundingSeedSql(
+	opts: CoverageGroundingSeedOptions,
+): string {
+	const {
+		snippetId,
+		graphId,
+		workspaceId,
+		snippetType = "formula",
+		standardField = null,
+		failed = false,
+		failureReason = null,
+	} = opts;
+	const provenance = failed
+		? JSON.stringify({
+				failure_mode: "verifier_rejected",
+				failure_reason: failureReason ?? "grounding failed",
+			})
+		: JSON.stringify({ column_mappings_basis: {}, assumptions: [] });
+	const standardFieldSql =
+		standardField === null ? "NULL" : `'${standardField}'`;
+
+	return `
+SET search_path TO engine;
+
+INSERT INTO sql_snippets (
+  snippet_id, workspace_id, snippet_type, standard_field, schema_mapping_id,
+  sql, description, source, provenance, execution_count, failure_count,
+  created_at, updated_at)
+VALUES (
+  '${snippetId}', '${workspaceId}', '${snippetType}', ${standardFieldSql},
+  '${workspaceId}', 'SELECT 1', 'coverage-map fixture snippet',
+  'graph:${graphId}', '${provenance.replaceAll("'", "''")}'::json,
+  0, ${failed ? 1 : 0}, ${ts}, ${ts})
+ON CONFLICT DO NOTHING;
+`;
+}

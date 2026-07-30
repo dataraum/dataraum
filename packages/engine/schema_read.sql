@@ -133,6 +133,16 @@ WHERE EXISTS (
     AND h.run_id = r.run_id
 );
 
+DROP VIEW IF EXISTS __READ__.current_dimension_groundability;
+CREATE VIEW __READ__.current_dimension_groundability AS
+SELECT r.* FROM __WS__.dimension_groundability r
+WHERE EXISTS (
+  SELECT 1 FROM __WS__.metadata_snapshot_head h
+  WHERE h.target = 'catalog'
+    AND h.stage = 'operating_model'
+    AND h.run_id = r.run_id
+);
+
 DROP VIEW IF EXISTS __READ__.current_dimension_hierarchies;
 CREATE VIEW __READ__.current_dimension_hierarchies AS
 SELECT r.* FROM __WS__.dimension_hierarchies r
